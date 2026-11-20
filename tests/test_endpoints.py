@@ -218,4 +218,62 @@ def test_app_quit_endpoint():
     assert res.json()["status"] == "ok"
     app.state.desktop_app = None
 
+def test_hardware_profile_endpoint():
+    res = client.get("/v1/system/hardware")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "hardware" in data
+    hw = data["hardware"]
+    assert "gpu_name" in hw
+    assert "total_ram_gb" in hw
+    assert "recommended_tier" in hw
+    assert isinstance(hw["recommended_models"], list)
+
+def test_updates_check_endpoint():
+    res = client.get("/v1/ui/updates/check")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "version" in data
+
+def test_dlp_test_endpoint():
+    payload = {"text": "API_KEY = 'sk-live-1234567890abcdef' host = '192.168.1.50'"}
+    res = client.post("/v1/ui/dlp/test", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["total_masked"] >= 1 or data["detected_count"] >= 1
+    assert "192.168.1.50" not in data["sanitized"]
+
+def test_orchestration_config_endpoints():
+    # GET
+    res_get = client.get("/v1/orchestration/config")
+    assert res_get.status_code == 200
+    cfg = res_get.json()["config"]
+    assert "architect_model" in cfg
+
+    # POST update
+    payload = {
+        "architect_model": "gemini-1.5-pro",
+        "coder_model": "qwen2.5-coder:14b",
+        "auditor_model": "gemini-1.5-pro",
+        "hard_gate_cmd": "python -m pytest tests/",
+        "mode": "auto",
+        "max_rework_cycles": 3
+    }
+    res_post = client.post("/v1/orchestration/config", json=payload)
+    assert res_post.status_code == 200
+    assert res_post.json()["status"] == "ok"
+
+    # Verify updated
+    res_verify = client.get("/v1/orchestration/config")
+    assert res_verify.json()["config"]["hard_gate_cmd"] == "python -m pytest tests/"
+
+def test_uninstall_endpoint_validation():
+    # Without confirm
+    res_bad = client.post("/v1/system/uninstall", json={"confirm": False})
+    assert res_bad.status_code == 400
+
+
 

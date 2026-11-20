@@ -623,9 +623,127 @@ async def api_apply_integration(target: str):
 
 @app.post("/v1/integrations/revert/{target}")
 async def api_revert_integration(target: str):
-    """Rolls back the target from its previous backup."""
-    results = history_manager.rollback(target)
-    return {"status": "ok", "results": results}
+    """Rolls back the target from its previous backup to clean state."""
+    from core.ide_setup import rollback_target_clean
+    ok, msg = rollback_target_clean(target)
+    return {"status": "ok" if ok else "error", "message": msg, "results": [msg]}
+
+@app.get("/v1/ui/status")
+async def api_ui_status():
+    """Unified system status for frontend polling."""
+    from core.hardware import get_hardware_profile
+    from dataclasses import asdict
+    hw = asdict(get_hardware_profile())
+    savings = analytics.get_summary()
+    return {
+        "status": "ok",
+        "savings": savings,
+        "hardware": hw,
+        "ollama": {
+            "online": hw.get("ollama_online", False),
+            "models": hw.get("ollama_models", [])
+        },
+        "policies": {
+            "mode": getattr(config.cascade, "mode", "auto"),
+            "max_rework_iterations": getattr(config.cascade, "max_rework_iterations", 2)
+        }
+    }
+
+@app.get("/v1/ui/history")
+async def api_ui_history(limit: int = 10):
+    """Recent completion history for the UI trace viewer."""
+    return {"status": "ok", "history": analytics.get_recent()}
+
+@app.post("/v1/ui/healer/run")
+async def api_ui_healer_run():
+    """Runs config self-healer and returns repairs."""
+    from core.healer import config_healer
+    sub_cfg, mods = config_healer.load_or_create()
+    return {
+        "status": "ok",
+        "modifications": mods,
+        "schema_version": getattr(sub_cfg, "schema_version", 2)
+    }
+
+@app.get("/v1/system/hardware")
+async def api_get_hardware():
+    """Returns detected hardware profile (GPU/VRAM/RAM/CPU) and model recommendations."""
+    from core.hardware import get_hardware_profile
+    from dataclasses import asdict
+    profile = get_hardware_profile()
+    return {"status": "ok", "hardware": asdict(profile)}
+
+@app.get("/v1/system/update/check")
+async def api_check_updates():
+    """Checks GitHub releases for new zero-copy-agent updates."""
+    from core.updater import check_github_updates
+    return check_github_updates()
+
+@app.post("/v1/system/uninstall")
+async def api_uninstall_system(payload: dict = Body(...)):
+    """Cleanly uninstalls zero-copy-agent: reverts all IDEs, removes caches/configs."""
+    if not payload.get("confirm", False):
+        raise HTTPException(status_code=400, detail="Подтверждение обязательно (confirm: true)")
+    from core.uninstaller import clean_uninstall_system
+    result = clean_uninstall_system(keep_backups=payload.get("keep_backups", False))
+    return result
+
+@app.get("/v1/orchestration/config")
+async def api_get_orchestration_config():
+    """Returns custom orchestration pipeline settings."""
+    from core.config import config
+    return {
+        "status": "ok",
+        "config": {
+            "architect_model": getattr(config.cascade, "architect_model", "gemini-4-neon"),
+            "coder_model": getattr(config.cascade, "coder_model", "qwen2.5-coder:14b"),
+            "auditor_model": getattr(config.cascade, "auditor_model", "gemini-4-neon"),
+            "hard_gate_cmd": getattr(config.cascade, "hard_gate_cmd", "python -m py_compile"),
+            "max_rework": getattr(config.cascade, "max_rework_iterations", 2),
+            "mode": getattr(config.cascade, "mode", "auto"),
+            "enable_local_gate": getattr(config.cascade, "enable_local_gate", True),
+            "enable_architect_audit": getattr(config.cascade, "enable_architect_audit", True)
+        }
+    }
+
+@app.post("/v1/orchestration/config")
+async def api_save_orchestration_config(payload: dict = Body(...)):
+    """Saves custom orchestration pipeline settings to config.yaml."""
+    from core.config import config, save_config
+    if "architect_model" in payload:
+        config.cascade.architect_model = payload["architect_model"]
+    if "coder_model" in payload:
+        config.cascade.coder_model = payload["coder_model"]
+    if "auditor_model" in payload:
+        config.cascade.auditor_model = payload["auditor_model"]
+    if "hard_gate_cmd" in payload:
+        config.cascade.hard_gate_cmd = payload["hard_gate_cmd"]
+    if "max_rework" in payload:
+        config.cascade.max_rework_iterations = int(payload["max_rework"])
+    if "mode" in payload:
+        config.cascade.mode = str(payload["mode"])
+    if "enable_local_gate" in payload:
+        config.cascade.enable_local_gate = bool(payload["enable_local_gate"])
+    if "enable_architect_audit" in payload:
+        config.cascade.enable_architect_audit = bool(payload["enable_architect_audit"])
+    ok = save_config(config)
+    return {"status": "ok" if ok else "error", "message": "Настройки оркестрации успешно сохранены"}
+
+@app.delete("/v1/models/{model_id:path}")
+async def api_delete_model(model_id: str):
+    """Removes model from user's subscriptions catalog."""
+    from core.healer import config_healer
+    sub_cfg, _ = config_healer.load_or_create()
+    removed = False
+    for acc in sub_cfg.accounts:
+        new_models = [m for m in acc.models if m.id != model_id]
+        if len(new_models) < len(acc.models):
+            acc.models = new_models
+            removed = True
+    if removed:
+        sub_cfg.save()
+        return {"status": "ok", "message": f"Модель {model_id} удалена из каталога"}
+    return {"status": "ok", "message": f"Модель {model_id} не найдена в пользовательских аккаунтах"}
 
 @app.get("/v1/integrations/test/{target}")
 async def api_test_integration(target: str):

@@ -179,6 +179,7 @@ async def test_dlp_sandbox(body: DLPSandboxRequest):
         "original": body.text,
         "sanitized": clean_text,
         "detected_count": vault.detected_count,
+        "total_masked": vault.detected_count,
         "mappings": mappings
     }
 
@@ -217,38 +218,6 @@ async def get_system_history(limit: int = 50):
 
 @ui_router.get("/updates/check")
 async def check_for_updates():
-    """Checks repository git status or current release version."""
-    import subprocess
-    commit = "HEAD"
-    branch = "main"
-    try:
-        repo_dir = os.path.dirname(os.path.dirname(__file__))
-        res = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=3
-        )
-        if res.returncode == 0:
-            commit = res.stdout.strip()
-        b_res = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=3
-        )
-        if b_res.returncode == 0:
-            branch = b_res.stdout.strip()
-    except Exception:
-        pass
-
-    return {
-        "status": "ok",
-        "version": __version__,
-        "commit": commit,
-        "branch": branch,
-        "up_to_date": True,
-        "message": f"Версия v{__version__} ({commit}) актуальна · Ed25519 OK"
-    }
+    """Checks GitHub releases for latest version."""
+    from core.updater import check_github_updates
+    return check_github_updates()

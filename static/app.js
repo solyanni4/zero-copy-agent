@@ -228,16 +228,24 @@ async function checkUpdates() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (statusLine) {
-      statusLine.textContent = `Актуально · ${data.commit} Ed25519 OK`;
+      if (data.has_update) {
+        statusLine.innerHTML = `<a href="${data.release_url || '#'}" target="_blank" class="underline text-cobalt font-semibold">Доступно обновление v${data.latest_version}</a>`;
+      } else {
+        statusLine.textContent = `Актуально · v${data.version} OK`;
+      }
       statusLine.classList.remove('hidden');
     }
-    showBanner(`Проверка обновлений: v${data.version} (${data.commit}) актуальна, Ed25519 подтвержден.`, 'check-circle-2', 'text-emerald');
+    if (data.has_update) {
+      showBanner(`Доступно обновление: v${data.latest_version} (текущая: v${data.version}).`, 'arrow-down-circle', 'text-cobalt');
+    } else {
+      showBanner(`Версия v${data.version} актуальна (GitHub подтвержден).`, 'check-circle-2', 'text-emerald');
+    }
   } catch (err) {
     if (statusLine) {
       statusLine.textContent = 'Локальный релиз · v0.3.2 OK';
       statusLine.classList.remove('hidden');
     }
-    showBanner('Версия v0.3.2 актуальна (проверка локального репозитория выполнена).', 'check-circle-2', 'text-emerald');
+    showBanner('Версия v0.3.2 актуальна (проверка выполнена).', 'check-circle-2', 'text-emerald');
   } finally {
     if (icon) icon.classList.remove('animate-spin');
   }
@@ -1289,14 +1297,17 @@ async function fetchSystemStatus() {
       renderMetrics();
     }
 
-    // 2. Ollama status in footer
+    // 2. Hardware profile & dynamic runtime status in footer
     const footerOllama = document.getElementById('footer-ollama-status');
-    if (footerOllama && data.ollama) {
+    if (footerOllama && data.hardware && data.hardware.display_footer) {
+      footerOllama.textContent = data.hardware.display_footer;
+      renderHardwareManual(data.hardware);
+    } else if (footerOllama && data.ollama) {
       if (data.ollama.online) {
-        const m = data.ollama.models?.[0] || 'active';
-        footerOllama.textContent = `RTX 4070 · Ollama (${m})`;
+        const m = data.ollama.models?.[0] || 'активна';
+        footerOllama.textContent = `Ollama (${m})`;
       } else {
-        footerOllama.textContent = 'RTX 4070 · Ollama (офлайн)';
+        footerOllama.textContent = 'Ollama (офлайн)';
       }
     }
 
@@ -1401,6 +1412,144 @@ function copyTextById(elId) {
 }
 
 // ------------------------------------------------------------------------
+// 9. Hardware, Orchestration & System Management Handlers
+// ------------------------------------------------------------------------
+function renderHardwareManual(hw) {
+  const el = document.getElementById('manual-hardware-summary');
+  if (!el || !hw) return;
+  el.innerHTML = `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div><strong>Видеокарта (GPU):</strong> ${escapeHtml(hw.gpu_name)} (${hw.vram_gb} ГБ VRAM)</div>
+      <div><strong>Процессор (CPU):</strong> ${escapeHtml(hw.cpu_name)} (${hw.cpu_cores} потоков)</div>
+      <div><strong>Оперативная память (RAM):</strong> ${hw.total_ram_gb} ГБ</div>
+      <div><strong>Локальный рантайм:</strong> ${hw.ollama_online ? '<span class="text-emerald font-semibold">Ollama активна 🟢</span>' : '<span class="text-amber">Ollama офлайн ⚪</span>'}</div>
+    </div>
+    <div class="mt-2.5 pt-2 border-t border-hairline text-cobalt font-semibold">
+      Рекомендованный класс моделей: ${escapeHtml(hw.recommended_tier)}
+    </div>
+  `;
+}
+
+function insertSampleDlp() {
+  const input = document.getElementById('dlp-input');
+  if (!input) return;
+  input.value = `# Конфигурация шлюза внутренней инфраструктуры
+API_SECRET = "sk-live-94a8f2c19e04b77a88d21f0e"
+HOMELAB_NODE = "http://192.168.50.135:11434"
+DB_ENDPOINT = "postgres://admin@internal-efko.local:5432/core"
+BACKUP_IP = "10.0.4.22"`;
+  runDlpBench();
+}
+
+function openOrchestrationModal() {
+  const m = document.getElementById('modal-orchestration');
+  if (m) {
+    m.classList.remove('hidden');
+    loadOrchestrationConfig();
+  }
+}
+
+function closeOrchestrationModal() {
+  const m = document.getElementById('modal-orchestration');
+  if (m) m.classList.add('hidden');
+}
+
+async function loadOrchestrationConfig() {
+  try {
+    const res = await fetch('/v1/orchestration/config');
+    if (!res.ok) return;
+    const data = await res.json();
+    const cfg = data.config || {};
+    const archEl = document.getElementById('orch-architect-model');
+    const coderEl = document.getElementById('orch-coder-model');
+    const gateEl = document.getElementById('orch-gate-cmd');
+    const rwEl = document.getElementById('orch-max-rework');
+    const modeEl = document.getElementById('orch-mode');
+
+    if (archEl && cfg.architect_model) archEl.value = cfg.architect_model;
+    if (coderEl && cfg.coder_model) coderEl.value = cfg.coder_model;
+    if (gateEl && cfg.hard_gate_cmd) gateEl.value = cfg.hard_gate_cmd;
+    if (rwEl && cfg.max_rework !== undefined) rwEl.value = cfg.max_rework;
+    if (modeEl && cfg.mode) modeEl.value = cfg.mode;
+  } catch (e) {}
+}
+
+async function saveOrchestrationForm(e) {
+  if (e) e.preventDefault();
+  const arch = document.getElementById('orch-architect-model')?.value;
+  const coder = document.getElementById('orch-coder-model')?.value;
+  const gate = document.getElementById('orch-gate-cmd')?.value;
+  const rw = document.getElementById('orch-max-rework')?.value;
+  const mode = document.getElementById('orch-mode')?.value;
+
+  try {
+    const res = await fetch('/v1/orchestration/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        architect_model: arch,
+        coder_model: coder,
+        hard_gate_cmd: gate,
+        max_rework: rw ? parseInt(rw, 10) : 2,
+        mode: mode || 'auto'
+      })
+    });
+    const d = await res.json();
+    if (state.dagStages[0] && arch) state.dagStages[0].model = arch;
+    if (state.dagStages[1] && coder) state.dagStages[1].model = coder;
+    if (rw) {
+      state.maxRework = parseInt(rw, 10);
+      const reworkDisp = document.getElementById('rework-val');
+      if (reworkDisp) reworkDisp.textContent = state.maxRework;
+    }
+    renderDagInspector();
+    showBanner(d.message || 'Настройки оркестрации сохранены', 'check-circle-2', 'text-emerald');
+    closeOrchestrationModal();
+  } catch (err) {
+    showBanner('Ошибка сохранения настроек: ' + err, 'alert-triangle', 'text-crimson');
+  }
+}
+
+function openUninstallModal() {
+  const m = document.getElementById('modal-uninstall');
+  if (m) m.classList.remove('hidden');
+}
+
+function closeUninstallModal() {
+  const m = document.getElementById('modal-uninstall');
+  if (m) m.classList.add('hidden');
+}
+
+async function executeUninstall() {
+  const btn = document.getElementById('btn-confirm-uninstall');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Удаление...';
+  }
+  const keepBackups = document.getElementById('uninstall-keep-backups')?.checked || false;
+
+  try {
+    const res = await fetch('/v1/system/uninstall', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, keep_backups: keepBackups })
+    });
+    const d = await res.json();
+    closeUninstallModal();
+    alert('zero-copy-agent успешно удален с компьютера.\nКонфигурации IDE возвращены к исходному состоянию.');
+    // Quit application
+    fetch('/v1/app/quit', { method: 'POST' }).catch(() => {});
+    window.close();
+  } catch (e) {
+    alert('Сбой при удалении: ' + e);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Удалить всё и закрыть';
+    }
+  }
+}
+
+// ------------------------------------------------------------------------
 // 10. Bootstrap on Load
 // ------------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
@@ -1416,6 +1565,7 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchIdeIntegrations();
   runDlpBench();
   fetchRealHistoryIntoTraces();
+  loadOrchestrationConfig();
 
   // Periodic polling every 4s
   setInterval(fetchSystemStatus, 4000);

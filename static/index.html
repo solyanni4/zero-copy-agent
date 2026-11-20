@@ -79,6 +79,17 @@
         <i data-lucide="terminal-square" class="w-4 h-4 shrink-0"></i>
         <span class="truncate">Интеграции IDE</span>
       </button>
+      <button data-view="manual" onclick="switchView('manual')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
+        <i data-lucide="book-open" class="w-4 h-4 shrink-0"></i>
+        <span class="truncate">Руководство</span>
+      </button>
+
+      <div class="pt-3 px-1 border-t border-hairline/60">
+        <button onclick="openUninstallModal()" class="w-full h-7 px-2 rounded flex items-center justify-center gap-1.5 text-[11px] font-medium text-crimson hover:bg-crimson/10 border border-crimson/30 transition-colors">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          <span>Удалить ПО с ПК</span>
+        </button>
+      </div>
     </nav>
 
     <!-- Compact Footer Telemetry -->
@@ -92,9 +103,9 @@
           <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
         </button>
       </div>
-      <div class="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+      <div class="flex items-center gap-1.5 text-[11px] text-muted font-mono" id="footer-hardware-wrap" title="Нажмите, чтобы увидеть детали оборудования и рекомендации моделей" onclick="switchView('manual')">
         <i data-lucide="hard-drive" class="w-3 h-3 shrink-0"></i>
-        <span class="truncate" id="footer-ollama-status">RTX 4070 · Ollama</span>
+        <span class="truncate cursor-pointer hover:text-ink" id="footer-ollama-status">Определение оборудования...</span>
       </div>
       <div id="update-status-line" class="hidden text-[11px] font-mono text-emerald truncate pt-0.5 border-t border-hairline"></div>
     </div>
@@ -386,18 +397,15 @@
           <div class="flex flex-col bg-surface">
             <div class="px-4 py-2 border-b border-hairline bg-panel flex items-center justify-between">
               <span class="text-[11px] font-semibold text-muted uppercase">Исходный фрагмент (Локальный периметр)</span>
-              <span class="font-mono text-[11px] text-muted">raw_payload.py</span>
+              <button onclick="insertSampleDlp()" class="font-mono text-[11px] text-cobalt hover:underline">Подставить пример</button>
             </div>
             <textarea
               id="dlp-input"
               oninput="runDlpBench()"
               spellcheck="false"
+              placeholder="Вставьте сюда любой фрагмент кода, конфиг с ключами, паролями или IP-адресами для проверки маскирования..."
               class="flex-1 w-full p-4 font-mono text-[12px] leading-relaxed text-ink bg-surface resize-none focus:outline-none min-h-[200px] select-text"
-            ># Конфигурация шлюза внутренней инфраструктуры
-API_SECRET = "sk-live-94a8f2c19e04b77a88d21f0e"
-HOMELAB_NODE = "http://192.168.50.135:11434"
-DB_ENDPOINT = "postgres://admin@internal-efko.local:5432/core"
-BACKUP_IP = "10.0.4.22"</textarea>
+            ></textarea>
           </div>
 
           <!-- Right Sanitized Output -->
@@ -487,6 +495,222 @@ BACKUP_IP = "10.0.4.22"</textarea>
         <!-- Rendered dynamically -->
       </div>
     </main>
+
+    <!-- ==================================================================== -->
+    <!-- VIEW 5: РУКОВОДСТВО И ИНСТРУКЦИИ                                     -->
+    <!-- ==================================================================== -->
+    <main id="view-manual" class="view-pane hidden flex-1 flex flex-col min-h-0 overflow-y-auto bg-surface">
+      <div class="px-6 py-4 border-b border-hairline bg-panel flex items-center justify-between shrink-0">
+        <div>
+          <h1 class="text-[16px] font-semibold text-ink">Справочное руководство zero-copy-agent</h1>
+          <p class="text-[12px] text-muted mt-0.5">Практические инструкции по настройке оркестрации, IDE, локальных моделей и безопасности</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="switchView('orchestrator')" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-ink hover:bg-panel">К оркестратору</button>
+        </div>
+      </div>
+
+      <div class="p-6 max-w-4xl space-y-6">
+        <!-- Section 1: Оркестрация под свои задачи -->
+        <div class="p-5 bg-panel border border-hairline rounded space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <i data-lucide="git-branch" class="w-5 h-5 text-cobalt"></i>
+              <h2 class="text-[14px] font-semibold text-ink">1. Как настроить оркестрацию под свои задачи</h2>
+            </div>
+            <button onclick="openOrchestrationModal()" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-[#0955A3]">Настроить мою оркестрацию</button>
+          </div>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Оркестратор работает по принципу закрытого конвейера (DAG). Вы можете гибко переназначать модели для каждой роли:
+          </p>
+          <ul class="text-[12px] text-ink space-y-1.5 list-disc pl-5">
+            <li><strong>Архитектор (Gemini 4 Neon / Claude):</strong> Создает пошаговый план решения (Blueprint) и спецификацию без написания тяжелого кода.</li>
+            <li><strong>Исполнитель (Локальная Qwen / Облако):</strong> Генерирует чистый код строго по утвержденному плану.</li>
+            <li><strong>Local Hard Gate (Автопроверка):</strong> Локально компилирует код и прогоняет тесты (<code class="bg-surface px-1.5 py-0.5 rounded border border-hairline font-mono">python -m py_compile</code>, <code class="bg-surface px-1.5 py-0.5 rounded border border-hairline font-mono">pytest</code>). Если проверка падает, код не уходит наружу, а отправляется на исправление.</li>
+            <li><strong>Аудитор:</strong> Финальная сверка архитектуры с исходным запросом.</li>
+          </ul>
+        </div>
+
+        <!-- Section 2: Подбор локальных LLM под ваше железо -->
+        <div class="p-5 bg-panel border border-hairline rounded space-y-3">
+          <div class="flex items-center gap-2">
+            <i data-lucide="cpu" class="w-5 h-5 text-emerald"></i>
+            <h2 class="text-[14px] font-semibold text-ink">2. Рекомендации по локальным моделям под ваше железо</h2>
+          </div>
+          <div id="manual-hardware-summary" class="p-3 bg-surface border border-hairline rounded font-mono text-[12px] text-ink">
+            Определяем видеокарту и память...
+          </div>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Модели серии <strong>Qwen2.5-Coder</strong> и <strong>DeepSeek-Coder</strong> дают максимальную точность на локальном железе:
+          </p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-[12px] border-collapse bg-surface border border-hairline rounded">
+              <thead class="bg-panel border-b border-hairline text-muted uppercase text-[10px]">
+                <tr>
+                  <th class="py-2 px-3">Память видеокарты / RAM</th>
+                  <th class="py-2 px-3">Рекомендуемая модель</th>
+                  <th class="py-2 px-3">Назначение</th>
+                  <th class="py-2 px-3 text-right">Команда запуска</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-hairline font-mono text-[11px]">
+                <tr>
+                  <td class="py-2 px-3 text-muted">2–4 ГБ (Встроенная/Ноутбук)</td>
+                  <td class="py-2 px-3 text-ink font-semibold">Qwen2.5-Coder 1.5B / 3B</td>
+                  <td class="py-2 px-3 font-sans text-muted">Быстрый инлайн-автокомплит</td>
+                  <td class="py-2 px-3 text-right"><code class="bg-panel px-1.5 py-0.5 rounded text-cobalt select-all">ollama run qwen2.5-coder:1.5b</code></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-3 text-muted">6–8 ГБ (RTX 3060, 4060, RX 6600)</td>
+                  <td class="py-2 px-3 text-ink font-semibold">Qwen2.5-Coder 7B (Q4_K_M)</td>
+                  <td class="py-2 px-3 font-sans text-muted">Повседневный качественный кодинг</td>
+                  <td class="py-2 px-3 text-right"><code class="bg-panel px-1.5 py-0.5 rounded text-cobalt select-all">ollama run qwen2.5-coder:7b</code></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-3 text-muted">12–16 ГБ (RTX 4070, 3060 12GB)</td>
+                  <td class="py-2 px-3 text-emerald font-semibold">Qwen2.5-Coder 14B (Q4_K_M)</td>
+                  <td class="py-2 px-3 font-sans text-muted">Глубокое понимание архитектуры, тесты</td>
+                  <td class="py-2 px-3 text-right"><code class="bg-panel px-1.5 py-0.5 rounded text-cobalt select-all">ollama run qwen2.5-coder:14b</code></td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-3 text-muted">24+ ГБ (RTX 3090, 4090, Mac M-Max)</td>
+                  <td class="py-2 px-3 text-ink font-semibold">Qwen2.5-Coder 32B (Q4_K_M)</td>
+                  <td class="py-2 px-3 font-sans text-muted">Тяжелый рефакторинг целых проектов</td>
+                  <td class="py-2 px-3 text-right"><code class="bg-panel px-1.5 py-0.5 rounded text-cobalt select-all">ollama run qwen2.5-coder:32b</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Section 3: Интеграции IDE и безопасный откат -->
+        <div class="p-5 bg-panel border border-hairline rounded space-y-3">
+          <div class="flex items-center gap-2">
+            <i data-lucide="terminal-square" class="w-5 h-5 text-cobalt"></i>
+            <h2 class="text-[14px] font-semibold text-ink">3. Подключение IDE и как работает кнопка «Откатить»</h2>
+          </div>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Вкладка <strong>«Интеграции IDE»</strong> настраивает ваши редакторы в 1 клик:
+          </p>
+          <ul class="text-[12px] text-ink space-y-1.5 list-disc pl-5">
+            <li><strong>VS Code + Continue:</strong> Создает или дополняет <code class="font-mono bg-surface px-1 rounded">~/.continue/config.yaml</code>, подключая локальный шлюз <code class="font-mono text-cobalt">http://127.0.0.1:8000/v1</code>.</li>
+            <li><strong>Cursor, Windsurf, Antigravity:</strong> Подключают нативный сервер MCP по адресу <code class="font-mono text-cobalt">http://127.0.0.1:8000/sse</code>.</li>
+            <li><strong>Безопасный откат:</strong> Перед каждым изменением создается снимок в <code class="font-mono bg-surface px-1 rounded">~/.zero-copy-agent/backups/</code>. Нажатие на кнопку <strong>«Откатить»</strong> гарантированно убирает добавленные модели zero-copy и возвращает редактор в исходное состояние.</li>
+          </ul>
+        </div>
+
+        <!-- Section 4: DLP и защита секретов -->
+        <div class="p-5 bg-panel border border-hairline rounded space-y-3">
+          <div class="flex items-center gap-2">
+            <i data-lucide="shield-check" class="w-5 h-5 text-crimson"></i>
+            <h2 class="text-[14px] font-semibold text-ink">4. DLP и IP-Щит: защита ваших данных</h2>
+          </div>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Перед тем как запрос передается в модель, движок на лету заменяет пароли, токены, ключи доступа и приватные IP-адреса на обратимые плейсхолдеры в оперативной памяти (RAM). В ответе модели эти значения бесшовно восстанавливаются. Облачные провайдеры никогда не видят ваши реальные секреты.
+          </p>
+        </div>
+
+        <!-- Section 5: Полное удаление ПО -->
+        <div class="p-5 bg-panel border border-hairline rounded space-y-3">
+          <div class="flex items-center gap-2">
+            <i data-lucide="trash-2" class="w-5 h-5 text-crimson"></i>
+            <h2 class="text-[14px] font-semibold text-ink">5. Полное удаление ПО с компьютера</h2>
+          </div>
+          <p class="text-[13px] text-muted leading-relaxed">
+            Если вы захотите удалить zero-copy-agent, вам не нужно вручную чистить конфиги. Нажмите кнопку «Удалить ПО с ПК» — программа автоматически восстановит чистые файлы всех ваших IDE, сотрет служебные бэкапы и закроется.
+          </p>
+          <div>
+            <button onclick="openUninstallModal()" class="h-7 px-3 rounded bg-surface border border-crimson/40 text-crimson text-[12px] font-medium hover:bg-crimson/10">Удалить zero-copy-agent</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Modal: Настройка оркестрации под пользователя -->
+    <div id="modal-orchestration" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-surface border border-hairline rounded-md w-full max-w-lg shadow-xl overflow-hidden flex flex-col">
+        <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <i data-lucide="sliders" class="w-4 h-4 text-cobalt"></i>
+            <h3 class="text-[13px] font-semibold text-ink">Мои настройки оркестрации</h3>
+          </div>
+          <button onclick="closeOrchestrationModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <form onsubmit="saveOrchestrationForm(event)" class="p-5 space-y-4">
+          <div>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Архитектора (Blueprint & спецификация)</label>
+            <select id="orch-architect-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
+              <option value="gemini-4-neon">Gemini 4 Neon (Deeper Analysis 🧠)</option>
+              <option value="gemini-advanced">Gemini Argon (Web 🟢)</option>
+              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+              <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Исполнителя (Кодогенерация)</label>
+            <select id="orch-coder-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
+              <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local GPU 🦙)</option>
+              <option value="qwen2.5-coder:7b">Qwen2.5-Coder 7B (Local)</option>
+              <option value="deepseek-coder:6.7b">DeepSeek-Coder 6.7B</option>
+              <option value="gemini-4-neon">Gemini 4 Neon (Cloud)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Команда Hard Gate (Автотест перед выдачей)</label>
+            <input id="orch-gate-cmd" type="text" value="python -m py_compile" placeholder="например: python -m py_compile или pytest" class="w-full h-8 px-2.5 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Макс. циклы реворка</label>
+              <input id="orch-max-rework" type="number" min="0" max="10" value="2" class="w-full h-8 px-2.5 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Режим по умолчанию</label>
+              <select id="orch-mode" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
+                <option value="auto">Авто (Auto-Architect)</option>
+                <option value="cascade">Каскад (Cascade)</option>
+                <option value="manual">Ручной (Direct)</option>
+              </select>
+            </div>
+          </div>
+          <div class="pt-2 flex items-center justify-end gap-2 border-t border-hairline">
+            <button type="button" onclick="closeOrchestrationModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Отмена</button>
+            <button type="submit" class="h-8 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-[#0955A3]">Сохранить настройки</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal: Полное удаление ПО -->
+    <div id="modal-uninstall" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-surface border border-hairline rounded-md w-full max-w-md shadow-xl overflow-hidden flex flex-col">
+        <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
+          <div class="flex items-center gap-2 text-crimson font-semibold text-[13px]">
+            <i data-lucide="alert-triangle" class="w-4 h-4"></i>
+            <span>Удаление zero-copy-agent с компьютера</span>
+          </div>
+          <button onclick="closeUninstallModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <div class="p-5 space-y-3">
+          <p class="text-[12px] text-ink leading-relaxed">
+            Вы действительно хотите удалить zero-copy-agent с этого компьютера?
+          </p>
+          <ul class="text-[11px] text-muted space-y-1 list-disc pl-5">
+            <li>Исходные конфигурации всех сред (VS Code Continue, Cursor, Windsurf, Antigravity) будут автоматически восстановлены.</li>
+            <li>Служебные файлы и логи в <code class="font-mono bg-panel px-1 rounded">~/.zero-copy-agent</code> будут удалены.</li>
+            <li>Фоновый шлюз будет корректно остановлен.</li>
+          </ul>
+          <label class="inline-flex items-center gap-2 cursor-pointer pt-2 text-[12px] text-ink">
+            <input type="checkbox" id="uninstall-keep-backups" class="rounded border-hairline text-cobalt" />
+            <span>Сохранить резервные копии на всякий случай</span>
+          </label>
+        </div>
+        <div class="px-5 py-3 border-t border-hairline bg-panel flex items-center justify-end gap-2">
+          <button onclick="closeUninstallModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Отмена</button>
+          <button id="btn-confirm-uninstall" onclick="executeUninstall()" class="h-8 px-3 rounded bg-crimson text-white text-[12px] font-medium hover:bg-[#A31616]">Удалить всё и закрыть</button>
+        </div>
+      </div>
+    </div>
 
   </div>
 

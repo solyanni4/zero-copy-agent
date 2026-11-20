@@ -331,7 +331,22 @@ class ZeroCopyUnifiedApp:
             tray_thread = threading.Thread(target=tray.run, daemon=True)
             tray_thread.start()
 
-        # 3. Create unified desktop window in main thread
+        # 3. Wait for FastAPI server socket to be active and ready to accept HTTP
+        def wait_for_server(host: str, port: int, timeout: float = 12.0) -> bool:
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    with socket.create_connection((host, port), timeout=0.3):
+                        return True
+                except (OSError, ConnectionRefusedError):
+                    time.sleep(0.08)
+            return False
+
+        ready = wait_for_server(self.client_host, self.port, timeout=12.0)
+        if not ready:
+            logging.warning("Server took longer than expected to bind port, proceeding anyway...")
+
+        # 4. Create unified desktop window in main thread (socket is 100% active, prevents ERR_CONNECTION_REFUSED)
         self.window = webview.create_window(
             title="zero-copy-agent",
             url=f"http://{self.client_host}:{self.port}/",

@@ -80,41 +80,52 @@ class HistoryManager:
         return backup_path
 
     def rollback(self, target: Optional[str] = None) -> List[str]:
-        """Rolls back the most recent configuration(s) from history."""
+        """Rolls back the most recent configuration(s) from history or cleans target."""
         history = self.load_history()
-        if not history:
-            return ["История бэкапов пуста. Нечего откатывать."]
-
         rolled_back = []
-        # Group by original_path and find the latest backup for the target
         targets_seen = set()
-        for item in reversed(history):
-            item_target = item.get("target")
-            if target and target != "all" and item_target != target:
-                continue
 
-            orig_path = Path(item.get("original_path"))
-            if str(orig_path) in targets_seen:
-                continue
-            targets_seen.add(str(orig_path))
+        if history:
+            for item in reversed(history):
+                item_target = item.get("target")
+                if target and target != "all" and item_target != target:
+                    continue
 
-            bak_path = Path(item.get("backup_path"))
-            if not bak_path.exists():
-                rolled_back.append(f"⚠️ Файл бэкапа не найден: {bak_path}")
-                continue
+                orig_path = Path(item.get("original_path"))
+                if str(orig_path) in targets_seen:
+                    continue
+                targets_seen.add(str(orig_path))
 
-            try:
-                content = bak_path.read_text(encoding="utf-8")
-                if content == "__FILE_DID_NOT_EXIST__":
-                    if orig_path.exists():
-                        orig_path.unlink()
-                        rolled_back.append(f"✓ Удален созданный файл (возврат к исходному состоянию): {orig_path}")
-                else:
-                    orig_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(bak_path, orig_path)
-                    rolled_back.append(f"✓ Восстановлен из бэкапа: {orig_path}")
-            except Exception as e:
-                rolled_back.append(f"❌ Ошибка восстановления {orig_path}: {e}")
+                bak_path = Path(item.get("backup_path"))
+                if not bak_path.exists():
+                    rolled_back.append(f"⚠️ Файл бэкапа не найден: {bak_path}")
+                    continue
+
+                try:
+                    content = bak_path.read_text(encoding="utf-8")
+                    if content == "__FILE_DID_NOT_EXIST__":
+                        if orig_path.exists():
+                            orig_path.unlink()
+                            rolled_back.append(f"✓ Удален созданный файл: {orig_path}")
+                    else:
+                        orig_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(bak_path, orig_path)
+                        rolled_back.append(f"✓ Восстановлен из бэкапа: {orig_path}")
+                except Exception as e:
+                    rolled_back.append(f"❌ Ошибка восстановления {orig_path}: {e}")
+
+        # Also apply surgical cleanup for known IDE targets
+        target_name = (target or "all").lower()
+        known_targets = ["vscode", "antigravity", "cursor", "windsurf", "claude", "aider"]
+        targets_to_clean = known_targets if target_name == "all" else ([target_name] if target_name in known_targets or target_name == "continue" else [])
+
+        for t in targets_to_clean:
+            ok, msg = rollback_target_clean(t)
+            icon = "✓" if ok else "❌"
+            rolled_back.append(f"{icon} {t.upper()}: {msg}")
+
+        if not rolled_back:
+            return ["История бэкапов пуста. Нечего откатывать."]
 
         return rolled_back
 
@@ -753,6 +764,157 @@ def configure_targets(targets: List[str], dry_run: bool = False) -> List[Tuple[s
             results.append(("Aider CLI", False, "Пропущено: Aider CLI не установлен"))
 
     return results
+
+
+def rollback_target_clean(target: str) -> Tuple[bool, str]:
+    """
+    Guarantees clean restoration/removal of zero-copy configurations for target IDE.
+    If a clean pre-modification backup exists, restores it.
+    If no backup or backup already contained zero-copy, removes zero-copy keys directly.
+    """
+    home = Path.home()
+    target_l = target.lower()
+
+    if target_l in ("vscode", "continue"):
+        continue_yaml = home / ".continue" / "config.yaml"
+        if not continue_yaml.exists():
+            return True, "Конфигурация Continue не найдена (уже очищена)"
+        try:
+            # Check if there is a backup that doesn't contain zero-copy
+            restored_from_clean_backup = False
+            history = history_manager.load_history()
+            for item in reversed(history):
+                if item.get("target") == "vscode":
+                    bak_path = Path(item.get("backup_path", ""))
+                    if bak_path.exists():
+                        try:
+                            txt = bak_path.read_text(encoding="utf-8")
+                            if txt == "__FILE_DID_NOT_EXIST__":
+                                continue_yaml.unlink(missing_ok=True)
+                                return True, "Удален файл config.yaml (возврат к исходному состоянию без Continue)"
+                            elif "zero-copy" not in txt.lower() and "gemini-4-neon" not in txt.lower():
+                                shutil.copy2(bak_path, continue_yaml)
+                                restored_from_clean_backup = True
+                                break
+                        except Exception:
+                            pass
+
+            if not restored_from_clean_backup:
+                # Clean YAML manually: remove zero-copy models
+                content = continue_yaml.read_text(encoding="utf-8")
+                try:
+                    import yaml
+                    data = yaml.safe_load(content)
+                    if isinstance(data, dict) and "models" in data:
+                        orig_models = data.get("models", [])
+                        filtered_models = [
+                            m for m in orig_models
+                            if isinstance(m, dict) and "127.0.0.1:8000" not in str(m.get("apiBase", ""))
+                            and "sk-zero-copy" not in str(m.get("apiKey", ""))
+                            and "gemini-4-neon" not in str(m.get("model", ""))
+                            and "cascade:architect" not in str(m.get("model", ""))
+                        ]
+                        if not filtered_models:
+                            continue_yaml.unlink(missing_ok=True)
+                            return True, "Удален config.yaml Continue (все добавленные модели были zero-copy)"
+                        data["models"] = filtered_models
+                        with open(continue_yaml, "w", encoding="utf-8") as f:
+                            yaml.dump(data, f, allow_unicode=True)
+                        return True, "Удалены zero-copy модели из Continue config.yaml"
+                except Exception:
+                    continue_yaml.unlink(missing_ok=True)
+                    return True, "Очищен config.yaml Continue"
+
+            return True, "Конфигурация Continue успешно восстановлена из бэкапа"
+        except Exception as e:
+            return False, f"Ошибка отката Continue: {e}"
+
+    elif target_l == "antigravity":
+        mcp_cfg = home / ".gemini" / "config" / "mcp_config.json"
+        if not mcp_cfg.exists():
+            return True, "Конфиг Antigravity уже чист"
+        try:
+            with open(mcp_cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            servers = data.get("mcpServers", data.get("mcp_servers", {}))
+            if "zero-copy-agent" in servers:
+                del servers["zero-copy-agent"]
+                with open(mcp_cfg, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return True, "zero-copy-agent удален из Antigravity mcp_config.json"
+            return True, "zero-copy-agent не был прописан в Antigravity"
+        except Exception as e:
+            return False, f"Ошибка отката Antigravity: {e}"
+
+    elif target_l == "cursor":
+        mcp_cfg = home / ".cursor" / "mcp.json"
+        if not mcp_cfg.exists():
+            return True, "Конфиг Cursor уже чист"
+        try:
+            with open(mcp_cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            servers = data.get("mcpServers", {})
+            if "zero-copy-agent" in servers:
+                del servers["zero-copy-agent"]
+                with open(mcp_cfg, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return True, "zero-copy-agent удален из Cursor mcp.json"
+            return True, "zero-copy-agent не был прописан в Cursor"
+        except Exception as e:
+            return False, f"Ошибка отката Cursor: {e}"
+
+    elif target_l == "windsurf":
+        mcp_cfg = home / ".codeium" / "windsurf" / "mcp_config.json"
+        if not mcp_cfg.exists():
+            return True, "Конфиг Windsurf уже чист"
+        try:
+            with open(mcp_cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            servers = data.get("mcpServers", {})
+            if "zero-copy-agent" in servers:
+                del servers["zero-copy-agent"]
+                with open(mcp_cfg, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return True, "zero-copy-agent удален из Windsurf mcp_config.json"
+            return True, "zero-copy-agent не был прописан в Windsurf"
+        except Exception as e:
+            return False, f"Ошибка отката Windsurf: {e}"
+
+    elif target_l == "claude":
+        claude_cfg = Path(os.getenv("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
+        if not claude_cfg.exists():
+            return True, "Конфиг Claude уже чист"
+        try:
+            with open(claude_cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            servers = data.get("mcpServers", {})
+            if "zero-copy-agent" in servers:
+                del servers["zero-copy-agent"]
+                with open(claude_cfg, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return True, "zero-copy-agent удален из Claude claude_desktop_config.json"
+            return True, "zero-copy-agent не был прописан в Claude"
+        except Exception as e:
+            return False, f"Ошибка отката Claude: {e}"
+
+    elif target_l == "aider":
+        aider_cfg = home / ".aider.conf.yml"
+        if not aider_cfg.exists():
+            return True, "Конфиг Aider уже чист"
+        try:
+            lines = aider_cfg.read_text(encoding="utf-8").splitlines()
+            new_lines = [l for l in lines if "127.0.0.1:8000" not in l and "sk-zero-copy" not in l and "gemini-4-neon" not in l]
+            if len(new_lines) < len(lines):
+                if not new_lines:
+                    aider_cfg.unlink(missing_ok=True)
+                else:
+                    aider_cfg.write_text("\n".join(new_lines), encoding="utf-8")
+                return True, "zero-copy параметры удалены из .aider.conf.yml"
+            return True, "В Aider нет параметров zero-copy"
+        except Exception as e:
+            return False, f"Ошибка отката Aider: {e}"
+
+    return False, f"Неизвестная среда: {target}"
 
 
 def main():
