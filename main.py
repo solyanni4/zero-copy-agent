@@ -628,27 +628,6 @@ async def api_revert_integration(target: str):
     ok, msg = rollback_target_clean(target)
     return {"status": "ok" if ok else "error", "message": msg, "results": [msg]}
 
-@app.get("/v1/ui/status")
-async def api_ui_status():
-    """Unified system status for frontend polling."""
-    from core.hardware import get_hardware_profile
-    from dataclasses import asdict
-    hw = asdict(get_hardware_profile())
-    savings = analytics.get_summary()
-    return {
-        "status": "ok",
-        "savings": savings,
-        "hardware": hw,
-        "ollama": {
-            "online": hw.get("ollama_online", False),
-            "models": hw.get("ollama_models", [])
-        },
-        "policies": {
-            "mode": getattr(config.cascade, "mode", "auto"),
-            "max_rework_iterations": getattr(config.cascade, "max_rework_iterations", 2)
-        }
-    }
-
 @app.get("/v1/ui/history")
 async def api_ui_history(limit: int = 10):
     """Recent completion history for the UI trace viewer."""

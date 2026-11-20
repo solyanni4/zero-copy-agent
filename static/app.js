@@ -28,19 +28,14 @@ const state = {
 
   // Session telemetry
   metrics: {
-    tokensSaved: 4820,
-    costSaved: 0.19,
-    dlpMasked: 2,
-    reworkLoops: 1,
+    tokensSaved: 0,
+    costSaved: 0.0,
+    dlpMasked: 0,
+    reworkLoops: 0,
   },
 
   // Connected models list
-  connectedModels: [
-    { id: 'gemini-4-neon', name: 'Gemini 4 Neon', local: false },
-    { id: 'gemini-advanced', name: 'Gemini Argon (Web)', local: false },
-    { id: 'qwen2.5-coder:14b', name: 'Qwen2.5-Coder 14B (Local)', local: true },
-    { id: 'gpt-4o', name: 'GPT Sol', local: false },
-  ],
+  connectedModels: [],
 
   // Accounts pool
   accounts: [],
@@ -399,8 +394,66 @@ async function updateBackendPolicy(patch) {
 // 4. VIEW 1: Orchestrator Stream & DAG Inspector
 // ------------------------------------------------------------------------
 function getModelDisplayName(id) {
+  const map = {
+    'gemini-4-neon': 'Gemini 4 Neon',
+    'gemini-advanced': 'Gemini Advanced (1.5 Pro)',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gpt-4o': 'ChatGPT Plus (GPT-4o)',
+    'gpt-4o-mini': 'GPT-4o Mini',
+    'chatgpt-plus': 'ChatGPT Plus',
+    'claude-3-7-sonnet': 'Claude 3.7 Sonnet',
+    'claude-pro': 'Claude Pro',
+    'qwen2.5-coder:14b': 'Qwen2.5-Coder 14B (Local)',
+    'qwen2.5-coder:7b': 'Qwen2.5-Coder 7B (Local)',
+    'qwen2.5-coder:32b': 'Qwen2.5-Coder 32B (Local)',
+    'qwen2.5-coder:1.5b': 'Qwen2.5-Coder 1.5B (Local)',
+    'deepseek-coder:6.7b': 'DeepSeek-Coder 6.7B (Local)',
+    'tier:local-fast': 'Локальный GPU (Fast)',
+    'tier:coding-top': 'Кодинг Топ (14B)',
+    'tier:reasoning-top': 'Рассуждения (Архитектор)'
+  };
   const found = state.connectedModels.find(m => m.id === id);
-  return found ? found.name : id;
+  return (found && found.name) ? found.name : (map[id] || id);
+}
+
+function renderGlobalModelSelect() {
+  const sel = document.getElementById('global-model-select');
+  if (!sel) return;
+  if (!state.connectedModels.length) {
+    sel.innerHTML = '<option value="" disabled selected>— Нет подключенных моделей —</option>';
+    return;
+  }
+  const hasCurrent = state.connectedModels.some(m => m.id === state.globalModel);
+  if (!hasCurrent && state.connectedModels.length > 0) {
+    state.globalModel = state.connectedModels[0].id;
+  }
+  sel.innerHTML = state.connectedModels.map(m =>
+    `<option value="${escapeHtml(m.id)}" ${m.id === state.globalModel ? 'selected' : ''}>${escapeHtml(m.name)}</option>`
+  ).join('');
+}
+
+async function syncConnectedModels() {
+  try {
+    const res = await fetch('/v1/models');
+    if (!res.ok) return;
+    const data = await res.json();
+    const rawList = data.data || [];
+    const realModels = rawList.filter(m => (m.id || m) !== 'mock-test');
+    state.connectedModels = realModels.map(m => {
+      const id = m.id || m;
+      const owner = m.owned_by || '';
+      const isLocal = id.includes('ollama') || id.includes('local') || owner.includes('ollama');
+      return {
+        id: id,
+        name: getModelDisplayName(id),
+        local: isLocal
+      };
+    });
+    renderGlobalModelSelect();
+    renderDagInspector();
+  } catch (err) {
+    console.debug('Failed to sync connected models:', err);
+  }
 }
 
 function renderMetrics() {
@@ -433,14 +486,14 @@ function renderDagInspector() {
     if (stage.fixed) {
       controlHtml = `<span class="font-mono text-[11px] text-muted truncate">${stage.model}</span>`;
     } else {
-      const opts = state.connectedModels
-        .filter(m => !state.airGap || m.local)
-        .map(m => `<option value="${m.id}" ${m.id === effectiveModel ? 'selected' : ''}>${m.name}</option>`)
-        .join('');
+      const filtered = state.connectedModels.filter(m => !state.airGap || m.local);
+      const opts = filtered.length
+        ? filtered.map(m => `<option value="${m.id}" ${m.id === effectiveModel ? 'selected' : ''}>${m.name}</option>`).join('')
+        : '<option value="" disabled selected>— Нет моделей —</option>';
       controlHtml = `
         <select
           onchange="overrideStageModel(${idx}, this.value)"
-          ${allowOverride && !state.airGap ? '' : 'disabled'}
+          ${allowOverride && !state.airGap && filtered.length ? '' : 'disabled'}
           class="w-full h-6 px-1.5 font-mono text-[11px] text-ink bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt disabled:opacity-65 disabled:cursor-not-allowed truncate cursor-pointer"
         >${opts}</select>
       `;
@@ -970,6 +1023,7 @@ async function fetchAccountsAndModels() {
     });
 
     renderAccountsTable();
+    await syncConnectedModels();
   } catch (err) {
     // fallback if endpoint returns error
   }
@@ -982,7 +1036,32 @@ function renderAccountsTable() {
 
   const rows = state.accounts.filter(acc => showInactive || acc.status === 'active');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" class="py-4 px-4 text-center text-muted">Аккаунты не загружены или не найдены</td></tr>`;
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="7" class="py-12 px-4 text-center">
+          <div class="max-w-md mx-auto space-y-3">
+            <div class="w-10 h-10 mx-auto rounded-full bg-surface border border-hairline flex items-center justify-center text-muted">
+              <i data-lucide="cpu" class="w-5 h-5 text-cobalt"></i>
+            </div>
+            <div class="text-[13px] font-semibold text-ink">Нет подключенных аккаунтов</div>
+            <p class="text-[12px] text-muted leading-relaxed">
+              Вы запустили чистый профиль. Добавьте API-ключ провайдера, войдите в браузерную сессию или запустите локальную Ollama с моделями.
+            </p>
+            <div class="flex items-center justify-center gap-2 pt-1">
+              <button onclick="openAddKeyModal()" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90 inline-flex items-center gap-1.5">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                <span>+ Подключить ключ</span>
+              </button>
+              <button onclick="runModelDiscovery()" class="h-7 px-3 rounded bg-surface border border-hairline text-ink text-[12px] font-medium hover:border-cobalt inline-flex items-center gap-1.5">
+                <i data-lucide="radar" class="w-3.5 h-3.5 text-cobalt"></i>
+                <span>Поиск моделей</span>
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
+    if (window.lucide) lucide.createIcons({ nodes: [tbody] });
     return;
   }
 
@@ -994,9 +1073,11 @@ function renderAccountsTable() {
       ? `<span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-emerald"><span class="w-2 h-2 rounded-full bg-emerald shrink-0"></span>active</span>`
       : `<span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted"><span class="w-2 h-2 rounded-full bg-[#C9CFD6] shrink-0"></span>inactive</span>`;
 
-    const modelsHtml = acc.models.map(m =>
-      `<span class="inline-block font-mono text-[11px] bg-panel border border-hairline px-1.5 py-0.5 rounded mr-1 mb-0.5">${escapeHtml(m)}</span>`
-    ).join('');
+    const modelsHtml = acc.models.length
+      ? acc.models.map(m =>
+          `<span class="inline-block font-mono text-[11px] bg-panel border border-hairline px-1.5 py-0.5 rounded mr-1 mb-0.5">${escapeHtml(m)}</span>`
+        ).join('')
+      : `<span class="text-muted text-[11px] font-mono">нет моделей</span>`;
 
     return `
       <tr class="hover:bg-panel/40">
@@ -1022,6 +1103,9 @@ function renderAccountsTable() {
             <button onclick="toggleAccountStatus('${acc.id}')" class="icon-btn tip tip-left" data-tip="${isActive ? 'Отключить' : 'Активировать'}" title="${isActive ? 'Отключить' : 'Активировать'}" aria-label="Переключить статус">
               <i data-lucide="power" class="w-3.5 h-3.5 ${isActive ? 'text-emerald' : 'text-muted'}"></i>
             </button>
+            <button onclick="deleteAccount('${acc.id}')" class="icon-btn tip tip-left hover:text-crimson" data-tip="Удалить аккаунт" title="Удалить аккаунт" aria-label="Удалить аккаунт">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5 text-crimson"></i>
+            </button>
           </div>
         </td>
       </tr>
@@ -1029,6 +1113,79 @@ function renderAccountsTable() {
   }).join('');
 
   if (window.lucide) lucide.createIcons({ nodes: [tbody] });
+}
+
+async function deleteAccount(id) {
+  if (!confirm(`Удалить аккаунт "${id}" из каталога?`)) return;
+  try {
+    const res = await fetch(`/v1/providers/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (res.ok) {
+      showModelsLog(`[POOL] Аккаунт ${id} успешно удален`, 'text-emerald');
+      await fetchAccountsAndModels();
+      await syncConnectedModels();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showModelsLog(`[ERROR] Не удалось удалить аккаунт: ${err.detail || res.statusText}`, 'text-crimson');
+    }
+  } catch (e) {
+    showModelsLog(`[ERROR] Ошибка при удалении: ${e.message}`, 'text-crimson');
+  }
+}
+
+function openAddKeyModal() {
+  const m = document.getElementById('modal-add-key');
+  if (m) {
+    m.classList.remove('hidden');
+    const secret = document.getElementById('add-key-secret');
+    if (secret) secret.focus();
+  }
+}
+
+function closeAddKeyModal() {
+  const m = document.getElementById('modal-add-key');
+  if (m) m.classList.add('hidden');
+}
+
+async function submitAddKeyForm(e) {
+  e.preventDefault();
+  const provider = document.getElementById('add-key-provider')?.value || 'gemini';
+  const apiKey = document.getElementById('add-key-secret')?.value?.trim() || '';
+  const alias = document.getElementById('add-key-alias')?.value?.trim() || '';
+
+  if (provider !== 'ollama' && (!apiKey || apiKey.length < 8)) {
+    alert('API-ключ должен содержать не менее 8 символов.');
+    return;
+  }
+
+  const btn = document.getElementById('btn-submit-key');
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch('/v1/providers/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: provider,
+        api_key: apiKey || 'local-ollama-key',
+        alias: alias || undefined
+      })
+    });
+    if (res.ok) {
+      closeAddKeyModal();
+      document.getElementById('add-key-secret').value = '';
+      document.getElementById('add-key-alias').value = '';
+      showModelsLog(`[POOL] Провайдер "${provider}" успешно добавлен и активирован`, 'text-emerald');
+      await fetchAccountsAndModels();
+      await syncConnectedModels();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert('Ошибка добавления: ' + (err.detail || res.statusText));
+    }
+  } catch (err) {
+    alert('Сбой сети при отправке: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function pingAccount(id) {
@@ -1058,12 +1215,15 @@ async function runModelDiscovery() {
       const data = await res.json();
       showModelsLog(`[DISCOVERY] Найдено моделей: ${data.count}. Реестр динамических алиасов синхронизирован.`, 'text-emerald');
       await fetchAccountsAndModels();
-      return;
+      await syncConnectedModels();
+    } else {
+      showModelsLog('[DISCOVERY] Каталог актуален: опрошены активные сессии и Ollama.', 'text-muted');
     }
-  } catch (e) {}
-
-  showModelsLog('[DISCOVERY] Каталог актуален: опрошены активные сессии и Ollama.', 'text-muted');
-  if (btn) btn.disabled = false;
+  } catch (e) {
+    showModelsLog(`[DISCOVERY] Ошибка поиска: ${e.message}`, 'text-crimson');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function runConfigHealer() {
@@ -1678,6 +1838,7 @@ async function executeUninstall() {
 // ------------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   renderTraces();
+  renderGlobalModelSelect();
   renderDagInspector();
   renderMetrics();
   renderCliTab();
@@ -1686,6 +1847,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Load real data from backend
   fetchSystemStatus();
   fetchAccountsAndModels();
+  syncConnectedModels();
   fetchIdeIntegrations();
   runDlpBench();
   fetchRealHistoryIntoTraces();

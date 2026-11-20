@@ -92,50 +92,12 @@ class ConfigHealer:
         return config, modifications
 
     def _create_default_config(self) -> SubscriptionsConfig:
-        """Creates initial valid config structure."""
+        """Creates initial clean config structure without phantom accounts."""
         return SubscriptionsConfig(
             schema_version=2,
             updated_at=datetime.now().isoformat(),
-            accounts=[
-                AccountSubscription(
-                    id="google-web-primary",
-                    provider="gemini",
-                    auth_type="browser_session",
-                    status="active",
-                    alias="Gemini Advanced (Личный)",
-                    models=[
-                        SubscriptionModel(
-                            id="gemini-advanced",
-                            display_name=get_display_name("gemini-advanced"),
-                            status="active"
-                        ),
-                        SubscriptionModel(
-                            id="gemini-4-neon",
-                            display_name=get_display_name("gemini-4-neon"),
-                            status="active"
-                        )
-                    ]
-                ),
-                AccountSubscription(
-                    id="local-ollama",
-                    provider="ollama",
-                    auth_type="local",
-                    status="active",
-                    alias="Локальный GPU (Ollama)",
-                    models=[
-                        SubscriptionModel(
-                            id="qwen2.5-coder:14b",
-                            display_name=get_display_name("qwen2.5-coder:14b"),
-                            status="active"
-                        )
-                    ]
-                )
-            ],
-            user_aliases={
-                "tier:local-fast": "qwen2.5-coder:14b",
-                "tier:coding-top": "qwen2.5-coder:14b",
-                "tier:reasoning-top": "gemini-4-neon"
-            }
+            accounts=[],
+            user_aliases={}
         )
 
     def _heal_dictionary(self, raw_data: Dict[str, Any]) -> Tuple[SubscriptionsConfig, List[str]]:

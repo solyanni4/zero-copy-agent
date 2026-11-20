@@ -42,18 +42,17 @@ class DLPSandboxRequest(BaseModel):
 
 @ui_router.get("/status")
 async def get_ui_system_status(request: Request):
-    """Returns aggregated live server status, policies, and metrics for the Web UI."""
+    """Returns aggregated live server status, policies, hardware profile, and metrics for the Web UI."""
+    from core.hardware import get_hardware_profile
+    from dataclasses import asdict
+
     orchestrator = getattr(request.app.state, "orchestrator", None)
 
-    # Check Ollama
-    ollama_ok = False
-    ollama_models = []
-    if orchestrator and hasattr(orchestrator, "ollama"):
-        try:
-            ollama_models = await orchestrator.ollama.list_models()
-            ollama_ok = len(ollama_models) > 0
-        except Exception:
-            ollama_ok = False
+    # Fast cached hardware specs + live Ollama detection
+    hw_profile = get_hardware_profile()
+    hw = asdict(hw_profile)
+    ollama_ok = hw.get("ollama_online", False)
+    ollama_models = hw.get("ollama_models", [])
 
     savings = analytics.get_summary()
 
@@ -61,13 +60,13 @@ async def get_ui_system_status(request: Request):
         "dlp_enabled": getattr(orchestrator, "dlp_enabled", True) if orchestrator else True,
         "air_gapped": getattr(orchestrator, "air_gapped", False) if orchestrator else False,
         "compression_enabled": getattr(orchestrator, "compression_enabled", True) if orchestrator else True,
-        "mode": getattr(orchestrator, "mode", "auto") if orchestrator else "auto",
+        "mode": getattr(orchestrator, "mode", getattr(config.cascade, "mode", "auto")) if orchestrator else getattr(config.cascade, "mode", "auto"),
         "breakpoint_enabled": getattr(orchestrator, "breakpoint_enabled", False) if orchestrator else False,
-        "max_rework_iterations": getattr(orchestrator, "max_rework_iterations", 2) if orchestrator else 2,
+        "max_rework_iterations": getattr(orchestrator, "max_rework_iterations", getattr(config.cascade, "max_rework_iterations", 2)) if orchestrator else getattr(config.cascade, "max_rework_iterations", 2),
         "active_model": getattr(orchestrator, "active_model", "cascade:architect") if orchestrator else "cascade:architect",
-        "architect_model": getattr(orchestrator, "architect_model", "gemini-advanced") if orchestrator else "gemini-advanced",
-        "executor_model": getattr(orchestrator, "executor_model", "tier:local-fast") if orchestrator else "tier:local-fast",
-        "reviewer_model": getattr(orchestrator, "reviewer_model", "gemini-advanced") if orchestrator else "gemini-advanced"
+        "architect_model": getattr(orchestrator, "architect_model", getattr(config.cascade, "architect_model", "gemini-4-neon")) if orchestrator else getattr(config.cascade, "architect_model", "gemini-4-neon"),
+        "executor_model": getattr(orchestrator, "executor_model", getattr(config.cascade, "coder_model", "qwen2.5-coder:14b")) if orchestrator else getattr(config.cascade, "coder_model", "qwen2.5-coder:14b"),
+        "reviewer_model": getattr(orchestrator, "reviewer_model", getattr(config.cascade, "auditor_model", "gemini-4-neon")) if orchestrator else getattr(config.cascade, "auditor_model", "gemini-4-neon")
     }
 
     return {
@@ -78,6 +77,7 @@ async def get_ui_system_status(request: Request):
         "port": config.server.port,
         "host": config.server.host,
         "default_model": config.models.default,
+        "hardware": hw,
         "ollama": {
             "online": ollama_ok,
             "models": ollama_models

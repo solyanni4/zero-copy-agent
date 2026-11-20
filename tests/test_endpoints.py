@@ -42,7 +42,7 @@ def test_subscriptions_endpoint():
     data = res.json()
     assert data["status"] == "ok"
     assert data["subscriptions"]["schema_version"] == 2
-    assert len(data["subscriptions"]["accounts"]) >= 1
+    assert isinstance(data["subscriptions"]["accounts"], list)
 
 def test_chat_completions_headers_and_signature_suppression():
     # 1. Normal chat should include headers

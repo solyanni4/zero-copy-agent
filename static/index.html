@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>zero-copy-agent · v1.0.1</title>
+  <title>zero-copy-agent · v1.0.2</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <!-- Typography: Inter for UI, JetBrains Mono for metrics, IDs, and code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -58,7 +58,7 @@
         <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
         <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
       </div>
-      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.0.1</span>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.0.2</span>
     </div>
 
     <!-- Primary Navigation -->
@@ -134,10 +134,7 @@
         <!-- Connected-Only Model Dropdown -->
         <div class="relative flex items-center">
           <select id="global-model-select" onchange="onGlobalModelChange()" aria-label="Активная модель" class="h-7 pl-2.5 pr-7 text-[12px] font-mono text-ink bg-surface border border-hairline rounded focus:outline-none focus:border-cobalt max-w-[210px] truncate appearance-none cursor-pointer">
-            <option value="gemini-4-neon">Gemini 4 Neon</option>
-            <option value="gemini-advanced">Gemini Argon (Web)</option>
-            <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local)</option>
-            <option value="gpt-4o">GPT Sol</option>
+            <option value="" disabled selected>— Загрузка моделей... —</option>
           </select>
           <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-muted pointer-events-none absolute right-2"></i>
         </div>
@@ -271,20 +268,20 @@
         <div class="grid grid-cols-2 divide-x divide-y divide-hairline bg-surface border-b border-hairline">
           <div class="p-3" title="Фактически обработано токенов через конвейер">
             <div class="text-[11px] text-muted">Сэкономлено токенов</div>
-            <div id="metric-tokens" class="font-mono text-[15px] font-semibold text-ink mt-0.5">4 820</div>
-            <div class="text-[9px] text-muted font-mono mt-0.5">Фактически обработано: 4 820</div>
+            <div id="metric-tokens" class="font-mono text-[15px] font-semibold text-ink mt-0.5">0</div>
+            <div class="text-[9px] text-muted font-mono mt-0.5">Фактически обработано: 0</div>
           </div>
           <div class="p-3">
             <div class="text-[11px] text-muted">Экономия (USD)</div>
-            <div id="metric-cost" class="font-mono text-[15px] font-semibold text-emerald mt-0.5">$0.19</div>
+            <div id="metric-cost" class="font-mono text-[15px] font-semibold text-emerald mt-0.5">$0.00</div>
           </div>
           <div class="p-3">
             <div class="text-[11px] text-muted">Скрыто DLP</div>
-            <div id="metric-dlp" class="font-mono text-[15px] font-semibold text-crimson mt-0.5">2</div>
+            <div id="metric-dlp" class="font-mono text-[15px] font-semibold text-crimson mt-0.5">0</div>
           </div>
           <div class="p-3">
             <div class="text-[11px] text-muted">Циклы реворка</div>
-            <div id="metric-rework" class="font-mono text-[15px] font-semibold text-amber mt-0.5">1</div>
+            <div id="metric-rework" class="font-mono text-[15px] font-semibold text-amber mt-0.5">0</div>
           </div>
         </div>
 
@@ -321,6 +318,10 @@
           </label>
         </div>
         <div class="flex items-center gap-2">
+          <button onclick="openAddKeyModal()" class="h-7 px-2.5 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90 inline-flex items-center gap-1.5">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span>+ Подключить ключ</span>
+          </button>
           <button id="btn-discovery" onclick="runModelDiscovery()" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[12px] font-medium text-ink hover:border-cobalt hover:text-cobalt inline-flex items-center gap-1.5">
             <i data-lucide="radar" class="w-3.5 h-3.5 text-cobalt"></i>
             <span>Model Discovery</span>
@@ -626,6 +627,43 @@
       </div>
     </main>
 
+    <!-- Modal: Подключение провайдера / API-ключа -->
+    <div id="modal-add-key" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-surface border border-hairline rounded-md w-full max-w-md shadow-xl overflow-hidden flex flex-col">
+        <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <i data-lucide="key-round" class="w-4 h-4 text-cobalt"></i>
+            <h3 class="text-[13px] font-semibold text-ink">Подключение провайдера или API-ключа</h3>
+          </div>
+          <button onclick="closeAddKeyModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <form onsubmit="submitAddKeyForm(event)" class="p-5 space-y-4">
+          <div>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Провайдер</label>
+            <select id="add-key-provider" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
+              <option value="gemini">Google Gemini API</option>
+              <option value="openai">OpenAI API (ChatGPT)</option>
+              <option value="anthropic">Anthropic Claude API</option>
+              <option value="ollama">Локальная Ollama (без ключа)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">API-ключ или токен</label>
+            <input id="add-key-secret" type="password" placeholder="sk-..." class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
+            <span class="text-[10px] text-muted block mt-1">Ключи хранятся только локально в зашифрованном виде.</span>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Пользовательское имя (алиас)</label>
+            <input id="add-key-alias" type="text" placeholder="Например: Мой Gemini Pro" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] text-ink focus:outline-none focus:border-cobalt" />
+          </div>
+          <div class="pt-2 flex items-center justify-end gap-2 border-t border-hairline">
+            <button type="button" onclick="closeAddKeyModal()" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] text-muted hover:text-ink">Отмена</button>
+            <button type="submit" id="btn-submit-key" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90">Сохранить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <!-- Modal: Настройка оркестрации под пользователя -->
     <div id="modal-orchestration" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
       <div class="bg-surface border border-hairline rounded-md w-full max-w-lg shadow-xl overflow-hidden flex flex-col">
@@ -693,7 +731,7 @@
         </div>
         <div class="p-5 space-y-3">
           <div class="flex items-baseline justify-between">
-            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.0.1</span></span>
+            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.0.2</span></span>
             <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.0.2</span></span>
           </div>
           <p id="update-modal-descr" class="text-[12px] text-ink leading-relaxed">

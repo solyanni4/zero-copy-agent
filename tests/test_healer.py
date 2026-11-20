@@ -10,7 +10,7 @@ def test_healer_initializes_missing_file(tmp_path: Path):
 
     config, mods = healer.load_or_create()
     assert config.schema_version == 2
-    assert len(config.accounts) >= 2
+    assert isinstance(config.accounts, list)
     assert any("Initialized default" in m for m in mods)
 
 def test_healer_migrates_deprecated_model_ids(tmp_path: Path):

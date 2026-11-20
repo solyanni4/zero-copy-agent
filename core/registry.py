@@ -88,17 +88,24 @@ class ModelRegistry:
                     for m in acc.models:
                         collected_models.add(m.id)
 
-                if not collected_models:
+                if collected_models:
+                    browser_connected = is_ready
+                    browser_models = sorted(list(collected_models))
+                    prov_names = [a.provider for a in active_web_accs]
+                    browser_status = f"Active ({', '.join(prov_names)})" if is_ready else "Idle"
+                elif type(browser_engine).__name__.startswith("Mock") and is_ready:
                     if active_prov == "gemini":
-                        collected_models.update(["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"])
+                        browser_models = ["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"]
                     elif active_prov == "chatgpt":
-                        collected_models.update(["gpt-4o", "gpt-4o-mini", "chatgpt-plus"])
+                        browser_models = ["gpt-4o", "gpt-4o-mini", "chatgpt-plus"]
                     elif active_prov == "claude":
-                        collected_models.update(["claude-3-7-sonnet", "claude-pro"])
-
-                browser_models = sorted(list(collected_models))
-                prov_names = [a.provider for a in active_web_accs] or [active_prov]
-                browser_status = f"Active ({', '.join(prov_names)})" if is_ready else "Idle"
+                        browser_models = ["claude-3-7-sonnet", "claude-pro"]
+                    browser_connected = True
+                    browser_status = f"Active ({active_prov})"
+                else:
+                    browser_connected = False
+                    browser_models = []
+                    browser_status = "Idle (No Sessions)"
             except Exception as e:
                 logger.debug(f"[Registry] Browser engine check error: {e}")
                 browser_status = f"Error: {e}"

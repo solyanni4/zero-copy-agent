@@ -77,10 +77,37 @@ def _detect_cpu_info() -> tuple[str, int]:
     return cpu_name, cores
 
 
+_cached_static_specs: Optional[tuple[str, str, float, float, str, int]] = None
+
+
+def _find_nvidia_smi() -> Optional[str]:
+    """Finds path to nvidia-smi binary across PATH and standard system locations."""
+    which_path = shutil.which("nvidia-smi")
+    if which_path:
+        return which_path
+
+    if sys.platform == "win32":
+        candidates = [
+            os.path.expandvars(r"%SystemRoot%\System32\nvidia-smi.exe"),
+            r"C:\Windows\System32\nvidia-smi.exe",
+            os.path.expandvars(r"%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            os.path.expandvars(r"%ProgramFiles(x86)%\NVIDIA Corporation\NVSMI\nvidia-smi.exe",),
+        ]
+        for cand in candidates:
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
 def _detect_nvidia_gpu() -> Optional[tuple[str, float]]:
     """Detects NVIDIA GPU via nvidia-smi if available."""
+    smi_bin = _find_nvidia_smi()
+    if not smi_bin:
+        return None
+
     try:
-        cmd = ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]
+        cmd = [smi_bin, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
         if res.returncode == 0 and res.stdout.strip():
             first_line = res.stdout.strip().splitlines()[0]
@@ -90,8 +117,8 @@ def _detect_nvidia_gpu() -> Optional[tuple[str, float]]:
                 vram_mib = float(parts[1].strip())
                 vram_gb = round(vram_mib / 1024, 1)
                 return name, vram_gb
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"NVIDIA SMI execution error: {e}")
     return None
 
 
@@ -248,13 +275,18 @@ def generate_model_recommendations(vram_gb: float, ram_gb: float, gpu_vendor: st
     return tier, recs
 
 
-def get_hardware_profile() -> HardwareProfile:
-    """Collects full host hardware profile and model sizing suggestions."""
-    gpu_name, gpu_vendor, vram_gb = _detect_windows_gpu() if sys.platform == "win32" else ("CPU-only", "cpu", 0.0)
-    ram_gb = _detect_system_ram_gb()
-    cpu_name, cpu_cores = _detect_cpu_info()
-    ollama_online, ollama_models = check_ollama_status()
+def get_hardware_profile(force_refresh: bool = False) -> HardwareProfile:
+    """Collects full host hardware profile and model sizing suggestions with caching."""
+    global _cached_static_specs
+    if _cached_static_specs is None or force_refresh:
+        gpu_name, gpu_vendor, vram_gb = _detect_windows_gpu() if sys.platform == "win32" else ("CPU-only", "cpu", 0.0)
+        ram_gb = _detect_system_ram_gb()
+        cpu_name, cpu_cores = _detect_cpu_info()
+        _cached_static_specs = (gpu_name, gpu_vendor, vram_gb, ram_gb, cpu_name, cpu_cores)
+    else:
+        gpu_name, gpu_vendor, vram_gb, ram_gb, cpu_name, cpu_cores = _cached_static_specs
 
+    ollama_online, ollama_models = check_ollama_status()
     tier, recs = generate_model_recommendations(vram_gb, ram_gb, gpu_vendor)
 
     # Clean display footer string for UI
