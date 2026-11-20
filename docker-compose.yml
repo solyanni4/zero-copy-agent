@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  zero-copy-agent:
+    build: .
+    container_name: zero-copy-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # OpenAI-совместимый API (http://localhost:8000/v1)
+      - "6080:6080"  # noVNC веб-экран для прохождения 2FA/логина в браузере
+    volumes:
+      - ./browser_profile:/app/browser_profile:rw
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

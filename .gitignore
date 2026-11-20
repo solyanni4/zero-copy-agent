@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+browser_profile/
+*.log
+.env
+.DS_Store
+*.tmp
+build/
+dist/
+*.spec
+*.bak
+*.db
+*.exe

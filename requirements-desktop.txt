@@ -1,0 +1,5 @@
+-r requirements.txt
+pystray>=0.19.5
+pillow>=10.2.0
+pyperclip>=1.8.2
+pyinstaller>=6.5.0

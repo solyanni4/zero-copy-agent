@@ -1,0 +1,162 @@
+/* ==============================================================================
+   zero-copy-agent · v0.3.2 Utilitarian Engineering Styles
+   ============================================================================== */
+
+:root {
+  --bg-app: #FFFFFF;
+  --bg-panel: #F6F7F9;
+  --border-hairline: #E2E5E9;
+  --text-ink: #181A1C;
+  --text-muted: #57606A;
+  --color-cobalt: #0B66C3;
+  --color-emerald: #0F7A3F;
+  --color-amber: #B45309;
+  --color-crimson: #C81E1E;
+}
+
+/* Strict global typographic & utilitarian constraints */
+*, *::before, *::after {
+  letter-spacing: 0 !important;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-app);
+  color: var(--text-ink);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle utilitarian scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #D0D5DD;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #98A2B3;
+}
+
+/* Custom crisp tooltips for icon-only controls */
+.tip {
+  position: relative;
+}
+.tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #181A1C;
+  color: #FFFFFF;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  padding: 4px 7px;
+  border-radius: 4px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 60;
+}
+.tip.tip-bottom::after {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+.tip.tip-right::after {
+  left: 0;
+  transform: none;
+}
+.tip.tip-left::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.tip:hover::after,
+.tip:focus-visible::after {
+  opacity: 1;
+}
+
+/* Binary switch styling (fixed dimensions, no layout shift) */
+.toggle-track {
+  width: 28px;
+  height: 16px;
+  border-radius: 4px;
+  background-color: #D0D5DD;
+  position: relative;
+  transition: background-color 120ms ease;
+  flex-shrink: 0;
+}
+.toggle-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background-color: #FFFFFF;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 120ms ease;
+}
+input:checked + .toggle-track {
+  background-color: #0B66C3;
+}
+input:checked + .toggle-track.toggle-crimson {
+  background-color: #C81E1E;
+}
+input:checked + .toggle-track.toggle-emerald {
+  background-color: #0F7A3F;
+}
+input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(12px);
+}
+
+/* Fixed-size icon button base */
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid #E2E5E9;
+  background-color: #FFFFFF;
+  color: #57606A;
+  flex-shrink: 0;
+  transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.icon-btn:hover:not(:disabled) {
+  background-color: #F6F7F9;
+  color: #181A1C;
+  border-color: #C9CFD6;
+}
+.icon-btn.active {
+  background-color: #FFFBEB;
+  color: #B45309;
+  border-color: #B45309;
+}
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Diff line highlighting */
+.diff-del {
+  background-color: #FEF2F2;
+  color: #C81E1E;
+}
+.diff-add {
+  background-color: #ECFDF3;
+  color: #0F7A3F;
+}

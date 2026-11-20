@@ -1,0 +1,130 @@
+name: Build Multi-Platform Desktop Clients (Windows & Linux)
+
+on:
+  push:
+    branches:
+      - feat/desktop-app
+      - desktop-app
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows x64 Executable (.exe)
+    runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+          playwright install chromium
+
+      - name: Build Desktop Application (PyInstaller)
+        shell: pwsh
+        run: |
+          python desktop/build.py
+
+      - name: Prepare Windows Artifact
+        shell: pwsh
+        run: |
+          Copy-Item dist/zero-copy-agent.exe dist/zero-copy-agent-windows-x64.exe
+
+      - name: Upload Windows Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-copy-agent-windows-x64.exe
+          path: dist/zero-copy-agent-windows-x64.exe
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux x64 Executable
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+          playwright install chromium
+
+      - name: Build Desktop Application (PyInstaller)
+        run: |
+          python desktop/build.py
+
+      - name: Prepare Linux Artifact
+        run: |
+          cp dist/zero-copy-agent dist/zero-copy-agent-linux-x64
+          chmod +x dist/zero-copy-agent-linux-x64
+
+      - name: Upload Linux Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zero-copy-agent-linux-x64
+          path: dist/zero-copy-agent-linux-x64
+          if-no-files-found: error
+
+  release:
+    name: Draft GitHub Release (Multi-Platform Binaries)
+    needs: [build-windows, build-linux]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/zero-copy-agent-windows-x64.exe/zero-copy-agent-windows-x64.exe
+            release-artifacts/zero-copy-agent-linux-x64/zero-copy-agent-linux-x64
+          draft: false
+          prerelease: false
+          name: "zero-copy-agent Desktop ${{ github.ref_name }}"
+          body: |
+            ## ⚡ zero-copy-agent Desktop Edition (${{ github.ref_name }})
+            
+            Автономные портативные приложения для Windows и Linux с нативным сервером **Model Context Protocol (MCP)**.
+            
+            ### 📥 Скачать приложение:
+            * **Windows 10 / 11:** `zero-copy-agent-windows-x64.exe`
+            * **Linux:** `zero-copy-agent-linux-x64`
+            
+            ### 🌟 Что нового:
+            * 🔌 **Нативный MCP-сервер:** поддержка SSE (`http://127.0.0.1:8000/sse`) для прямого подключения в Google Antigravity, Cursor, Claude Desktop и Cline.
+            * 🛠️ **5 встроенных MCP-инструментов:** `cascade_architect`, `local_gpu_code`, `gemini_deep_analysis`, `get_token_savings`, `compress_code_context`.
+            * 🧠 **Поддержка моделей:** Gemini 4 Neon, ChatGPT Plus (GPT-4o), Claude 3.7 Sonnet и локальные GPU Ollama.
+            * 📊 **Метрики экономии:** онлайн-счетчик сэкономленных токенов и расчет выгоды в долларах ($).
+            
+            ### 🚀 Быстрый старт:
+            1. Запустите приложение на своей рабочей машине.
+            2. Войдите в Gemini Advanced или ChatGPT Plus через контекстное меню в трее.
+            3. Подключите к IDE (OpenAI endpoint: `http://127.0.0.1:8000/v1` или MCP: `http://127.0.0.1:8000/sse`).

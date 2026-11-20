@@ -1,0 +1,55 @@
+version: "1.0.0"
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+
+browser:
+  headless: true
+  user_data_dir: "./browser_profile"
+  provider: "gemini" # gemini | chatgpt | claude | mock
+  timeout_seconds: 60
+
+models:
+  default: "gemini-advanced"
+  available:
+    - id: "gemini-advanced"
+      name: "Google Gemini Advanced (Thinking & Web)"
+      provider: "gemini"
+    - id: "gemini-2.5-flash"
+      name: "Google Gemini 2.5 Flash"
+      provider: "gemini"
+    - id: "gpt-4o"
+      name: "OpenAI GPT-4o (ChatGPT Plus)"
+      provider: "chatgpt"
+    - id: "gpt-4o-mini"
+      name: "OpenAI GPT-4o Mini (Free / Plus)"
+      provider: "chatgpt"
+    - id: "chatgpt-plus"
+      name: "OpenAI ChatGPT Plus"
+      provider: "chatgpt"
+    - id: "claude-3-7-sonnet"
+      name: "Anthropic Claude 3.7 Sonnet (Thinking)"
+      provider: "claude"
+    - id: "claude-pro"
+      name: "Anthropic Claude Pro"
+      provider: "claude"
+    - id: "mock-test"
+      name: "Zero-Copy Mock Engine (Instant Test)"
+      provider: "mock"
+
+obsidian:
+  enabled: true
+  vault_path: ""
+
+ux:
+  inject_model_signature: true
+  header_attribution: true
+  hide_inactive_models: true
+  display_names_override: {}
+
+cascade:
+  max_rework_iterations: 2
+  enable_local_gate: true
+  enable_architect_audit: true

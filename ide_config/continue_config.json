@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/continuedev/continue/main/packages/config-yaml/schema.json",
+  "models": [
+    {
+      "title": "Gemini Advanced (Zero-Copy)",
+      "provider": "openai",
+      "model": "gemini-advanced",
+      "apiBase": "http://127.0.0.1:8000/v1",
+      "apiKey": "sk-zero-copy"
+    },
+    {
+      "title": "ChatGPT Plus (Zero-Copy)",
+      "provider": "openai",
+      "model": "chatgpt-plus",
+      "apiBase": "http://127.0.0.1:8000/v1",
+      "apiKey": "sk-zero-copy"
+    }
+  ]
+}

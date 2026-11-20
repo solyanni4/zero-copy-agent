@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>zero-copy-agent · v0.3.2</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <!-- Typography: Inter for UI, JetBrains Mono for metrics, IDs, and code -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+          colors: {
+            surface: '#FFFFFF',
+            panel: '#F6F7F9',
+            hairline: '#E2E5E9',
+            ink: '#181A1C',
+            muted: '#57606A',
+            cobalt: '#0B66C3',
+            emerald: '#0F7A3F',
+            amber: '#B45309',
+            crimson: '#C81E1E',
+          },
+          borderRadius: {
+            DEFAULT: '4px',
+            sm: '3px',
+            md: '6px',
+          }
+        }
+      }
+    };
+  </script>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="h-screen w-screen overflow-hidden flex bg-surface text-ink select-none">
+
+  <!-- Mobile Sidebar Backdrop -->
+  <div id="sidebar-backdrop" class="fixed inset-0 bg-black/25 z-30 hidden lg:hidden" onclick="toggleMobileSidebar(false)"></div>
+
+  <!-- ====================================================================== -->
+  <!-- LEFT SIDEBAR (220px fixed on desktop, collapsible drawer on mobile)    -->
+  <!-- ====================================================================== -->
+  <aside id="sidebar" class="fixed lg:static inset-y-0 left-0 z-40 w-[220px] shrink-0 bg-panel border-r border-hairline flex flex-col transform -translate-x-full lg:translate-x-0 transition-transform duration-150">
+    <!-- Sidebar Header -->
+    <div class="h-12 px-3 border-b border-hairline flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-2 min-w-0">
+        <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
+        <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
+      </div>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v0.3.2</span>
+    </div>
+
+    <!-- Primary Navigation -->
+    <nav class="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto" aria-label="Навигация">
+      <button data-view="orchestrator" onclick="switchView('orchestrator')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-ink bg-surface border border-hairline">
+        <i data-lucide="git-branch" class="w-4 h-4 text-cobalt shrink-0"></i>
+        <span class="truncate">Оркестратор</span>
+      </button>
+      <button data-view="models" onclick="switchView('models')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
+        <i data-lucide="layers" class="w-4 h-4 shrink-0"></i>
+        <span class="truncate">Модели и пул</span>
+      </button>
+      <button data-view="dlp" onclick="switchView('dlp')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
+        <i data-lucide="shield-check" class="w-4 h-4 shrink-0"></i>
+        <span class="truncate">DLP и IP-Щит</span>
+      </button>
+      <button data-view="ide" onclick="switchView('ide')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
+        <i data-lucide="terminal-square" class="w-4 h-4 shrink-0"></i>
+        <span class="truncate">Интеграции IDE</span>
+      </button>
+    </nav>
+
+    <!-- Compact Footer Telemetry -->
+    <div class="border-t border-hairline px-3 py-2.5 bg-panel shrink-0 space-y-1.5">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <span class="w-2 h-2 rounded-full bg-emerald shrink-0"></span>
+          <span class="font-mono text-[11px] text-ink truncate" id="footer-endpoint-text">127.0.0.1:8000</span>
+        </div>
+        <button id="btn-check-updates" onclick="checkUpdates()" class="icon-btn tip tip-left" data-tip="Проверить обновления" title="Проверить обновления" aria-label="Проверить обновления">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+      <div class="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+        <i data-lucide="hard-drive" class="w-3 h-3 shrink-0"></i>
+        <span class="truncate" id="footer-ollama-status">RTX 4070 · Ollama</span>
+      </div>
+      <div id="update-status-line" class="hidden text-[11px] font-mono text-emerald truncate pt-0.5 border-t border-hairline"></div>
+    </div>
+  </aside>
+
+  <!-- ====================================================================== -->
+  <!-- MAIN APPLICATION SHELL                                                 -->
+  <!-- ====================================================================== -->
+  <div class="flex-1 flex flex-col min-w-0 h-full bg-surface">
+
+    <!-- TOP OPERATIONAL TOOLBAR (48px) -->
+    <header class="min-h-[48px] px-3 py-1.5 border-b border-hairline bg-surface flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <!-- Left Group: Mobile Menu + Mode Segmented Control + Connected Model Selector -->
+      <div class="flex flex-wrap items-center gap-2 min-w-0">
+        <button onclick="toggleMobileSidebar(true)" class="icon-btn lg:hidden" title="Меню" aria-label="Меню">
+          <i data-lucide="menu" class="w-4 h-4"></i>
+        </button>
+
+        <!-- Segmented Control for Mode -->
+        <div class="inline-flex items-center bg-panel border border-hairline rounded p-0.5 shrink-0" role="radiogroup" aria-label="Режим маршрутизации">
+          <button data-mode="auto" onclick="setMode('auto')" class="mode-btn h-6 px-2.5 rounded-[3px] text-[12px] font-medium bg-surface text-ink border border-hairline whitespace-nowrap">Авто-Архитектор</button>
+          <button data-mode="cascade" onclick="setMode('cascade')" class="mode-btn h-6 px-2.5 rounded-[3px] text-[12px] font-medium text-muted border border-transparent hover:text-ink whitespace-nowrap">Каскад</button>
+          <button data-mode="manual" onclick="setMode('manual')" class="mode-btn h-6 px-2.5 rounded-[3px] text-[12px] font-medium text-muted border border-transparent hover:text-ink whitespace-nowrap">Ручной</button>
+        </div>
+
+        <!-- Connected-Only Model Dropdown -->
+        <div class="relative flex items-center">
+          <select id="global-model-select" onchange="onGlobalModelChange()" aria-label="Активная модель" class="h-7 pl-2.5 pr-7 text-[12px] font-mono text-ink bg-surface border border-hairline rounded focus:outline-none focus:border-cobalt max-w-[210px] truncate appearance-none cursor-pointer">
+            <option value="gemini-4-neon">Gemini 4 Neon</option>
+            <option value="gemini-advanced">Gemini Argon (Web)</option>
+            <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local)</option>
+            <option value="gpt-4o">GPT Sol</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-muted pointer-events-none absolute right-2"></i>
+        </div>
+      </div>
+
+      <!-- Right Group: Toggles + Rework Stepper + Action Icons -->
+      <div class="flex flex-wrap items-center gap-3">
+        <!-- Binary Toggles -->
+        <div class="flex items-center gap-3 border-r border-hairline pr-3">
+          <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-ink">
+            <input id="toggle-dlp" type="checkbox" checked onchange="syncGlobalFlags()" class="sr-only" />
+            <span class="toggle-track toggle-emerald"><span class="toggle-thumb"></span></span>
+            <span>DLP</span>
+          </label>
+          <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-ink">
+            <input id="toggle-ir" type="checkbox" checked onchange="syncGlobalFlags()" class="sr-only" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span>BPE-IR</span>
+          </label>
+          <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] font-medium text-ink">
+            <input id="toggle-airgap" type="checkbox" onchange="syncGlobalFlags('toolbar')" class="sr-only" />
+            <span class="toggle-track toggle-crimson"><span class="toggle-thumb"></span></span>
+            <span>Air-Gap</span>
+          </label>
+        </div>
+
+        <!-- Numeric Stepper: Max Rework -->
+        <div class="flex items-center gap-1.5 border-r border-hairline pr-3">
+          <span class="text-[12px] text-muted whitespace-nowrap">Макс. реворк</span>
+          <div class="inline-flex items-center border border-hairline rounded bg-surface h-7">
+            <button onclick="stepRework(-1)" class="w-6 h-full flex items-center justify-center text-muted hover:text-ink hover:bg-panel border-r border-hairline" aria-label="Уменьшить">
+              <i data-lucide="minus" class="w-3 h-3"></i>
+            </button>
+            <span id="rework-val" class="w-6 text-center font-mono text-[12px] font-medium text-ink">2</span>
+            <button onclick="stepRework(1)" class="w-6 h-full flex items-center justify-center text-muted hover:text-ink hover:bg-panel border-l border-hairline" aria-label="Увеличить">
+              <i data-lucide="plus" class="w-3 h-3"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Icon-only Actions -->
+        <div class="flex items-center gap-1.5">
+          <button id="btn-breakpoint" onclick="toggleBreakpoint()" class="icon-btn tip tip-bottom" data-tip="Точка останова" title="Точка останова" aria-label="Точка останова">
+            <i data-lucide="pause" class="w-3.5 h-3.5"></i>
+          </button>
+          <button onclick="clearSession()" class="icon-btn tip tip-bottom tip-left" data-tip="Очистить сессию" title="Очистить сессию" aria-label="Очистить сессию">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Inline Status Notification Bar -->
+    <div id="status-banner" class="hidden px-3 py-1.5 bg-panel border-b border-hairline text-[12px] flex items-center justify-between gap-2 shrink-0">
+      <div class="flex items-center gap-2 min-w-0">
+        <i id="status-banner-icon" data-lucide="info" class="w-3.5 h-3.5 text-cobalt shrink-0"></i>
+        <span id="status-banner-text" class="truncate font-mono text-[12px]"></span>
+      </div>
+      <button onclick="hideBanner()" class="text-muted hover:text-ink shrink-0" aria-label="Закрыть">
+        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
+
+    <!-- ==================================================================== -->
+    <!-- VIEW 1: ОРКЕСТРАТОР (Split Workbench: Stream + 340px Inspector)       -->
+    <!-- ==================================================================== -->
+    <main id="view-orchestrator" class="view-pane flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+      <!-- Main Cognitive Trace Stream -->
+      <section class="flex-1 flex flex-col min-w-0 min-h-0">
+        <!-- Stream Feed -->
+        <div id="trace-stream" class="flex-1 overflow-y-auto divide-y divide-hairline select-text">
+          <!-- Populated dynamically via JS -->
+        </div>
+
+        <!-- Breakpoint Resume Bar -->
+        <div id="breakpoint-bar" class="hidden px-4 py-2 bg-[#FFFBEB] border-t border-amber/40 flex items-center justify-between gap-2 shrink-0">
+          <div class="flex items-center gap-2 text-[12px] text-amber font-medium">
+            <i data-lucide="pause-circle" class="w-4 h-4 shrink-0"></i>
+            <span>Остановлено на контрольной точке перед этапом «Исполнитель»</span>
+          </div>
+          <button onclick="resumeBreakpoint()" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium inline-flex items-center gap-1.5 hover:bg-[#0955A3]">
+            <i data-lucide="play" class="w-3.5 h-3.5"></i>
+            <span>Продолжить</span>
+          </button>
+        </div>
+
+        <!-- Bottom Composer Band -->
+        <div class="border-t border-hairline bg-panel px-4 py-2.5 shrink-0">
+          <div class="flex flex-wrap items-center gap-1.5 mb-2">
+            <button onclick="runQuickPrompt('refactor')" class="h-6 px-2 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-cobalt hover:text-cobalt inline-flex items-center gap-1.5">
+              <i data-lucide="file-code" class="w-3 h-3 text-muted"></i>
+              <span>Рефакторинг auth.py</span>
+            </button>
+            <button onclick="runQuickPrompt('rework')" class="h-6 px-2 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-amber hover:text-amber inline-flex items-center gap-1.5">
+              <i data-lucide="rotate-ccw" class="w-3 h-3 text-amber"></i>
+              <span>Тест REJECT ➔ Rework</span>
+            </button>
+          </div>
+          <form onsubmit="handlePromptSubmit(event)" class="flex items-center gap-2">
+            <input
+              id="prompt-input"
+              type="text"
+              autocomplete="off"
+              placeholder="Задача для каскада (например: добавить валидацию JWT в core/auth.py)..."
+              class="flex-1 h-8 px-3 rounded bg-surface border border-hairline text-[13px] text-ink placeholder:text-muted focus:outline-none focus:border-cobalt"
+            />
+            <button id="btn-send" type="submit" class="h-8 px-3 rounded bg-cobalt text-white text-[12px] font-medium inline-flex items-center gap-1.5 hover:bg-[#0955A3] disabled:opacity-50 shrink-0">
+              <i data-lucide="send" class="w-3.5 h-3.5"></i>
+              <span>Выполнить</span>
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Right Inspector Panel (340px on desktop) -->
+      <aside class="w-full lg:w-[340px] shrink-0 border-t lg:border-t-0 lg:border-l border-hairline bg-panel flex flex-col max-h-[260px] lg:max-h-none overflow-y-auto">
+        <!-- DAG Stages Section -->
+        <div class="px-3.5 py-2.5 border-b border-hairline bg-surface flex items-center justify-between">
+          <h2 class="text-[12px] font-semibold text-ink uppercase">DAG-Конвейер</h2>
+          <span id="inspector-mode-badge" class="font-mono text-[11px] text-cobalt bg-panel border border-hairline px-1.5 py-0.5 rounded">AUTO</span>
+        </div>
+
+        <div id="dag-stage-list" class="divide-y divide-hairline border-b border-hairline bg-surface">
+          <!-- Rendered dynamically -->
+        </div>
+
+        <!-- Session Telemetry Grid: Мониторинг и токены -->
+        <div class="px-3.5 py-2 border-b border-hairline bg-panel flex items-center justify-between">
+          <h2 class="text-[12px] font-semibold text-ink uppercase">Телеметрия сессии · Мониторинг и токены</h2>
+        </div>
+        <div class="grid grid-cols-2 divide-x divide-y divide-hairline bg-surface border-b border-hairline">
+          <div class="p-3" title="Фактически обработано токенов через конвейер">
+            <div class="text-[11px] text-muted">Сэкономлено токенов</div>
+            <div id="metric-tokens" class="font-mono text-[15px] font-semibold text-ink mt-0.5">4 820</div>
+            <div class="text-[9px] text-muted font-mono mt-0.5">Фактически обработано: 4 820</div>
+          </div>
+          <div class="p-3">
+            <div class="text-[11px] text-muted">Экономия (USD)</div>
+            <div id="metric-cost" class="font-mono text-[15px] font-semibold text-emerald mt-0.5">$0.19</div>
+          </div>
+          <div class="p-3">
+            <div class="text-[11px] text-muted">Скрыто DLP</div>
+            <div id="metric-dlp" class="font-mono text-[15px] font-semibold text-crimson mt-0.5">2</div>
+          </div>
+          <div class="p-3">
+            <div class="text-[11px] text-muted">Циклы реворка</div>
+            <div id="metric-rework" class="font-mono text-[15px] font-semibold text-amber mt-0.5">1</div>
+          </div>
+        </div>
+
+        <!-- Compact Active Policies Strip -->
+        <div class="px-3.5 py-2.5 text-[11px] text-muted space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span>Протокол шлюза</span>
+            <span class="font-mono text-ink">/v1/responses · /mcp</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>Уровень IR-сжатия</span>
+            <span id="inspector-ir-level" class="font-mono text-ink">L2 Symbolic DSL</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span>Контур маршрутизации</span>
+            <span id="inspector-routing-zone" class="font-mono text-emerald">Hybrid (Cloud + GPU)</span>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- ==================================================================== -->
+    <!-- VIEW 2: МОДЕЛИ И ПУЛ (Провайдеры и веб-сессии)                        -->
+    <!-- ==================================================================== -->
+    <main id="view-models" class="view-pane hidden flex-1 flex flex-col min-h-0 overflow-hidden">
+      <!-- Operational Sub-header Band -->
+      <div class="px-4 py-2.5 border-b border-hairline bg-panel flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div class="flex items-center gap-4">
+          <h1 class="text-[13px] font-semibold text-ink">Аккаунты и пул квот (Провайдеры и веб-сессии)</h1>
+          <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-muted hover:text-ink">
+            <input id="toggle-show-inactive" type="checkbox" onchange="renderAccountsTable()" class="sr-only" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span>Показать неактивные</span>
+          </label>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btn-discovery" onclick="runModelDiscovery()" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[12px] font-medium text-ink hover:border-cobalt hover:text-cobalt inline-flex items-center gap-1.5">
+            <i data-lucide="radar" class="w-3.5 h-3.5 text-cobalt"></i>
+            <span>Model Discovery</span>
+          </button>
+          <button id="btn-healer" onclick="runConfigHealer()" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[12px] font-medium text-ink hover:border-emerald hover:text-emerald inline-flex items-center gap-1.5">
+            <i data-lucide="wrench" class="w-3.5 h-3.5 text-emerald"></i>
+            <span>Config Healer</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Healer / Discovery Inline Output Band -->
+      <div id="models-action-log" class="hidden px-4 py-2 border-b border-hairline bg-surface font-mono text-[12px] flex items-center justify-between gap-2 shrink-0">
+        <span id="models-action-text" class="truncate"></span>
+        <button onclick="document.getElementById('models-action-log').classList.add('hidden')" class="text-muted hover:text-ink">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+
+      <!-- Dense Accounts Table -->
+      <div class="flex-1 overflow-auto">
+        <table class="w-full text-left border-collapse min-w-[780px]">
+          <thead class="bg-panel border-b border-hairline sticky top-0 z-10">
+            <tr class="text-[11px] font-semibold text-muted uppercase">
+              <th class="py-2 px-4">Аккаунт</th>
+              <th class="py-2 px-3">Провайдер</th>
+              <th class="py-2 px-3">Модели</th>
+              <th class="py-2 px-3 w-[180px]">Квота RPM / TPM</th>
+              <th class="py-2 px-3">Задержка EWMA</th>
+              <th class="py-2 px-3">Статус</th>
+              <th class="py-2 px-4 text-right">Действия</th>
+            </tr>
+          </thead>
+          <tbody id="accounts-tbody" class="divide-y divide-hairline bg-surface text-[12px]">
+            <!-- Rendered dynamically -->
+          </tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- ==================================================================== -->
+    <!-- VIEW 3: DLP И IP-ЩИТ                                                  -->
+    <!-- ==================================================================== -->
+    <main id="view-dlp" class="view-pane hidden flex-1 flex flex-col min-h-0 overflow-hidden">
+      <!-- Policy Switches Band -->
+      <div class="px-4 py-2.5 border-b border-hairline bg-panel flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
+        <span class="text-[12px] font-semibold text-ink uppercase">Политики фильтрации</span>
+        <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-ink">
+          <input id="dlp-pol-keys" type="checkbox" checked onchange="runDlpBench()" class="sr-only" />
+          <span class="toggle-track toggle-emerald"><span class="toggle-thumb"></span></span>
+          <span>API-ключи и токены</span>
+        </label>
+        <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-ink">
+          <input id="dlp-pol-ips" type="checkbox" checked onchange="runDlpBench()" class="sr-only" />
+          <span class="toggle-track toggle-emerald"><span class="toggle-thumb"></span></span>
+          <span>Локальные IP (RFC1918)</span>
+        </label>
+        <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-ink">
+          <input id="dlp-pol-hosts" type="checkbox" checked onchange="runDlpBench()" class="sr-only" />
+          <span class="toggle-track toggle-emerald"><span class="toggle-thumb"></span></span>
+          <span>Проприетарные идентификаторы</span>
+        </label>
+        <label class="inline-flex items-center gap-1.5 cursor-pointer text-[12px] text-crimson font-medium">
+          <input id="dlp-pol-airgap" type="checkbox" onchange="syncGlobalFlags('dlp')" class="sr-only" />
+          <span class="toggle-track toggle-crimson"><span class="toggle-thumb"></span></span>
+          <span>Air-Gapped IP-Core (блокировать облако)</span>
+        </label>
+      </div>
+
+      <!-- Split Live Sanitizer Workbench -->
+      <div class="flex-1 flex flex-col min-h-0 overflow-y-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-hairline border-b border-hairline min-h-[260px]">
+          <!-- Left Raw Input -->
+          <div class="flex flex-col bg-surface">
+            <div class="px-4 py-2 border-b border-hairline bg-panel flex items-center justify-between">
+              <span class="text-[11px] font-semibold text-muted uppercase">Исходный фрагмент (Локальный периметр)</span>
+              <span class="font-mono text-[11px] text-muted">raw_payload.py</span>
+            </div>
+            <textarea
+              id="dlp-input"
+              oninput="runDlpBench()"
+              spellcheck="false"
+              class="flex-1 w-full p-4 font-mono text-[12px] leading-relaxed text-ink bg-surface resize-none focus:outline-none min-h-[200px] select-text"
+            ># Конфигурация шлюза внутренней инфраструктуры
+API_SECRET = "sk-live-94a8f2c19e04b77a88d21f0e"
+HOMELAB_NODE = "http://192.168.50.135:11434"
+DB_ENDPOINT = "postgres://admin@internal-efko.local:5432/core"
+BACKUP_IP = "10.0.4.22"</textarea>
+          </div>
+
+          <!-- Right Sanitized Output -->
+          <div class="flex flex-col bg-surface">
+            <div class="px-4 py-2 border-b border-hairline bg-panel flex items-center justify-between">
+              <span class="text-[11px] font-semibold text-muted uppercase">Очищенный вывод (В облако)</span>
+              <div class="flex items-center gap-2">
+                <span id="dlp-count-badge" class="font-mono text-[11px] font-medium text-crimson">4 скрыто</span>
+                <button onclick="copyTextById('dlp-output-raw')" class="icon-btn tip tip-left" data-tip="Копировать" title="Копировать" aria-label="Копировать">
+                  <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+            <pre id="dlp-output" class="flex-1 p-4 font-mono text-[12px] leading-relaxed text-ink bg-surface overflow-x-auto whitespace-pre-wrap break-all m-0 select-text"></pre>
+            <textarea id="dlp-output-raw" class="sr-only" aria-hidden="true"></textarea>
+          </div>
+        </div>
+
+        <!-- Token Mapping Table -->
+        <div class="px-4 py-2 border-b border-hairline bg-panel flex items-center justify-between">
+          <span class="text-[11px] font-semibold text-muted uppercase">Таблица обратимой токенизации (Только локально в RAM)</span>
+          <span class="font-mono text-[11px] text-emerald">AST-Safe · Checksum OK</span>
+        </div>
+        <div class="overflow-x-auto bg-surface flex-1">
+          <table class="w-full text-left border-collapse min-w-[600px]">
+            <thead class="border-b border-hairline bg-panel/50 text-[11px] text-muted uppercase">
+              <tr>
+                <th class="py-2 px-4">Токен</th>
+                <th class="py-2 px-3">Категория</th>
+                <th class="py-2 px-3">Оригинал (локально)</th>
+                <th class="py-2 px-4 text-right">Статус</th>
+              </tr>
+            </thead>
+            <tbody id="dlp-map-tbody" class="divide-y divide-hairline font-mono text-[12px]">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+    <!-- ==================================================================== -->
+    <!-- VIEW 4: ИНТЕГРАЦИИ IDE                                                -->
+    <!-- ==================================================================== -->
+    <main id="view-ide" class="view-pane hidden flex-1 flex flex-col min-h-0 overflow-hidden">
+      <!-- Segmented Sub-tabs Band -->
+      <div class="px-4 py-2.5 border-b border-hairline bg-panel flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div class="inline-flex items-center bg-surface border border-hairline rounded p-0.5" role="tablist">
+          <button data-ide-tab="ui" onclick="switchIdeTab('ui')" class="ide-tab-btn h-6 px-3 rounded-[3px] text-[12px] font-medium bg-panel text-ink border border-hairline">Автонастройка (UI)</button>
+          <button data-ide-tab="cli" onclick="switchIdeTab('cli')" class="ide-tab-btn h-6 px-3 rounded-[3px] text-[12px] font-medium text-muted border border-transparent hover:text-ink">Терминал (CLI)</button>
+        </div>
+        <span class="font-mono text-[11px] text-muted">Бэкапы: ~/.zero-copy-agent/backups/</span>
+      </div>
+
+      <!-- IDE UI Tab -->
+      <div id="ide-tab-ui" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div class="flex-1 overflow-auto">
+          <table class="w-full text-left border-collapse min-w-[740px]">
+            <thead class="bg-panel border-b border-hairline sticky top-0 z-10 text-[11px] font-semibold text-muted uppercase">
+              <tr>
+                <th class="py-2 px-4">Среда разработки</th>
+                <th class="py-2 px-3">Статус</th>
+                <th class="py-2 px-3">Путь конфигурации</th>
+                <th class="py-2 px-4 text-right">Действия</th>
+              </tr>
+            </thead>
+            <tbody id="ide-tbody" class="divide-y divide-hairline bg-surface text-[12px]">
+              <!-- Rendered dynamically -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Backup Snapshots Log Band -->
+        <div class="border-t border-hairline bg-panel shrink-0 max-h-[150px] flex flex-col">
+          <div class="px-4 py-1.5 border-b border-hairline text-[11px] font-semibold text-muted uppercase flex items-center justify-between">
+            <span>Журнал снимков (Auto-Rollback)</span>
+            <span id="backup-count" class="font-mono text-ink">2 снимка</span>
+          </div>
+          <div id="backup-log" class="overflow-y-auto divide-y divide-hairline bg-surface font-mono text-[11px] text-muted">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- IDE CLI Tab -->
+      <div id="ide-tab-cli" class="hidden flex-1 overflow-auto bg-surface divide-y divide-hairline">
+        <!-- Rendered dynamically -->
+      </div>
+    </main>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

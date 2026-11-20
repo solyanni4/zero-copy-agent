@@ -1,0 +1,56 @@
+schema_version: 2
+updated_at: '2026-11-19T20:59:41.759971'
+accounts:
+- id: google-web-primary
+  provider: gemini
+  auth_type: browser_session
+  status: active
+  alias: Gemini Advanced (Личный)
+  api_key: null
+  models:
+  - id: gemini-advanced
+    display_name: Gemini Argon (Web 🟢)
+    status: active
+    capabilities: []
+  - id: gemini-4-neon
+    display_name: Gemini 4 Neon (Deeper Analysis 🧠)
+    status: active
+    capabilities: []
+- id: local-ollama
+  provider: ollama
+  auth_type: local
+  status: active
+  alias: Локальный GPU (Ollama)
+  api_key: null
+  models:
+  - id: qwen2.5-coder:14b
+    display_name: Qwen2.5-Coder 14B (Local GPU 🦙)
+    status: active
+    capabilities: []
+  - id: nomic-embed-text:latest
+    display_name: Nomic Embeddings (Local)
+    status: active
+    capabilities: []
+- id: chatgpt-web-primary
+  provider: chatgpt
+  auth_type: browser_session
+  status: active
+  alias: ChatGPT Free / Plus (Веб-сессия)
+  api_key: null
+  models:
+  - id: gpt-4o
+    display_name: GPT Sol (ChatGPT Plus)
+    status: active
+    capabilities: []
+  - id: gpt-4o-mini
+    display_name: GPT Sol Mini
+    status: active
+    capabilities: []
+  - id: chatgpt-plus
+    display_name: GPT Sol (ChatGPT Plus)
+    status: active
+    capabilities: []
+user_aliases:
+  tier:local-fast: qwen2.5-coder:14b
+  tier:coding-top: qwen2.5-coder:14b
+  tier:reasoning-top: gemini-4-neon

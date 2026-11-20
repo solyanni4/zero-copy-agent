@@ -1,0 +1,885 @@
+"""
+zero-copy-agent v0.3.0
+OpenAI-compatible Sidecar Gateway & Native Model Context Protocol (MCP) Server.
+Routes Web Chat Subscriptions, Local Ollama GPU, and provides tools for Antigravity, Cursor & Claude.
+"""
+import json
+import time
+import uuid
+import os
+import sys
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from core import __version__
+from core.dashboard_ui import render_dashboard_html
+from core.config import config
+from core.ui_api import ui_router
+from core.models import (
+    AddKeyRequest,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionStreamResponse,
+    Choice,
+    ChoiceMessage,
+    DeltaMessage,
+    ModelCard,
+    ModelListResponse,
+    PlaygroundRequest,
+    StreamChoice,
+    Usage,
+)
+from core.browser_session import engine
+from core.orchestrator import HybridOrchestrator
+from core.mesh import mesh
+from core.storage import analytics
+from core.mcp_server import mcp_router, init_mcp
+from core.attribution import should_inject_signature, get_response_headers, get_display_name
+from core.healer import config_healer
+from core.ide_setup import scan_all, configure_targets, history_manager, test_connection, test_connection_async, print_config_snippet
+from core.registry import model_registry
+
+orchestrator = HybridOrchestrator(browser_engine=engine)
+init_mcp(orchestrator)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Auto-heal configuration on startup
+    sub_cfg, heal_mods = config_healer.load_or_create()
+    client_host = "127.0.0.1" if config.server.host in ("0.0.0.0", "::", "") else config.server.host
+    
+    print(f"\n=======================================================")
+    print(f"  ⚡ zero-copy-agent v{__version__} is active!")
+    print(f"=======================================================")
+    print(f"  API Endpoint : http://{client_host}:{config.server.port}/v1")
+    print(f"  MCP Server   : http://{client_host}:{config.server.port}/sse")
+    print(f"  Default Model: {config.models.default}")
+    if heal_mods:
+        print(f"  Config Healer: {len(heal_mods)} auto-repairs executed 🩺")
+    print(f"")
+    print(f"  👉 30-Second IDE Setup (Cursor / Continue / Aider):")
+    print(f"     • Base URL : http://{client_host}:{config.server.port}/v1")
+    print(f"     • API Key  : sk-zero-copy")
+    print(f"     • Model    : gemini-4-neon / cascade:architect")
+    print(f"")
+    print(f"  🔌 Antigravity & Cursor MCP Config:")
+    print(f"     • URL      : http://{client_host}:{config.server.port}/sse")
+    print(f"")
+    print(f"  📊 Live Analytics & Dashboard:")
+    print(f"     http://{client_host}:{config.server.port}/")
+    print(f"  💡 (В браузере используйте 127.0.0.1 или localhost, не 0.0.0.0)")
+    print(f"=======================================================\n")
+    await engine.initialize()
+    yield
+    print("[INIT] Shutting down zero-copy-agent...")
+    await engine.close()
+
+app = FastAPI(
+    title="zero-copy-agent",
+    description="Zero-Copy Web-to-Agent Bridge & Self-Hosted AI Copilot with Native MCP Server",
+    version=__version__,
+    lifespan=lifespan,
+)
+
+# Enable CORS for IDEs like Cursor and web clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include Native Model Context Protocol (MCP) Router
+app.include_router(mcp_router)
+
+# Attach Orchestrator to application state for UI Operations API
+app.state.orchestrator = orchestrator
+
+# Include UI Operations API Router
+app.include_router(ui_router)
+
+def _resolve_bundle_dir(subpath: str) -> str:
+    """Resolves resource paths safely for both frozen binaries (PyInstaller) and dev environments."""
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        cand = os.path.join(base, subpath)
+        if os.path.exists(cand):
+            return cand
+        cand = os.path.join(os.path.dirname(sys.executable), subpath)
+        if os.path.exists(cand):
+            return cand
+    cand = os.path.join(os.path.dirname(__file__), subpath)
+    if os.path.exists(cand):
+        return cand
+    cand = os.path.join(os.getcwd(), subpath)
+    if os.path.exists(cand):
+        return cand
+    return os.path.join(os.path.dirname(__file__), subpath)
+
+STATIC_DIR = _resolve_bundle_dir("static")
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+DIST_DIR = _resolve_bundle_dir("dist")
+DESKTOP_ASSETS = _resolve_bundle_dir(os.path.join("desktop", "assets"))
+
+@app.get("/favicon.ico")
+async def favicon():
+    icon_path = os.path.join(DESKTOP_ASSETS, "icon.png")
+    if os.path.exists(icon_path):
+        return FileResponse(icon_path, media_type="image/png")
+    return JSONResponse(status_code=204, content=None)
+
+@app.get("/download/windows")
+@app.get("/download/zero-copy-agent-windows-x64.exe")
+async def download_windows():
+    target = os.path.join(DIST_DIR, "zero-copy-agent-windows-x64.exe")
+    if os.path.exists(target):
+        return FileResponse(
+            target,
+            media_type="application/octet-stream",
+            filename="zero-copy-agent-windows-x64.exe"
+        )
+    raise HTTPException(status_code=404, detail="Windows executable not found in dist/")
+
+@app.get("/download/linux")
+@app.get("/download/zero-copy-agent-linux-x64")
+async def download_linux():
+    target = os.path.join(DIST_DIR, "zero-copy-agent-linux-x64")
+    if not os.path.exists(target):
+        target = os.path.join(DIST_DIR, "zero-copy-agent")
+    if os.path.exists(target):
+        return FileResponse(
+            target,
+            media_type="application/octet-stream",
+            filename="zero-copy-agent-linux-x64"
+        )
+    raise HTTPException(status_code=404, detail="Linux executable not found in dist/")
+
+@app.get("/download/install.sh")
+async def download_install_sh():
+    sh_path = os.path.join(os.path.dirname(__file__), "install.sh")
+    if os.path.exists(sh_path):
+        return FileResponse(sh_path, media_type="text/x-shellscript", filename="install.sh")
+    raise HTTPException(status_code=404, detail="install.sh not found")
+
+@app.get("/download/install.ps1")
+async def download_install_ps1():
+    ps1_path = os.path.join(os.path.dirname(__file__), "install.ps1")
+    if os.path.exists(ps1_path):
+        return FileResponse(ps1_path, media_type="text/plain", filename="install.ps1")
+    raise HTTPException(status_code=404, detail="install.ps1 not found")
+
+def is_browser_request(request: Request) -> bool:
+    """Detects if request originates from a human browser requesting HTML vs programmatic API."""
+    if request.query_params.get("format") == "json":
+        return False
+    accept = request.headers.get("accept", "")
+    if not accept:
+        return False
+    parts = [p.split(";")[0].strip().lower() for p in accept.split(",")]
+    return "text/html" in parts and "application/json" not in parts[:1]
+
+def render_styled_api_page(title: str, endpoint: str, data: dict, summary_html: str = "") -> HTMLResponse:
+    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} — Zero-Copy Agent</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <style>
+        :root {{
+            --bg: #0d1117;
+            --panel: #161b22;
+            --border: #30363d;
+            --accent: #58a6ff;
+            --green: #2ea043;
+            --text: #c9d1d9;
+            --title: #f0f6fc;
+        }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+        }}
+        .container {{
+            max-width: 900px;
+            width: 100%;
+        }}
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }}
+        .title-group {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .btn {{
+            background-color: var(--accent);
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: none;
+            cursor: pointer;
+        }}
+        .btn-outline {{
+            background-color: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+        }}
+        .btn-outline:hover {{
+            border-color: #8b949e;
+            color: #f0f6fc;
+        }}
+        .card {{
+            background-color: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }}
+        pre {{
+            background-color: #0b0e14;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 16px;
+            overflow-x: auto;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 13px;
+            color: #79c0ff;
+            line-height: 1.5;
+            margin: 0;
+        }}
+        .actions {{
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 12px;
+            background-color: rgba(46, 160, 67, 0.15);
+            color: #3fb950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }}
+        .metric-box {{
+            background-color: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+            text-align: center;
+        }}
+        .metric-val {{
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--accent);
+            margin-top: 6px;
+        }}
+        .metric-val.money {{
+            color: #3fb950;
+        }}
+        .metric-label {{
+            font-size: 12px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title-group">
+                <img src="/favicon.ico" alt="Logo" style="width: 36px; height: 36px; border-radius: 50%; box-shadow: 0 0 10px rgba(88, 166, 255, 0.4);" />
+                <div>
+                    <h2 style="margin: 0; color: var(--title); font-size: 20px;">{title}</h2>
+                    <div style="font-size: 12px; color: #8b949e; margin-top: 4px;">Эндпоинт: <code>{endpoint}</code></div>
+                </div>
+            </div>
+            <a href="/" class="btn btn-outline">⬅ Вернуться в Дашборд</a>
+        </div>
+
+        {summary_html}
+
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                <span style="font-weight: 600; color: var(--title); font-size: 14px;">Ответ API (JSON):</span>
+                <span class="badge">HTTP 200 OK</span>
+            </div>
+            <pre><code id="jsonCode">{json_str}</code></pre>
+            <div class="actions">
+                <button onclick="copyJson()" id="copyBtn" class="btn">📋 Скопировать JSON</button>
+                <a href="{endpoint}?format=json" target="_blank" class="btn btn-outline">🔗 Сырой JSON (?format=json)</a>
+            </div>
+        </div>
+    </div>
+    <script>
+        function copyJson() {{
+            const text = document.getElementById('jsonCode').innerText;
+            navigator.clipboard.writeText(text).then(() => {{
+                const btn = document.getElementById('copyBtn');
+                const orig = btn.innerText;
+                btn.innerText = 'Скопировано! ✅';
+                setTimeout(() => {{ btn.innerText = orig; }}, 2000);
+            }});
+        }}
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+@app.get("/v1/analytics/savings")
+@app.get("/savings")
+async def get_savings_analytics(request: Request):
+    """Returns token volume and calculated USD saved vs commercial API rates."""
+    data = analytics.get_summary()
+    if is_browser_request(request):
+        total_saved = data.get("total_saved_usd", 0.0)
+        today_saved = data.get("today_saved_usd", 0.0)
+        total_tokens = f"{data.get('total_tokens', 0):,}"
+        tokens_without_zc = f"{data.get('tokens_without_zc', 0):,}"
+        tokens_saved = f"{data.get('tokens_saved', 0):,}"
+        tokens_saved_pct = data.get('tokens_saved_pct', 0.0)
+        total_requests = data.get("total_requests", 0)
+        summary = f"""
+        <div class="card">
+            <div style="font-weight: 600; color: var(--title); margin-bottom: 8px;">Сводка экономии токенов:</div>
+            <div class="grid">
+                <div class="metric-box">
+                    <div class="metric-label">💰 Сэкономлено на API</div>
+                    <div class="metric-val money">${total_saved:.2f}</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">Сегодня: ${today_saved:.2f}</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">⚡ Токенов обработано</div>
+                    <div class="metric-val">{total_tokens}</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">Без агента: <span style="text-decoration:line-through;color:#f85149;">{tokens_without_zc}</span> <span style="color:#3fb950;font-weight:600;">(-{tokens_saved_pct}%)</span></div>
+                </div>
+            </div>
+            <div style="background: rgba(56, 139, 253, 0.08); border: 1px solid #30363d; border-radius: 8px; padding: 12px; margin-top: 16px;">
+                <div style="font-weight: 600; color: #58a6ff; font-size: 13px; margin-bottom: 6px;">Сжатие контекста и локальная видеокарта:</div>
+                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #c9d1d9; flex-wrap: wrap; gap: 8px;">
+                    <div>Расход без оптимизации: <strong style="color: #f85149;">{tokens_without_zc} токенов</strong></div>
+                    <div>Фактически отправлено: <strong style="color: #58a6ff;">{total_tokens} токенов</strong></div>
+                    <div>Сэкономлено токенов: <strong style="color: #3fb950;">-{tokens_saved} токенов (-{tokens_saved_pct}%)</strong></div>
+                </div>
+            </div>
+        </div>
+        """
+        return render_styled_api_page("Метрики экономии токенов", "/v1/analytics/savings", data, summary_html=summary)
+    return data
+
+@app.get("/v1/analytics/history")
+async def get_completion_history():
+    """Returns recent requests processed by the gateway."""
+    return analytics.get_recent()
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/ui", response_class=HTMLResponse)
+async def root_dashboard():
+    """Unified desktop dashboard & monitoring interface."""
+    index_file = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_file):
+        with open(index_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+
+    stats = analytics.get_summary()
+    ollama_ready = await orchestrator.ollama.is_authenticated()
+    ollama_models = await orchestrator.ollama.list_models() if ollama_ready else []
+    models_str = ", ".join(ollama_models)
+    ollama_status_badge = f"Онлайн ({models_str}) 🟢" if ollama_ready else "Остановлен ⚪"
+
+    html = render_dashboard_html(
+        stats=stats,
+        version=__version__,
+        port=config.server.port or 8000,
+        ollama_status_badge=ollama_status_badge,
+        cloud_gateway_badge="Gemini 4 Neon / Pro"
+    )
+    return HTMLResponse(html)
+
+@app.get("/v1/auth/status")
+async def get_auth_status():
+    """Returns active status for web session and API providers."""
+    cfg, _ = config_healer.load_or_create()
+    providers = {
+        "gemini": {"active": False, "alias": None, "type": None},
+        "chatgpt": {"active": False, "alias": None, "type": None},
+        "claude": {"active": False, "alias": None, "type": None},
+    }
+    for acc in cfg.accounts:
+        p = acc.provider.lower()
+        if p in providers and acc.status == "active":
+            providers[p]["active"] = True
+            providers[p]["alias"] = acc.alias
+            providers[p]["type"] = acc.auth_type
+
+    if getattr(orchestrator.browser_engine, "is_ready", False):
+        active_prov = getattr(orchestrator.browser_engine, "active_provider", None)
+        if active_prov and active_prov.lower() in providers:
+            providers[active_prov.lower()]["active"] = True
+
+    return {"status": "ok", "providers": providers}
+
+@app.post("/v1/auth/login")
+async def trigger_browser_auth(payload: dict = Body(...)):
+    """Launches interactive browser assistant to log in to web subscription."""
+    provider = payload.get("provider", "gemini").lower()
+    if provider not in ("gemini", "chatgpt", "claude"):
+        raise HTTPException(status_code=400, detail="Неподдерживаемый провайдер. Допустимо: gemini, chatgpt, claude")
+
+    import threading
+    from core.auth import authenticate_desktop
+    threading.Thread(target=authenticate_desktop, args=(provider,), daemon=True).start()
+    return {"status": "ok", "message": f"Окно авторизации для {provider.upper()} запущено"}
+
+@app.post("/v1/app/minimize")
+async def app_minimize(request: Request):
+    """Minimizes desktop application to system tray."""
+    win = getattr(request.app.state, "desktop_window", None)
+    d_app = getattr(request.app.state, "desktop_app", None)
+    if win:
+        try:
+            win.hide()
+        except Exception as e:
+            logging.error(f"Failed to hide window: {e}")
+    elif d_app and getattr(d_app, "window", None):
+        try:
+            d_app.window.hide()
+        except Exception as e:
+            logging.error(f"Failed to hide window via desktop_app: {e}")
+
+    if d_app:
+        d_app.notify_tray(
+            "Приложение свернуто в трей и продолжает работать.\nДважды кликните по иконке, чтобы открыть окно.",
+            title="zero-copy-agent"
+        )
+        return {"status": "ok", "message": "Приложение свернуто в системный трей"}
+    return {"status": "ok", "message": "Консольный режим"}
+
+@app.post("/v1/app/quit")
+async def app_quit(request: Request):
+    """Triggers graceful termination of zero-copy-agent."""
+    d_app = getattr(request.app.state, "desktop_app", None)
+    if d_app:
+        import threading
+        threading.Thread(target=d_app.stop, daemon=True).start()
+    else:
+        import threading
+        import time
+        def _delayed_exit():
+            time.sleep(0.3)
+            import os, signal
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception:
+                os._exit(0)
+        threading.Thread(target=_delayed_exit, daemon=True).start()
+    return {"status": "ok", "message": "Завершение работы"}
+
+
+@app.get("/health")
+async def health_check(request: Request):
+    """Health check endpoint for homelab monitors and clients."""
+    ollama_ok = await orchestrator.ollama.is_authenticated()
+    ollama_models = await orchestrator.ollama.list_models() if ollama_ok else []
+    data = {
+        "status": "ok",
+        "service": "zero-copy-agent",
+        "version": __version__,
+        "mcp_enabled": True,
+        "mcp_sse_url": f"http://127.0.0.1:{config.server.port}/sse",
+        "dlp_shield_active": True,
+        "bpe_compression": "L1+L2 Active",
+        "browser_engine": "playwright" if engine.is_ready else "simulator",
+        "active_provider": engine.active_provider,
+        "default_model": config.models.default,
+        "ollama_available": ollama_ok,
+        "ollama_models": ollama_models,
+        "active_aliases": orchestrator.aliases,
+        "savings_summary": analytics.get_summary()
+    }
+    if is_browser_request(request):
+        summary = f"""
+        <div class="card">
+            <div style="font-weight: 600; color: var(--title); margin-bottom: 8px;">Состояние компонентов шлюза:</div>
+            <div class="grid">
+                <div class="metric-box">
+                    <div class="metric-label">Служба</div>
+                    <div class="metric-val" style="font-size: 18px; color: #3fb950;">v{__version__} 🟢</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">zero-copy-agent Active</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">MCP Сервер</div>
+                    <div class="metric-val" style="font-size: 18px; color: #bc8cff;">SSE Active 🟢</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">Порт {config.server.port}</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">DLP Shield</div>
+                    <div class="metric-val" style="font-size: 18px; color: #58a6ff;">Защищен 🛡️</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">Санитайзер секретов</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">GPU / Ollama</div>
+                    <div class="metric-val" style="font-size: 18px; color: {'#58a6ff' if ollama_ok else '#8b949e'};">{'Онлайн 🦙' if ollama_ok else 'Остановлен ⚪'}</div>
+                    <div style="font-size:11px;color:#8b949e;margin-top:4px;">{len(ollama_models)} локальных весов</div>
+                </div>
+            </div>
+        </div>
+        """
+        return render_styled_api_page("Системная диагностика (Health Check)", "/health", data, summary_html=summary)
+    return data
+
+@app.get("/v1/events")
+async def get_cognitive_events(limit: int = 30):
+    """Returns recent cognitive trace events (DLP masking, BPE compression, cascades)."""
+    return {
+        "status": "ok",
+        "events": analytics.get_recent_events(limit=limit)
+    }
+
+@app.get("/v1/models")
+async def list_models(request: Request, include_inactive: bool = False):
+    """Returns available models, filtering only currently connected ones by default."""
+    hide_inactive = config.ux.hide_inactive_models and not include_inactive
+    models_data = await orchestrator.discover_models(include_inactive=not hide_inactive)
+    if is_browser_request(request):
+        cards_html = ""
+        for m in models_data:
+            m_id = m.id if hasattr(m, "id") else m.get("id")
+            m_owner = m.owned_by if hasattr(m, "owned_by") else m.get("owned_by", "")
+            prov = m_owner.replace("zero-copy-agent:", "").upper() if m_owner else "AI"
+            cards_html += f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#0d1117; border:1px solid #30363d; border-radius:6px; margin-bottom:8px;">
+                <div>
+                    <strong style="color:#f0f6fc; font-family:monospace; font-size:14px;">{m_id}</strong>
+                    <div style="font-size:11px; color:#8b949e; margin-top:3px;">Провайдер: <span style="color:#58a6ff;">{prov}</span></div>
+                </div>
+                <span class="badge">🟢 Активна</span>
+            </div>
+            """
+        summary = f"""
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <span style="font-weight:600; color:var(--title);">Всего подключено моделей: {len(models_data)}</span>
+                <span class="badge">Готовы к вызовам</span>
+            </div>
+            <div style="max-height: 350px; overflow-y: auto;">
+                {cards_html}
+            </div>
+        </div>
+        """
+        raw_list = [m.model_dump() if hasattr(m, "model_dump") else (m.dict() if hasattr(m, "dict") else m) for m in models_data]
+        return render_styled_api_page("🤖 Каталог моделей (/v1/models)", "/v1/models", {"object": "list", "data": raw_list}, summary_html=summary)
+    return ModelListResponse(data=models_data)
+
+@app.get("/v1/integrations/scan")
+async def api_scan_integrations():
+    """Returns detected IDEs and AI agent configuration statuses."""
+    return {"status": "ok", "integrations": scan_all()}
+
+@app.post("/v1/integrations/apply/{target}")
+async def api_apply_integration(target: str):
+    """Configures requested IDE or agent with pre-backup."""
+    results = configure_targets([target])
+    return {
+        "status": "ok",
+        "results": [{"target": r[0], "success": r[1], "message": r[2]} for r in results]
+    }
+
+@app.post("/v1/integrations/revert/{target}")
+async def api_revert_integration(target: str):
+    """Rolls back the target from its previous backup."""
+    results = history_manager.rollback(target)
+    return {"status": "ok", "results": results}
+
+@app.get("/v1/integrations/test/{target}")
+async def api_test_integration(target: str):
+    """Tests connectivity for the target."""
+    ok, msg = await test_connection_async(target, port=config.server.port)
+    return {"status": "ok" if ok else "error", "connected": ok, "message": msg}
+
+@app.get("/v1/integrations/snippet/{target}")
+async def api_get_snippet(target: str):
+    """Returns config snippet or CLI command for manual setup."""
+    snippet = print_config_snippet(target, port=config.server.port)
+    return {
+        "status": "ok",
+        "target": target,
+        "snippet": snippet,
+        "cli_command": f"zca integrate apply {target}"
+    }
+
+@app.get("/v1/subscriptions")
+async def api_get_subscriptions():
+    """Returns self-healed subscriptions configuration."""
+    cfg, mods = config_healer.load_or_create()
+    sub_dict = cfg.model_dump() if hasattr(cfg, "model_dump") else cfg.dict()
+    return {"status": "ok", "subscriptions": sub_dict, "healing_modifications": mods}
+
+@app.get("/v1/providers/keys")
+async def api_get_provider_keys():
+    """Returns list of configured provider accounts with masked API keys."""
+    return {
+        "status": "ok",
+        "accounts": config_healer.list_accounts_masked(),
+        "mesh_status": mesh.get_mesh_status()
+    }
+
+@app.post("/v1/providers/keys")
+async def api_add_provider_key(request: AddKeyRequest):
+    """Adds or updates an API key for a provider, validating and registering it dynamically."""
+    if not request.api_key or len(request.api_key.strip()) < 8:
+        raise HTTPException(status_code=400, detail="API ключ не может быть короче 8 символов")
+
+    acc, mods = config_healer.add_account_key(
+        provider=request.provider,
+        api_key=request.api_key,
+        alias=request.alias
+    )
+    mesh.register_keys(request.provider, [request.api_key])
+    await model_registry.get_models(force_refresh=True)
+
+    return {
+        "status": "ok",
+        "message": f"API-ключ для '{request.provider}' успешно добавлен и активирован",
+        "account_id": acc.id,
+        "modifications": mods
+    }
+
+@app.delete("/v1/providers/keys/{account_id}")
+async def api_delete_provider_key(account_id: str):
+    """Removes or disables an account by ID."""
+    ok = config_healer.remove_account(account_id)
+    await model_registry.get_models(force_refresh=True)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Аккаунт с таким ID не найден")
+    return {"status": "ok", "message": f"Аккаунт '{account_id}' успешно удален"}
+
+@app.post("/v1/playground/run")
+async def api_playground_run(request: PlaygroundRequest):
+    """Executes a test prompt with full cognitive observability telemetry."""
+    if not request.prompt or not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Промпт не может быть пустым")
+
+    model_id = request.model or config.models.default
+    req_id = f"play-{uuid.uuid4().hex[:8]}"
+    start_time = time.time()
+
+    content = await orchestrator.query(request.prompt, model_id, req_id=req_id, inject_signature=True)
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    recent_events = analytics.get_recent_events(limit=6)
+    req_events = [e for e in recent_events if e.get("request_id") == req_id]
+
+    dlp_masked = sum(1 for e in req_events if e.get("stage") == "dlp_sanitized")
+    bpe_saved = next((e.get("message") for e in req_events if e.get("stage") == "bpe_compressed"), None)
+
+    return {
+        "status": "ok",
+        "content": content,
+        "model": model_id,
+        "duration_ms": duration_ms,
+        "tokens": len(content) // 4,
+        "dlp_masked": dlp_masked,
+        "bpe_saved": bpe_saved or "Без изменений",
+        "request_id": req_id
+    }
+
+@app.get("/v1/onboarding/status")
+async def api_get_onboarding_status():
+    """Returns step-by-step progress and readiness for the Onboarding Wizard (Phase 2)."""
+    # Step 1: Local Engine (Ollama)
+    ollama_ready = await orchestrator.ollama.is_authenticated()
+    ollama_models = await orchestrator.ollama.list_models() if ollama_ready else []
+    step1_ok = ollama_ready and len([m for m in ollama_models if "embed" not in m.lower()]) > 0
+
+    # Step 2: Cloud Keys & Web Session
+    accounts = config_healer.list_accounts_masked()
+    active_accounts = [a for a in accounts if a.get("status") == "active"]
+    browser_ready = getattr(orchestrator.browser_engine, "is_ready", False)
+    step2_ok = len(active_accounts) > 0 or browser_ready
+
+    # Step 3: IDE & Agent Integration
+    try:
+        scan_res = scan_all()
+        connected_ides = [v.get("name") for k, v in scan_res.items() if v.get("installed") and v.get("configured")]
+        step3_ok = len(connected_ides) > 0
+    except Exception as e:
+        logger.warning(f"Error scanning IDEs for onboarding: {e}")
+        connected_ides = []
+        step3_ok = False
+
+    # Step 4: System Readiness & DLP Protection
+    step4_ok = True
+
+    steps = [
+        {
+            "id": "step_local",
+            "title": "Локальная модель (Ollama)",
+            "completed": step1_ok,
+            "summary": f"Онлайн ({', '.join(ollama_models)}) 🟢" if step1_ok else "Ожидает запуска (бесплатные токены, данные не уходят в сеть) ⚪",
+            "action_type": "command",
+            "action_data": "ollama run qwen2.5-coder:14b"
+        },
+        {
+            "id": "step_cloud",
+            "title": "Облачные ключи (Gemini / Claude / GPT)",
+            "completed": step2_ok,
+            "summary": f"Подключено: {len(active_accounts)} 🟢" if step2_ok else "Добавьте API-ключ в настройках ниже ⚪",
+            "action_type": "scroll",
+            "action_data": "providers-card"
+        },
+        {
+            "id": "step_ide",
+            "title": "Подключение к редактору (1 клик)",
+            "completed": step3_ok,
+            "summary": f"Подключено: {', '.join(connected_ides)} 🟢" if step3_ok else "Подключите Antigravity, VS Code или Cursor ⚪",
+            "action_type": "scroll",
+            "action_data": "ide-integrations-card"
+        },
+        {
+            "id": "step_test",
+            "title": "Проверка связи",
+            "completed": step4_ok,
+            "summary": "Шлюз и маскировка паролей активны 🟢",
+            "action_type": "scroll",
+            "action_data": "test-playground-card"
+        }
+    ]
+
+    completed_count = sum(1 for s in steps if s["completed"])
+    progress_pct = int((completed_count / len(steps)) * 100)
+
+    return {
+        "status": "ok",
+        "progress_pct": progress_pct,
+        "completed_count": completed_count,
+        "total_steps": len(steps),
+        "all_completed": completed_count == len(steps),
+        "steps": steps
+    }
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: ChatCompletionRequest):
+    """
+    Standard OpenAI-compatible Chat Completions endpoint.
+    Routes queries across Local Ollama, Cloud API pools, and Web Sessions via Hybrid Orchestrator.
+    Logs metrics and calculated token cost savings into SQLite WAL.
+    Supports Model Attribution Badges and selective signature suppression.
+    """
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="messages field cannot be empty")
+
+    last_msg = request.messages[-1].content
+    full_prompt = "\n".join([f"{m.role.upper()}: {m.content}" for m in request.messages])
+
+    model_id = request.model or config.models.default
+    req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+
+    # Determine signature injection & headers
+    inject_sig = should_inject_signature(request, config.ux.inject_model_signature)
+    headers = get_response_headers(model_id, provider=engine.active_provider)
+
+    if request.stream:
+        async def event_generator() -> AsyncGenerator[str, None]:
+            first_chunk = ChatCompletionStreamResponse(
+                id=req_id,
+                model=model_id,
+                choices=[StreamChoice(index=0, delta=DeltaMessage(role="assistant"))]
+            )
+            yield f"data: {json.dumps(first_chunk.dict(), ensure_ascii=False)}\n\n"
+
+            async for token in orchestrator.query_stream(
+                last_msg,
+                model_id,
+                req_id=req_id,
+                inject_signature=inject_sig
+            ):
+                chunk = ChatCompletionStreamResponse(
+                    id=req_id,
+                    model=model_id,
+                    choices=[StreamChoice(index=0, delta=DeltaMessage(content=token))]
+                )
+                yield f"data: {json.dumps(chunk.dict(), ensure_ascii=False)}\n\n"
+
+            done_chunk = ChatCompletionStreamResponse(
+                id=req_id,
+                model=model_id,
+                choices=[StreamChoice(index=0, delta=DeltaMessage(), finish_reason="stop")]
+            )
+            yield f"data: {json.dumps(done_chunk.dict(), ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
+
+    content = await orchestrator.query(
+        last_msg,
+        model_id,
+        req_id=req_id,
+        inject_signature=inject_sig
+    )
+    prompt_tokens = len(full_prompt) // 4
+    comp_tokens = len(content) // 4
+
+    resp_payload = ChatCompletionResponse(
+        id=req_id,
+        model=model_id,
+        choices=[
+            Choice(
+                index=0,
+                message=ChoiceMessage(role="assistant", content=content),
+                finish_reason="stop"
+            )
+        ],
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=comp_tokens,
+            total_tokens=prompt_tokens + comp_tokens
+        )
+    )
+    payload_dict = resp_payload.model_dump() if hasattr(resp_payload, "model_dump") else resp_payload.dict()
+    return JSONResponse(content=payload_dict, headers=headers)
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host=config.server.host,
+        port=config.server.port,
+        reload=False,
+        workers=config.server.workers,
+    )
