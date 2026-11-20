@@ -5,10 +5,13 @@ Queries GitHub releases for updates, handles proxies and network interruptions c
 import os
 import sys
 import json
+import time
 import logging
+import subprocess
 import urllib.request
 import urllib.error
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger("zcao.updater")
 
