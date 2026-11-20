@@ -86,7 +86,7 @@ curl -sSL https://raw.githubusercontent.com/solyanni4/zero-copy-agent/main/insta
 ```
 
 ### Вариант 2. Готовое приложение без консоли
-Скачайте `zero-copy-agent-windows-x64.exe` (для Windows) или `zero-copy-agent-linux-x64` (для Linux) со страницы [Releases](https://github.com/solyanni4/zero-copy-agent/releases/latest).  
+Скачайте `zero-copy-agent.exe` (для Windows) или `zero-copy-agent-linux-x64` (для Linux) со страницы [Releases](https://github.com/solyanni4/zero-copy-agent/releases/latest).  
 Приложение работает как обычная Windows-программа: открывает аккуратное окно управления, сворачивается в системный трей и не требует держать открытым черное окно терминала.
 
 ### Вариант 3. Docker (для серверов и Homelab)

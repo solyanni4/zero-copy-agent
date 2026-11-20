@@ -40,16 +40,11 @@ jobs:
         run: |
           python desktop/build.py
 
-      - name: Prepare Windows Artifact
-        shell: pwsh
-        run: |
-          Copy-Item dist/zero-copy-agent.exe dist/zero-copy-agent-windows-x64.exe
-
       - name: Upload Windows Executable Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zero-copy-agent-windows-x64.exe
-          path: dist/zero-copy-agent-windows-x64.exe
+          name: zero-copy-agent.exe
+          path: dist/zero-copy-agent.exe
           if-no-files-found: error
 
   build-linux:
@@ -104,7 +99,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-artifacts/zero-copy-agent-windows-x64.exe/zero-copy-agent-windows-x64.exe
+            release-artifacts/zero-copy-agent.exe/zero-copy-agent.exe
             release-artifacts/zero-copy-agent-linux-x64/zero-copy-agent-linux-x64
           draft: false
           prerelease: false
@@ -115,7 +110,7 @@ jobs:
             Автономные портативные приложения для Windows и Linux с нативным сервером **Model Context Protocol (MCP)**.
             
             ### 📥 Скачать приложение:
-            * **Windows 10 / 11:** `zero-copy-agent-windows-x64.exe`
+            * **Windows 10 / 11:** `zero-copy-agent.exe`
             * **Linux:** `zero-copy-agent-linux-x64`
             
             ### 🌟 Что нового:

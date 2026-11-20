@@ -86,7 +86,7 @@ curl -sSL https://raw.githubusercontent.com/solyanni4/zero-copy-agent/main/insta
 ```
 
 ### Option 2. Standalone desktop application
-Download `zero-copy-agent-windows-x64.exe` (Windows) or `zero-copy-agent-linux-x64` (Linux) from the [Releases](https://github.com/solyanni4/zero-copy-agent/releases/latest) page.  
+Download `zero-copy-agent.exe` (Windows) or `zero-copy-agent-linux-x64` (Linux) from the [Releases](https://github.com/solyanni4/zero-copy-agent/releases/latest) page.  
 It runs as a standard Windows app: opens a clean native window, minimizes to the system tray, and does not require an open terminal window.
 
 ### Option 3. Docker (Homelab and servers)
