@@ -19,7 +19,7 @@ try:
     from core import __version__
     CURRENT_VERSION = __version__
 except Exception:
-    CURRENT_VERSION = "1.0.2"
+    CURRENT_VERSION = "1.0.3"
 GITHUB_REPO = "solyanni4/zero-copy-agent-dev"
 PUBLIC_REPO = "solyanni4/zero-copy-agent"
 

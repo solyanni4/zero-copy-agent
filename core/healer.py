@@ -436,5 +436,16 @@ class ConfigHealer:
             return True
         return False
 
+    def toggle_account_status(self, account_id: str) -> Optional[str]:
+        """Toggles account status between active and inactive in subscriptions.yaml."""
+        config, _ = self.load_or_create()
+        for acc in config.accounts:
+            if acc.id == account_id:
+                new_status = "inactive" if acc.status == "active" else "active"
+                acc.status = new_status
+                self.atomic_save(config)
+                return new_status
+        return None
+
 # Global singleton
 config_healer = ConfigHealer()

@@ -104,7 +104,7 @@ async def update_ui_policies(request: Request, body: PolicyUpdateRequest):
     if body.breakpoint_enabled is not None:
         orchestrator.breakpoint_enabled = body.breakpoint_enabled
     if body.max_rework_iterations is not None:
-        orchestrator.max_rework_iterations = max(1, min(5, body.max_rework_iterations))
+        orchestrator.max_rework_iterations = max(0, min(5, body.max_rework_iterations))
     if body.active_model is not None:
         orchestrator.active_model = body.active_model
     if body.architect_model is not None:
@@ -163,8 +163,8 @@ async def trigger_model_discovery(request: Request):
 @ui_router.post("/dlp/test")
 async def test_dlp_sandbox(body: DLPSandboxRequest):
     """Sanitizes text via DLPShield and returns tokens mapping for UI split-view sandbox."""
-    vault = SessionVault(req_id=f"sandbox_{int(time.time() * 1000)}")
-    clean_text, vault = shield.sanitize(body.text, vault)
+    req_id = f"sandbox_{int(time.time() * 1000)}"
+    clean_text, vault = shield.sanitize(body.text, req_id=req_id)
 
     mappings = []
     for token, original in vault.mappings.items():
@@ -189,7 +189,7 @@ async def get_dlp_audit_logs(limit: int = 40):
     events = analytics.get_recent_events(limit=limit * 2)
     dlp_events = [
         e for e in events
-        if e.get("stage") in ("dlp_sanitized", "dlp_restored", "airgap_blocked")
+        if e.get("stage") in ("dlp_sanitized", "dlp_restored", "air_gap_blocked", "airgap_blocked")
     ][:limit]
     return {
         "status": "ok",

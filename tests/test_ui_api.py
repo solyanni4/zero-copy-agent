@@ -40,14 +40,14 @@ def test_ui_status_endpoint():
     assert "ollama" in data
 
 def test_ui_policies_update_endpoint():
-    # Update policies
+    # Update policies with max_rework_iterations = 0
     payload = {
         "dlp_enabled": True,
         "air_gapped": False,
         "compression_enabled": True,
         "mode": "cascade",
         "breakpoint_enabled": True,
-        "max_rework_iterations": 3
+        "max_rework_iterations": 0
     }
     res = client.post("/v1/ui/policies", json=payload)
     assert res.status_code == 200
@@ -56,12 +56,13 @@ def test_ui_policies_update_endpoint():
     policies = data["policies"]
     assert policies["mode"] == "cascade"
     assert policies["breakpoint_enabled"] is True
-    assert policies["max_rework_iterations"] == 3
+    assert policies["max_rework_iterations"] == 0
 
     # Reset mode back to auto
-    reset_res = client.post("/v1/ui/policies", json={"mode": "auto", "breakpoint_enabled": False})
+    reset_res = client.post("/v1/ui/policies", json={"mode": "auto", "breakpoint_enabled": False, "max_rework_iterations": 2})
     assert reset_res.status_code == 200
     assert reset_res.json()["policies"]["mode"] == "auto"
+    assert reset_res.json()["policies"]["max_rework_iterations"] == 2
 
 def test_ui_dlp_sandbox_test_endpoint():
     payload = {

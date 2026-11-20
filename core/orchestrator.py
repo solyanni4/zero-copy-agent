@@ -173,9 +173,13 @@ class HybridOrchestrator:
                 routed = "gemini-advanced"
         # 5. Browser Session Engine (Gemini / ChatGPT / Mock)
         else:
+            is_browser_ready = getattr(self.browser_engine, "is_ready", False)
             resp = await self.browser_engine.query(compressed_prompt, target)
             if inject_signature:
-                badge = format_badge(target)
+                if not is_browser_ready and target != "mock-test":
+                    badge = format_badge("mock-test", role="Демо-симулятор (Сессия не подключена ⚪)")
+                else:
+                    badge = format_badge(target)
                 content = badge + resp
             else:
                 content = resp
@@ -266,8 +270,12 @@ class HybridOrchestrator:
                     async for tok in self.browser_engine.query_stream(compressed_prompt, "gemini-advanced"):
                         yield tok
             else:
+                is_browser_ready = getattr(self.browser_engine, "is_ready", False)
                 if inject_signature:
-                    yield format_badge(target)
+                    if not is_browser_ready and target != "mock-test":
+                        yield format_badge("mock-test", role="Демо-симулятор (Сессия не подключена ⚪)")
+                    else:
+                        yield format_badge(target)
                 async for tok in self.browser_engine.query_stream(compressed_prompt, target):
                     yield tok
 
@@ -301,7 +309,8 @@ class HybridOrchestrator:
         self,
         user_prompt: str,
         req_id: str = "",
-        inject_signature: bool = True
+        inject_signature: bool = True,
+        existing_plan: Optional[str] = None
     ) -> str:
         """
         Closed-Loop Architect Cascade:
@@ -311,32 +320,51 @@ class HybridOrchestrator:
         Step 4: Architect Audit (diff-based semantic verification)
         Step 5: Automated Rework Loop (up to max_rework_iterations with escalation)
         """
-        logger.info("[Cascade] Step 1: Architectural Blueprint via Gemini 4 Neon / Advanced...")
-        if req_id:
-            analytics.record_event(req_id, "cascade_step1", "gemini-4-neon", "Generating Architectural Blueprint")
-        plan_prompt = (
-            f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
-            f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
-        )
-        plan = await self.browser_engine.query(plan_prompt, "gemini-advanced")
+        arch_model = getattr(self, "architect_model", "gemini-advanced")
+        rev_model = getattr(self, "reviewer_model", "gemini-advanced")
+        coder_target = getattr(self, "executor_model", None)
+
+        if existing_plan:
+            plan = existing_plan
+        else:
+            logger.info(f"[Cascade] Step 1: Architectural Blueprint via {arch_model}...")
+            if req_id:
+                analytics.record_event(req_id, "cascade_step1", arch_model, "Generating Architectural Blueprint")
+            plan_prompt = (
+                f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
+                f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
+            )
+            plan = await self.browser_engine.query(plan_prompt, arch_model)
+
+        # Breakpoint verification
+        if self.breakpoint_enabled:
+            logger.info("[Cascade] Breakpoint active. Pausing after architectural plan.")
+            if req_id:
+                analytics.record_event(req_id, "cascade_breakpoint", arch_model, "Cascade paused at breakpoint after architectural plan")
+            badge = format_cascade_badge(arch_model, "pending", status="PAUSED", iterations=0) if inject_signature else ""
+            return (
+                f"{badge}"
+                f"### ⏸️ [Breakpoint] Архитектурный план сформирован (Ожидает подтверждения):\n{plan}\n\n"
+                f"> **Точка останова активна.** Проверьте спецификацию архитектора перед переходом к генерации кода."
+            )
 
         async def _call_executor(prompt_text: str) -> Tuple[str, str]:
             ollama_models = await self.ollama.list_models()
-            coder_model = next((m for m in ollama_models if "qwen2.5-coder" in m), None)
+            chosen_coder = coder_target if (coder_target and coder_target in ollama_models) else next((m for m in ollama_models if "qwen2.5-coder" in m), None)
 
-            if coder_model and await self.ollama.is_authenticated():
-                resp = await self.ollama.send_prompt(prompt_text, model=coder_model)
-                return resp, coder_model
+            if chosen_coder and await self.ollama.is_authenticated():
+                resp = await self.ollama.send_prompt(prompt_text, model=chosen_coder)
+                return resp, chosen_coder
             elif await self.ollama.is_authenticated():
                 resp = await self.ollama.send_prompt(prompt_text)
                 return resp, "ollama/default"
             else:
-                resp = await self.browser_engine.query(prompt_text, "gemini-advanced")
-                return resp, "gemini-advanced"
+                resp = await self.browser_engine.query(prompt_text, arch_model)
+                return resp, arch_model
 
         max_rework = getattr(self, "max_rework_iterations", 2)
         current_code = ""
-        executor_id = "gemini-advanced"
+        executor_id = arch_model
         iteration = 0
         final_status = "PASS"
         last_audit_issues: List[Dict[str, Any]] = []
@@ -389,16 +417,16 @@ class HybridOrchestrator:
 
             # --- 2. ARCHITECT AUDIT (semantic diff-based check) ---
             if self.enable_architect_audit:
-                logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num})...")
+                logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num}) via {rev_model}...")
                 audit_prompt = self.auditor.build_audit_prompt(plan, current_code)
-                raw_audit = await self.browser_engine.query(audit_prompt, "gemini-advanced")
+                raw_audit = await self.browser_engine.query(audit_prompt, rev_model)
                 audit_res = self.auditor.parse_audit_response(raw_audit)
                 verdict = audit_res.get("verdict", "PASS")
                 audit_issues = audit_res.get("issues", [])
                 critical_issues = [i for i in audit_issues if i.get("severity") == "critical"]
 
                 if req_id:
-                    analytics.record_event(req_id, "architect_audit", "gemini-advanced", f"Architect Audit verdict: {verdict} ({len(audit_issues)} issues)", audit_res)
+                    analytics.record_event(req_id, "architect_audit", rev_model, f"Architect Audit verdict: {verdict} ({len(audit_issues)} issues)", audit_res)
 
                 if verdict == "PASS" and not critical_issues:
                     logger.info(f"[Cascade] Architect Audit PASSED on iteration {iteration_num}.")
@@ -421,7 +449,7 @@ class HybridOrchestrator:
         if final_status == "ESCALATED":
             if req_id:
                 analytics.record_event(req_id, "cascade_escalated", "cascade:architect", f"Cascade exceeded max rework iterations ({max_rework}). Escalated.")
-            badge = format_cascade_badge("gemini-advanced", executor_id, status="ESCALATED", iterations=iteration) if inject_signature else ""
+            badge = format_cascade_badge(arch_model, executor_id, status="ESCALATED", iterations=iteration) if inject_signature else ""
             escalation_report = "\n".join([
                 f"- **{i.get('file', 'General')}** [{i.get('severity', 'warning')}]: {i.get('description', '')} (*Инструкция: {i.get('fix_instruction', '')}*)"
                 for i in last_audit_issues
@@ -435,7 +463,7 @@ class HybridOrchestrator:
                 f"---\n### 💻 Последняя версия реализации:\n{current_code}"
             )
 
-        badge = format_cascade_badge("gemini-advanced", executor_id, status="PASS", iterations=iteration + 1) if inject_signature else ""
+        badge = format_cascade_badge(arch_model, executor_id, status="PASS", iterations=iteration + 1) if inject_signature else ""
         return (
             f"{badge}"
             f"### 📐 Архитектурный план (Шаг 1):\n{plan}\n\n"
@@ -448,9 +476,10 @@ class HybridOrchestrator:
         req_id: str = "",
         inject_signature: bool = True
     ) -> AsyncGenerator[str, None]:
-        """Streaming version of Closed-Loop Architect Cascade."""
+        """Streaming version of Closed-Loop Architect Cascade without duplicate plan generation."""
+        arch_model = getattr(self, "architect_model", "gemini-advanced")
         if req_id:
-            analytics.record_event(req_id, "cascade_step1", "gemini-4-neon", "Streaming Architectural Blueprint")
+            analytics.record_event(req_id, "cascade_step1", arch_model, "Streaming Architectural Blueprint")
         if inject_signature:
             yield "⚡ **[ZCAO Cascade: Архитектор (Шаг 1: Проектирование)]**\n\n"
         plan_prompt = (
@@ -458,16 +487,29 @@ class HybridOrchestrator:
             f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
         )
         plan_tokens = []
-        async for token in self.browser_engine.query_stream(plan_prompt, "gemini-advanced"):
+        async for token in self.browser_engine.query_stream(plan_prompt, arch_model):
             plan_tokens.append(token)
             yield token
 
         plan = "".join(plan_tokens)
+
+        # Respect breakpoint_enabled
+        if self.breakpoint_enabled:
+            if req_id:
+                analytics.record_event(req_id, "cascade_breakpoint", arch_model, "Cascade paused at breakpoint after architectural plan")
+            yield "\n\n---\n⏸️ **[Breakpoint] Выполнение приостановлено:** Архитектурный план сформирован. Проверьте план перед запуском генерации кода."
+            return
+
         if inject_signature:
             yield "\n\n---\n⚡ **[ZCAO Cascade: Запуск замкнутого цикла реализации и аудита...]**\n\n"
 
-        # Execute full closed-loop cascade for guaranteed quality and safety
-        result_full = await self._run_cascade_architect(user_prompt, req_id=req_id, inject_signature=False)
+        # Execute full closed-loop cascade reusing the generated plan
+        result_full = await self._run_cascade_architect(
+            user_prompt,
+            req_id=req_id,
+            inject_signature=False,
+            existing_plan=plan
+        )
         if "### 💻 Реализация (Шаг 2):" in result_full:
             code_part = result_full.split("### 💻 Реализация (Шаг 2):", 1)[1]
             yield f"### 💻 Реализация (Шаг 2, проверено аудитором):{code_part}"

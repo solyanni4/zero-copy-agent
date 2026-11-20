@@ -282,5 +282,43 @@ def test_update_progress_and_install_endpoints():
     assert "status" in data
     assert "percent" in data
 
+def test_account_toggle_and_ping_endpoints():
+    # 1. Non-existent account toggle
+    res_bad = client.post("/v1/providers/accounts/non_existent_account_12345/toggle")
+    assert res_bad.status_code == 404
+
+    # 2. Non-existent account ping
+    res_ping_bad = client.post("/v1/providers/accounts/non_existent_account_12345/ping")
+    assert res_ping_bad.status_code == 404
+
+    # 3. Add temporary key to test toggle and ping
+    add_res = client.post("/v1/providers/keys", json={
+        "provider": "openai",
+        "api_key": "sk-proj-testkey1234567890",
+        "alias": "Test Key"
+    })
+    assert add_res.status_code == 200
+    acc_id = add_res.json()["account_id"]
+
+    # Toggle to inactive
+    t1 = client.post(f"/v1/providers/accounts/{acc_id}/toggle")
+    assert t1.status_code == 200
+    assert t1.json()["new_status"] == "inactive"
+
+    # Toggle back to active
+    t2 = client.post(f"/v1/providers/accounts/{acc_id}/toggle")
+    assert t2.status_code == 200
+    assert t2.json()["new_status"] == "active"
+
+    # Ping
+    p = client.post(f"/v1/providers/accounts/{acc_id}/ping")
+    assert p.status_code == 200
+    assert p.json()["status"] == "ok"
+    assert "latency_ms" in p.json()
+
+    # Clean up
+    del_res = client.delete(f"/v1/providers/keys/{acc_id}")
+    assert del_res.status_code == 200
+
 
 

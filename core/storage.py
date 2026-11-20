@@ -170,6 +170,17 @@ class AnalyticsStorage:
             totals["tokens_saved"] = tokens_saved
             totals["tokens_saved_pct"] = tokens_saved_pct
 
+            # Cognitive events totals (DLP & Rework)
+            cur.execute("""
+                SELECT 
+                    COALESCE(SUM(CASE WHEN stage = 'dlp_sanitized' THEN 1 ELSE 0 END), 0) as dlp_masked,
+                    COALESCE(SUM(CASE WHEN stage = 'rework_iteration' THEN 1 ELSE 0 END), 0) as rework_loops
+                FROM cognitive_events;
+            """)
+            evt_row = dict(cur.fetchone())
+            totals["dlp_masked"] = evt_row.get("dlp_masked", 0)
+            totals["rework_loops"] = evt_row.get("rework_loops", 0)
+
             # Today's Totals
             today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             cur.execute("""

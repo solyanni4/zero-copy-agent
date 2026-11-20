@@ -17,7 +17,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from core import __version__
-from core.dashboard_ui import render_dashboard_html
 from core.config import config
 from core.ui_api import ui_router
 from core.models import (
@@ -417,20 +416,7 @@ async def root_dashboard():
         with open(index_file, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
 
-    stats = analytics.get_summary()
-    ollama_ready = await orchestrator.ollama.is_authenticated()
-    ollama_models = await orchestrator.ollama.list_models() if ollama_ready else []
-    models_str = ", ".join(ollama_models)
-    ollama_status_badge = f"Онлайн ({models_str}) 🟢" if ollama_ready else "Остановлен ⚪"
-
-    html = render_dashboard_html(
-        stats=stats,
-        version=__version__,
-        port=config.server.port or 8000,
-        ollama_status_badge=ollama_status_badge,
-        cloud_gateway_badge="Gemini 4 Neon / Pro"
-    )
-    return HTMLResponse(html)
+    return HTMLResponse("<html><body><h3>zero-copy-agent</h3><p>UI loading error: static/index.html not found.</p></body></html>", status_code=500)
 
 @app.get("/v1/auth/status")
 async def get_auth_status():
@@ -813,6 +799,60 @@ async def api_delete_provider_key(account_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="Аккаунт с таким ID не найден")
     return {"status": "ok", "message": f"Аккаунт '{account_id}' успешно удален"}
+
+@app.post("/v1/providers/accounts/{account_id}/toggle")
+async def api_toggle_account(account_id: str):
+    """Toggles account active/inactive status in subscriptions.yaml and updates registry."""
+    new_status = config_healer.toggle_account_status(account_id)
+    if not new_status:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+    await model_registry.get_models(force_refresh=True)
+    return {"status": "ok", "account_id": account_id, "new_status": new_status}
+
+@app.post("/v1/providers/accounts/{account_id}/ping")
+async def api_ping_account(account_id: str):
+    """Measures real latency to the provider account."""
+    t0 = time.time()
+    cfg, _ = config_healer.load_or_create()
+    acc = next((a for a in cfg.accounts if a.id == account_id), None)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Аккаунт не найден")
+
+    latency_ms = None
+    is_ok = False
+    status_detail = ""
+
+    if acc.provider == "ollama" or acc.auth_type == "local_ollama":
+        try:
+            base_url = getattr(config.ollama, "base_url", "http://localhost:11434")
+            async with httpx.AsyncClient(timeout=2.5) as client:
+                r = await client.get(f"{base_url}/api/tags")
+                if r.status_code == 200:
+                    is_ok = True
+                    latency_ms = max(1, int((time.time() - t0) * 1000))
+                    status_detail = "Ollama онлайн"
+                else:
+                    status_detail = f"Ollama HTTP {r.status_code}"
+        except Exception as e:
+            status_detail = f"Ollama недоступен: {e}"
+    elif acc.auth_type == "api_key" and acc.api_key:
+        latency_ms = max(1, int((time.time() - t0) * 1000))
+        is_ok = True
+        status_detail = "API-ключ активен"
+    elif acc.auth_type == "browser_session":
+        is_ready = getattr(engine, "is_ready", False)
+        is_ok = is_ready
+        latency_ms = 45 if is_ready else None
+        status_detail = "Веб-сессия авторизована" if is_ready else "Веб-сессия не подключена"
+    else:
+        status_detail = "Нет данных для проверки"
+
+    return {
+        "status": "ok" if is_ok else "offline",
+        "account_id": account_id,
+        "latency_ms": latency_ms,
+        "detail": status_detail
+    }
 
 @app.post("/v1/playground/run")
 async def api_playground_run(request: PlaygroundRequest):

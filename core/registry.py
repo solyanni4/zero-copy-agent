@@ -51,9 +51,14 @@ class ModelRegistry:
         if ollama_driver:
             try:
                 if await ollama_driver.is_authenticated():
-                    ollama_connected = True
-                    ollama_models = await ollama_driver.list_models()
-                    ollama_status = f"Online ({len(ollama_models)} models)"
+                    raw_models = await ollama_driver.list_models()
+                    if raw_models:
+                        ollama_connected = True
+                        ollama_models = raw_models
+                        ollama_status = f"Online ({len(ollama_models)} models)"
+                    else:
+                        ollama_connected = False
+                        ollama_status = "Online (0 models)"
             except Exception as e:
                 logger.debug(f"[Registry] Ollama health check error: {e}")
                 ollama_status = f"Error: {e}"
@@ -73,8 +78,7 @@ class ModelRegistry:
         if browser_engine:
             try:
                 active_prov = getattr(browser_engine, "active_provider", "gemini")
-                is_ready = getattr(browser_engine, "is_ready", True)
-                browser_connected = is_ready
+                is_ready = getattr(browser_engine, "is_ready", False)
 
                 from core.healer import config_healer
                 sub_cfg, _ = config_healer.load_or_create()
@@ -88,11 +92,15 @@ class ModelRegistry:
                     for m in acc.models:
                         collected_models.add(m.id)
 
-                if collected_models:
-                    browser_connected = is_ready
+                if collected_models and is_ready:
+                    browser_connected = True
                     browser_models = sorted(list(collected_models))
                     prov_names = [a.provider for a in active_web_accs]
-                    browser_status = f"Active ({', '.join(prov_names)})" if is_ready else "Idle"
+                    browser_status = f"Active ({', '.join(prov_names)})"
+                elif collected_models:
+                    browser_connected = False
+                    browser_models = []
+                    browser_status = "Idle (Not Authenticated)"
                 elif type(browser_engine).__name__.startswith("Mock") and is_ready:
                     if active_prov == "gemini":
                         browser_models = ["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"]
@@ -193,7 +201,7 @@ class ModelRegistry:
             from core.healer import config_healer
             sub_cfg, _ = config_healer.load_or_create()
             for acc in sub_cfg.accounts:
-                if acc.status == "active" and (acc.api_key or acc.auth_type == "api_key"):
+                if acc.status == "active" and acc.api_key and acc.api_key.strip():
                     for m in acc.models:
                         if m.status == "active":
                             sub_account_models.add(m.id)

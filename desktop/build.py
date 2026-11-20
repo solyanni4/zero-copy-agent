@@ -83,7 +83,6 @@ def build():
         "--hidden-import=clr_loader",
         "--hidden-import=core",
         "--hidden-import=core.ui_api",
-        "--hidden-import=core.dashboard_ui",
         "--hidden-import=core.storage",
         "--hidden-import=core.compression",
         "--hidden-import=core.shield",

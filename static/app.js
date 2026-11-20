@@ -9,7 +9,7 @@
 const state = {
   activeView: 'orchestrator',
   mode: 'auto', // 'auto' | 'cascade' | 'manual'
-  globalModel: 'gemini-4-neon',
+  globalModel: '',
   dlpEnabled: true,
   irEnabled: true,
   airGap: false,
@@ -20,15 +20,16 @@ const state = {
 
   // Per-stage DAG config & live status
   dagStages: [
-    { id: 'architect', label: '1. Архитектор', model: 'gemini-4-neon', status: 'pass', fixed: false },
-    { id: 'executor', label: '2. Исполнитель', model: 'qwen2.5-coder:14b', status: 'pass', fixed: false },
-    { id: 'gate', label: '3. Local Hard Gate', model: 'py_compile + pytest', status: 'pass', fixed: true },
-    { id: 'audit', label: '4. Аудит Архитектора', model: 'gemini-4-neon', status: 'pass', fixed: false },
+    { id: 'architect', label: '1. Архитектор', model: '', status: 'idle', fixed: false },
+    { id: 'executor', label: '2. Исполнитель', model: '', status: 'idle', fixed: false },
+    { id: 'gate', label: '3. Local Hard Gate', model: 'py_compile + pytest', status: 'idle', fixed: true },
+    { id: 'audit', label: '4. Аудит Архитектора', model: '', status: 'idle', fixed: false },
   ],
 
   // Session telemetry
   metrics: {
     tokensSaved: 0,
+    actualProcessed: 0,
     costSaved: 0.0,
     dlpMasked: 0,
     reworkLoops: 0,
@@ -420,7 +421,8 @@ function renderGlobalModelSelect() {
   const sel = document.getElementById('global-model-select');
   if (!sel) return;
   if (!state.connectedModels.length) {
-    sel.innerHTML = '<option value="" disabled selected>— Нет подключенных моделей —</option>';
+    sel.innerHTML = '<option value="" disabled selected>— Нет подключённых моделей —</option>';
+    state.globalModel = '';
     return;
   }
   const hasCurrent = state.connectedModels.some(m => m.id === state.globalModel);
@@ -449,6 +451,29 @@ async function syncConnectedModels() {
         local: isLocal
       };
     });
+
+    if (state.connectedModels.length === 0) {
+      state.globalModel = '';
+      state.dagStages[0].model = '';
+      state.dagStages[1].model = '';
+      state.dagStages[3].model = '';
+    } else {
+      if (!state.connectedModels.some(m => m.id === state.globalModel)) {
+        state.globalModel = state.connectedModels[0].id;
+      }
+      if (!state.dagStages[0].model || !state.connectedModels.some(m => m.id === state.dagStages[0].model)) {
+        const cloudM = state.connectedModels.find(m => !m.local);
+        state.dagStages[0].model = cloudM ? cloudM.id : state.connectedModels[0].id;
+      }
+      if (!state.dagStages[1].model || !state.connectedModels.some(m => m.id === state.dagStages[1].model)) {
+        const localM = state.connectedModels.find(m => m.local);
+        state.dagStages[1].model = localM ? localM.id : state.connectedModels[0].id;
+      }
+      if (!state.dagStages[3].model || !state.connectedModels.some(m => m.id === state.dagStages[3].model)) {
+        state.dagStages[3].model = state.dagStages[0].model;
+      }
+    }
+
     renderGlobalModelSelect();
     renderDagInspector();
   } catch (err) {
@@ -461,11 +486,13 @@ function renderMetrics() {
   const cEl = document.getElementById('metric-cost');
   const dEl = document.getElementById('metric-dlp');
   const rEl = document.getElementById('metric-rework');
+  const pEl = document.getElementById('metric-actual-processed');
 
   if (tEl) tEl.textContent = state.metrics.tokensSaved.toLocaleString('ru-RU');
   if (cEl) cEl.textContent = '$' + state.metrics.costSaved.toFixed(2);
   if (dEl) dEl.textContent = state.metrics.dlpMasked;
   if (rEl) rEl.textContent = state.metrics.reworkLoops;
+  if (pEl) pEl.textContent = (state.metrics.actualProcessed || 0).toLocaleString('ru-RU');
 }
 
 function renderDagInspector() {
@@ -650,57 +677,72 @@ function sleep(ms) {
 
 async function startRealOrSimulatedExecution(promptText) {
   if (state.isRunning) return;
-  state.isRunning = true;
   const sendBtn = document.getElementById('btn-send');
+
+  if (!state.connectedModels.length) {
+    const run = {
+      id: 'run-' + Date.now(),
+      prompt: promptText,
+      attribution: { architect: '—', executor: '—' },
+      finalStatus: 'ERROR',
+      stages: [{
+        key: 'no-models',
+        title: 'Ошибка: Нет подключённых моделей',
+        model: '—',
+        status: 'REJECT',
+        ttft: '0ms',
+        duration: '0s',
+        irSaved: '0%',
+        dlpCount: 0,
+        expanded: true,
+        payloadType: 'text',
+        payload: '⚠️ Нет подключённых моделей для выполнения запроса.\nПерейдите в раздел «Модели и пул» и подключите API-ключ или запустите локальную модель через Ollama.'
+      }]
+    };
+    state.traces.unshift(run);
+    renderTraces();
+    return;
+  }
+
+  state.isRunning = true;
   if (sendBtn) sendBtn.disabled = true;
 
-  const archModelId = state.airGap ? 'qwen2.5-coder:14b' : (state.mode === 'manual' ? state.globalModel : state.dagStages[0].model);
-  const execModelId = state.airGap ? 'qwen2.5-coder:14b' : (state.mode === 'manual' ? state.globalModel : state.dagStages[1].model);
-  const auditModelId = state.airGap ? 'qwen2.5-coder:14b' : (state.mode === 'manual' ? state.globalModel : state.dagStages[3].model);
-
-  const archName = getModelDisplayName(archModelId);
-  const execName = getModelDisplayName(execModelId);
-  const auditName = getModelDisplayName(auditModelId);
+  const activeTarget = state.airGap ? 'tier:local-fast' : (state.mode === 'cascade' ? 'cascade:architect' : (state.globalModel || state.connectedModels[0].id));
+  const activeModelDisplay = getModelDisplayName(activeTarget);
 
   const run = {
     id: 'run-' + Date.now(),
     prompt: promptText,
-    attribution: { architect: archName, executor: execName },
+    attribution: { architect: activeModelDisplay, executor: activeModelDisplay },
     finalStatus: 'RUNNING',
     stages: []
   };
-
   state.traces.unshift(run);
   state.dagStages.forEach(s => s.status = 'idle');
   renderDagInspector();
   renderTraces();
 
   const startTime = Date.now();
+  state.dagStages[0].status = 'running';
+  renderDagInspector();
 
-  // Try real streaming execution via /v1/chat/completions
-  let realExecuted = false;
+  const activeStage = {
+    key: 'execution',
+    title: state.mode === 'cascade' ? 'Конвейер Архитектора' : `Запрос к модели · ${activeModelDisplay}`,
+    model: activeModelDisplay,
+    status: 'RUNNING',
+    ttft: '...',
+    duration: '...',
+    irSaved: state.irEnabled ? 'L2 IR' : '0%',
+    dlpCount: 0,
+    expanded: true,
+    payloadType: 'text',
+    payload: ''
+  };
+  run.stages.push(activeStage);
+  renderTraces();
+
   try {
-    const activeTarget = state.airGap ? 'tier:local-fast' : (state.mode === 'cascade' ? 'cascade:architect' : state.globalModel);
-    
-    // Stage 1: Architect
-    state.dagStages[0].status = 'running';
-    renderDagInspector();
-    const st1 = {
-      key: 'architect',
-      title: '1. Архитектор · План и спецификации',
-      model: archName,
-      status: 'RUNNING',
-      ttft: '...',
-      duration: '...',
-      irSaved: state.irEnabled ? '-42%' : '0%',
-      dlpCount: state.dlpEnabled ? 1 : 0,
-      expanded: true,
-      payloadType: 'text',
-      payload: ''
-    };
-    run.stages.push(st1);
-    renderTraces();
-
     const response = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -711,290 +753,73 @@ async function startRealOrSimulatedExecution(promptText) {
       })
     });
 
-    if (response.ok && response.body) {
-      realExecuted = true;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      let fullContent = '';
-      let firstChunkTime = null;
+    if (!response.ok) {
+      const errText = await response.text();
+      activeStage.status = 'REJECT';
+      activeStage.payload = `Ошибка сервера (${response.status}): ${errText}`;
+      activeStage.duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+      run.finalStatus = 'ERROR';
+      state.dagStages.forEach(s => s.status = 'reject');
+      return;
+    }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    const zcaModel = response.headers.get('x-zca-model');
+    if (zcaModel) {
+      activeStage.model = zcaModel;
+      run.attribution.architect = zcaModel;
+    }
 
-        if (!firstChunkTime) {
-          firstChunkTime = Date.now();
-          st1.ttft = `${firstChunkTime - startTime}ms`;
-        }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let fullContent = '';
+    let firstChunkTime = null;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('data: ')) {
-            const jsonStr = trimmed.replace('data: ', '').trim();
-            if (jsonStr === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(jsonStr);
-              const chunk = parsed.choices?.[0]?.delta?.content || '';
-              fullContent += chunk;
-              st1.payload = fullContent;
-            } catch (e) {}
-          }
-        }
-        renderTraces();
+      if (!firstChunkTime) {
+        firstChunkTime = Date.now();
+        activeStage.ttft = `${firstChunkTime - startTime}ms`;
       }
 
-      st1.status = 'PASS';
-      st1.duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-      st1.expanded = false;
-      state.dagStages[0].status = 'pass';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
 
-      // Stage 2: Code Executor
-      state.dagStages[1].status = 'pass';
-      const st2 = {
-        key: 'executor',
-        title: '2. Исполнитель · Сгенерированное решение',
-        model: execName,
-        status: 'PASS',
-        ttft: '54ms',
-        duration: '1.2s',
-        irSaved: state.irEnabled ? '-38%' : '0%',
-        dlpCount: 0,
-        expanded: true,
-        payloadType: 'text',
-        payload: fullContent
-      };
-      run.stages.push(st2);
-
-      // Stage 3: Gate
-      state.dagStages[2].status = 'pass';
-      run.stages.push({
-        key: 'gate',
-        title: '3. Local Hard Gate · Синтаксический контроль',
-        model: 'AST Parser · 0 tokens',
-        status: 'PASS',
-        ttft: '2ms',
-        duration: '0.1s',
-        irSaved: '0 tok',
-        dlpCount: 0,
-        expanded: false,
-        payloadType: 'text',
-        payload: '[PASS] Local Hard Gate: 0 syntax issues detected.'
-      });
-
-      // Stage 4: Audit
-      state.dagStages[3].status = 'pass';
-      run.stages.push({
-        key: 'audit',
-        title: '4. Аудит Архитектора · Заключение',
-        model: auditName,
-        status: 'PASS',
-        ttft: '280ms',
-        duration: '0.8s',
-        irSaved: '-45%',
-        dlpCount: 0,
-        expanded: false,
-        payloadType: 'text',
-        payload: '{\n  "verdict": "PASS",\n  "issues": []\n}'
-      });
-
-      run.finalStatus = 'PASS';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          const jsonStr = trimmed.replace('data: ', '').trim();
+          if (jsonStr === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const chunk = parsed.choices?.[0]?.delta?.content || '';
+            fullContent += chunk;
+            activeStage.payload = fullContent;
+          } catch (e) {}
+        }
+      }
+      renderTraces();
     }
+
+    activeStage.status = 'PASS';
+    activeStage.duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+    run.finalStatus = 'PASS';
+    state.dagStages.forEach(s => s.status = 'pass');
   } catch (err) {
-    // network or backend fallback
-  }
-
-  // Graceful fallback simulation if backend returned non-stream or offline
-  if (!realExecuted) {
-    await simulateFallbackExecution(run, promptText, archName, execName, auditName);
-  }
-
-  state.isRunning = false;
-  if (sendBtn) sendBtn.disabled = false;
-  renderDagInspector();
-  renderTraces();
-  fetchSystemStatus();
-}
-
-async function simulateFallbackExecution(run, promptText, archName, execName, auditName) {
-  const triggerReject = /reject|rework|реворк|ошибк/i.test(promptText);
-
-  // Stage 1
-  state.dagStages[0].status = 'running';
-  renderDagInspector();
-  const st1 = {
-    key: 'architect',
-    title: '1. Архитектор · План декомпозиции',
-    model: archName,
-    status: 'RUNNING',
-    ttft: '...',
-    duration: '...',
-    irSaved: state.irEnabled ? '-42%' : '0%',
-    dlpCount: state.dlpEnabled ? 1 : 0,
-    expanded: false,
-    payloadType: 'ir',
-    payload: `[IR-L2 SPECIFICATION]\nTASK: ${promptText}\nCONSTRAINTS: modular, tested, zero-leak`
-  };
-  run.stages.push(st1);
-  renderTraces();
-
-  await sleep(600);
-  st1.status = 'PASS';
-  st1.ttft = state.airGap ? '62ms' : '360ms';
-  st1.duration = '1.1s';
-  state.dagStages[0].status = 'pass';
-  renderDagInspector();
-  renderTraces();
-
-  if (state.breakpointEnabled) {
-    state.dagStages[1].status = 'paused';
-    renderDagInspector();
-    document.getElementById('breakpoint-bar').classList.remove('hidden');
-    await new Promise(resolve => {
-      state.pausedResumeCallback = resolve;
-    });
-  }
-
-  // Stage 2
-  state.dagStages[1].status = 'running';
-  renderDagInspector();
-  const st2 = {
-    key: 'executor',
-    title: '2. Исполнитель · Реализация патча',
-    model: execName,
-    status: 'RUNNING',
-    ttft: '...',
-    duration: '...',
-    irSaved: state.irEnabled ? '-38%' : '0%',
-    dlpCount: 0,
-    expanded: true,
-    payloadType: 'diff',
-    payload:
-`--- a/core/target.py
-+++ b/core/target.py
-@@ -10,4 +10,8 @@
-+def execute_task(ctx: dict) -> bool:
-+    if not ctx: return False
-+    return True`
-  };
-  run.stages.push(st2);
-  renderTraces();
-
-  await sleep(700);
-  st2.status = 'PASS';
-  st2.ttft = '58ms';
-  st2.duration = '1.4s';
-  st2.expanded = false;
-  state.dagStages[1].status = 'pass';
-  renderDagInspector();
-  renderTraces();
-
-  // Stage 3 Gate
-  state.dagStages[2].status = 'pass';
-  run.stages.push({
-    key: 'gate',
-    title: '3. Local Hard Gate · Синтаксис + pytest',
-    model: 'py_compile · pytest',
-    status: 'PASS',
-    ttft: '3ms',
-    duration: '0.3s',
-    irSaved: '0 tok',
-    dlpCount: 0,
-    expanded: false,
-    payloadType: 'text',
-    payload: '[PASS] All syntax tests clean in 0.28s'
-  });
-
-  // Stage 4 Audit
-  state.dagStages[3].status = 'running';
-  renderDagInspector();
-  const st4 = {
-    key: 'audit',
-    title: '4. Аудит Архитектора · Проверка diff',
-    model: auditName,
-    status: 'RUNNING',
-    ttft: '...',
-    duration: '...',
-    irSaved: state.irEnabled ? '-44%' : '0%',
-    dlpCount: 0,
-    expanded: triggerReject,
-    payloadType: 'text',
-    payload: triggerReject
-      ? '{\n  "verdict": "REJECT",\n  "issues": [\n    {\n      "file": "core/target.py",\n      "severity": "critical",\n      "description": "Отсутствует обработка таймаута",\n      "fix_instruction": "Добавить таймаут и обработку исключений"\n    }\n  ]\n}'
-      : '{\n  "verdict": "PASS",\n  "issues": []\n}'
-  };
-  run.stages.push(st4);
-  renderTraces();
-
-  await sleep(600);
-  if (triggerReject && state.maxRework >= 1) {
-    st4.status = 'REJECT';
-    st4.ttft = '390ms';
-    st4.duration = '1.0s';
-    state.dagStages[3].status = 'reject';
-    state.metrics.reworkLoops += 1;
-    renderMetrics();
+    activeStage.status = 'REJECT';
+    activeStage.payload = `Сбой сети или шлюза: ${err.message}`;
+    activeStage.duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+    run.finalStatus = 'ERROR';
+    state.dagStages.forEach(s => s.status = 'reject');
+  } finally {
+    state.isRunning = false;
+    if (sendBtn) sendBtn.disabled = false;
     renderDagInspector();
     renderTraces();
-
-    // Rework stage
-    state.dagStages[1].status = 'running';
-    renderDagInspector();
-    const stRework = {
-      key: 'rework',
-      title: '2b. Исполнитель · Реворк #1 (исправление)',
-      model: execName,
-      status: 'RUNNING',
-      ttft: '...',
-      duration: '...',
-      irSaved: '-40%',
-      dlpCount: 0,
-      expanded: true,
-      payloadType: 'diff',
-      payload:
-`--- a/core/target.py
-+++ b/core/target.py
-@@ -12,2 +12,5 @@
-+try:
-+    return execute_task_with_timeout(ctx, timeout=10.0)
-+except TimeoutError: return False`
-    };
-    run.stages.push(stRework);
-    renderTraces();
-
-    await sleep(650);
-    stRework.status = 'PASS';
-    stRework.ttft = '52ms';
-    stRework.duration = '1.1s';
-    state.dagStages[1].status = 'pass';
-
-    // Second audit PASS
-    state.dagStages[3].status = 'pass';
-    run.stages.push({
-      key: 'audit-2',
-      title: '4b. Аудит Архитектора · Финальная проверка',
-      model: auditName,
-      status: 'PASS',
-      ttft: '340ms',
-      duration: '0.7s',
-      irSaved: '-46%',
-      dlpCount: 0,
-      expanded: false,
-      payloadType: 'text',
-      payload: '{\n  "verdict": "PASS",\n  "issues": []\n}'
-    });
-
-    run.finalStatus = 'PASS';
-  } else {
-    st4.status = 'PASS';
-    st4.ttft = '350ms';
-    st4.duration = '0.9s';
-    state.dagStages[3].status = 'pass';
-    run.finalStatus = 'PASS';
+    fetchSystemStatus();
   }
 }
 
@@ -1014,9 +839,9 @@ async function fetchAccountsAndModels() {
         id: acc.id,
         provider: acc.alias || acc.provider,
         models: acc.models || [],
-        rpmUsed: isLocal ? 28 : (acc.models_count * 7),
-        rpmLimit: isLocal ? 120 : 60,
-        ewmaMs: isLocal ? 65 : 420,
+        rpmUsed: acc.rpm_used !== undefined ? acc.rpm_used : null,
+        rpmLimit: acc.rpm_limit !== undefined ? acc.rpm_limit : 60,
+        ewmaMs: acc.ewma_ms !== undefined ? acc.ewma_ms : null,
         status: acc.status || 'active',
         local: isLocal
       };
@@ -1066,7 +891,8 @@ function renderAccountsTable() {
   }
 
   tbody.innerHTML = rows.map(acc => {
-    const pct = Math.round((acc.rpmUsed / acc.rpmLimit) * 100);
+    const hasRpm = acc.rpmUsed !== null && acc.rpmUsed !== undefined;
+    const pct = hasRpm ? Math.round((acc.rpmUsed / acc.rpmLimit) * 100) : 0;
     const barColor = pct > 80 ? 'bg-crimson' : pct > 55 ? 'bg-amber' : 'bg-cobalt';
     const isActive = acc.status === 'active';
     const statusHtml = isActive
@@ -1079,21 +905,27 @@ function renderAccountsTable() {
         ).join('')
       : `<span class="text-muted text-[11px] font-mono">нет моделей</span>`;
 
+    const rpmHtml = hasRpm
+      ? `<div class="flex items-center justify-between font-mono text-[11px] mb-1">
+           <span class="text-ink">${acc.rpmUsed}/${acc.rpmLimit} RPM</span>
+           <span class="text-muted">${pct}%</span>
+         </div>
+         <div class="w-full h-1.5 bg-panel border border-hairline rounded-sm overflow-hidden">
+           <div class="h-full ${barColor}" style="width: ${pct}%"></div>
+         </div>`
+      : `<span class="text-muted font-mono text-[11px]">—</span>`;
+
+    const latencyHtml = (isActive && acc.ewmaMs !== null && acc.ewmaMs !== undefined)
+      ? `${acc.ewmaMs} ms`
+      : '—';
+
     return `
       <tr class="hover:bg-panel/40">
         <td class="py-2.5 px-4 font-mono font-medium text-ink">${escapeHtml(acc.id)}</td>
         <td class="py-2.5 px-3 text-muted">${escapeHtml(acc.provider)}</td>
         <td class="py-2.5 px-3">${modelsHtml}</td>
-        <td class="py-2.5 px-3">
-          <div class="flex items-center justify-between font-mono text-[11px] mb-1">
-            <span class="text-ink">${acc.rpmUsed}/${acc.rpmLimit} RPM</span>
-            <span class="text-muted">${pct}%</span>
-          </div>
-          <div class="w-full h-1.5 bg-panel border border-hairline rounded-sm overflow-hidden">
-            <div class="h-full ${barColor}" style="width: ${pct}%"></div>
-          </div>
-        </td>
-        <td class="py-2.5 px-3 font-mono text-ink">${isActive ? acc.ewmaMs + ' ms' : '—'}</td>
+        <td class="py-2.5 px-3">${rpmHtml}</td>
+        <td class="py-2.5 px-3 font-mono text-ink">${latencyHtml}</td>
         <td class="py-2.5 px-3">${statusHtml}</td>
         <td class="py-2.5 px-4 text-right whitespace-nowrap">
           <div class="inline-flex items-center gap-1.5">
@@ -1188,21 +1020,47 @@ async function submitAddKeyForm(e) {
   }
 }
 
-function pingAccount(id) {
-  const acc = state.accounts.find(a => a.id === id);
-  if (!acc) return;
-  const jitter = Math.floor(Math.random() * 20) - 10;
-  acc.ewmaMs = Math.max(15, (acc.ewmaMs || 300) + jitter);
-  renderAccountsTable();
-  showModelsLog(`[PING] ${id}: 200 OK · EWMA ${acc.ewmaMs} ms`, 'text-emerald');
+async function pingAccount(id) {
+  try {
+    const res = await fetch(`/v1/providers/accounts/${encodeURIComponent(id)}/ping`, { method: 'POST' });
+    if (!res.ok) {
+      showModelsLog(`[PING] ${id}: Ошибка проверки узла`, 'text-crimson');
+      return;
+    }
+    const data = await res.json();
+    const acc = state.accounts.find(a => a.id === id);
+    if (acc) {
+      acc.ewmaMs = data.latency_ms;
+      renderAccountsTable();
+    }
+    if (data.status === 'ok') {
+      showModelsLog(`[PING] ${id}: 200 OK · ${data.latency_ms} ms (${data.detail})`, 'text-emerald');
+    } else {
+      showModelsLog(`[PING] ${id}: Недоступен · ${data.detail}`, 'text-amber');
+    }
+  } catch (err) {
+    showModelsLog(`[PING] ${id}: Сбой соединения: ${err.message}`, 'text-crimson');
+  }
 }
 
-function toggleAccountStatus(id) {
-  const acc = state.accounts.find(a => a.id === id);
-  if (!acc) return;
-  acc.status = acc.status === 'active' ? 'inactive' : 'active';
-  renderAccountsTable();
-  showModelsLog(`[POOL] Статус аккаунта ${id} изменён на ${acc.status}`, 'text-cobalt');
+async function toggleAccountStatus(id) {
+  try {
+    const res = await fetch(`/v1/providers/accounts/${encodeURIComponent(id)}/toggle`, { method: 'POST' });
+    if (!res.ok) {
+      alert('Ошибка при изменении статуса аккаунта');
+      return;
+    }
+    const data = await res.json();
+    const acc = state.accounts.find(a => a.id === id);
+    if (acc) {
+      acc.status = data.new_status;
+      renderAccountsTable();
+    }
+    await syncConnectedModels();
+    showModelsLog(`[POOL] Статус аккаунта ${id} изменён на ${data.new_status}`, 'text-cobalt');
+  } catch (err) {
+    alert('Сетевая ошибка: ' + err.message);
+  }
 }
 
 async function runModelDiscovery() {
@@ -1238,11 +1096,14 @@ async function runConfigHealer() {
       showModelsLog(`[HEALER] Выполнено: ${mods} исправлений, схема v${data.schema_version}. Атомарный бэкап .bak актуален.`, 'text-emerald');
       await fetchAccountsAndModels();
       return;
+    } else {
+      showModelsLog('[HEALER] subscriptions.yaml валиден, дубликатов 0.', 'text-emerald');
     }
-  } catch (e) {}
-
-  showModelsLog('[HEALER] subscriptions.yaml валиден, дубликатов 0.', 'text-emerald');
-  if (btn) btn.disabled = false;
+  } catch (e) {
+    showModelsLog(`[HEALER] Ошибка: ${e.message}`, 'text-crimson');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function showModelsLog(msg, colorClass) {
@@ -1561,12 +1422,11 @@ async function fetchSystemStatus() {
 
     // 1. Savings & Telemetry
     if (data.savings) {
-      if (data.savings.total_tokens !== undefined) {
-        state.metrics.tokensSaved = data.savings.total_tokens;
-      }
-      if (data.savings.total_saved_usd !== undefined) {
-        state.metrics.costSaved = data.savings.total_saved_usd;
-      }
+      state.metrics.tokensSaved = data.savings.tokens_saved !== undefined ? data.savings.tokens_saved : (data.savings.total_tokens || 0);
+      state.metrics.actualProcessed = data.savings.total_tokens || 0;
+      state.metrics.costSaved = data.savings.total_saved_usd || 0.0;
+      state.metrics.dlpMasked = data.savings.dlp_masked !== undefined ? data.savings.dlp_masked : 0;
+      state.metrics.reworkLoops = data.savings.rework_loops !== undefined ? data.savings.rework_loops : 0;
       renderMetrics();
     }
 
@@ -1709,7 +1569,7 @@ function insertSampleDlp() {
   input.value = `# Конфигурация шлюза внутренней инфраструктуры
 API_SECRET = "sk-live-94a8f2c19e04b77a88d21f0e"
 HOMELAB_NODE = "http://192.168.50.135:11434"
-DB_ENDPOINT = "postgres://admin@internal-efko.local:5432/core"
+DB_ENDPOINT = "postgres://admin@db.internal:5432/core"
 BACKUP_IP = "10.0.4.22"`;
   runDlpBench();
 }

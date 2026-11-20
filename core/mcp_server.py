@@ -129,12 +129,23 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
 
     elif name == "get_token_savings":
         summary = analytics.get_summary()
+        local_status = "Офлайн ⚪"
+        if _orchestrator and getattr(_orchestrator, "ollama", None):
+            try:
+                if await _orchestrator.ollama.is_authenticated():
+                    models = await _orchestrator.ollama.list_models()
+                    if models:
+                        local_status = f"{models[0]} (Онлайн 🟢)"
+                    else:
+                        local_status = "Ollama активен (0 моделей) ⚪"
+            except Exception:
+                pass
         return (
             f"📊 **Метрики экономии Zero-Copy Agent:**\n"
             f"- 💰 Сэкономлено на API: **${summary.get('total_saved_usd', 0.0):.2f}** (Сегодня: ${summary.get('today_saved_usd', 0.0):.2f})\n"
             f"- ⚡ Всего токенов: **{summary.get('total_tokens', 0):,}**\n"
             f"- 📥 Запросов выполнено: **{summary.get('total_requests', 0)}**\n"
-            f"- 🦙 Локальный GPU: **qwen2.5-coder:14b (Онлайн 🟢)**"
+            f"- 🦙 Локальный GPU: **{local_status}**"
         )
 
     elif name == "compress_code_context":
