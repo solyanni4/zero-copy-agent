@@ -700,13 +700,27 @@
             На GitHub доступна новая версия zero-copy-agent с обновлениями и исправлениями.
           </p>
           <div id="update-modal-notes-box" class="p-3 bg-panel border border-hairline rounded text-[11px] font-mono text-muted max-h-36 overflow-y-auto whitespace-pre-wrap"></div>
+
+          <!-- Progress bar for in-app download -->
+          <div id="update-progress-container" class="hidden space-y-1.5 pt-2">
+            <div class="flex justify-between text-[11px]">
+              <span id="update-progress-label" class="text-ink font-medium">Подготовка к загрузке...</span>
+              <span id="update-progress-pct" class="font-mono text-cobalt font-semibold">0%</span>
+            </div>
+            <div class="w-full bg-panel border border-hairline rounded-full h-2 overflow-hidden">
+              <div id="update-progress-bar" class="bg-cobalt h-full transition-all duration-150" style="width: 0%"></div>
+            </div>
+          </div>
         </div>
-        <div class="px-5 py-3 border-t border-hairline bg-panel flex items-center justify-end gap-2">
-          <button onclick="closeUpdateModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Напомнить позже</button>
-          <a id="btn-download-update" href="#" target="_blank" class="h-8 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-[#0955A3] inline-flex items-center gap-1.5">
-            <i data-lucide="download" class="w-3.5 h-3.5"></i>
-            <span>Скачать обновление (.exe)</span>
-          </a>
+        <div class="px-5 py-3 border-t border-hairline bg-panel flex items-center justify-between">
+          <a id="btn-manual-download" href="#" target="_blank" class="text-[11px] text-muted hover:text-ink underline">Скачать вручную</a>
+          <div class="flex items-center gap-2">
+            <button id="btn-update-later" onclick="closeUpdateModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Позже</button>
+            <button id="btn-inapp-update" onclick="installUpdateNow()" class="h-8 px-4 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-[#0955A3] inline-flex items-center gap-1.5 shadow">
+              <i data-lucide="zap" class="w-3.5 h-3.5"></i>
+              <span>Обновить прямо сейчас</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

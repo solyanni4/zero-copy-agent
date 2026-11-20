@@ -275,5 +275,12 @@ def test_uninstall_endpoint_validation():
     res_bad = client.post("/v1/system/uninstall", json={"confirm": False})
     assert res_bad.status_code == 400
 
+def test_update_progress_and_install_endpoints():
+    res_prog = client.get("/v1/system/update/progress")
+    assert res_prog.status_code == 200
+    data = res_prog.json()
+    assert "status" in data
+    assert "percent" in data
+
 
 

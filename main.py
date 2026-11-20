@@ -679,6 +679,19 @@ async def api_check_updates():
     from core.updater import check_github_updates
     return check_github_updates()
 
+@app.post("/v1/system/update/install")
+async def api_install_update(payload: dict = Body(default={})):
+    """Downloads update and replaces the running executable automatically."""
+    from core.updater import start_in_app_update
+    res = start_in_app_update(payload.get("download_url"))
+    return res
+
+@app.get("/v1/system/update/progress")
+async def api_get_update_progress():
+    """Returns real-time download and installation progress."""
+    from core.updater import get_update_state
+    return get_update_state()
+
 @app.post("/v1/system/uninstall")
 async def api_uninstall_system(payload: dict = Body(...)):
     """Cleanly uninstalls zero-copy-agent: reverts all IDEs, removes caches/configs."""

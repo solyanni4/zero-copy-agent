@@ -218,6 +218,7 @@ function clearSession() {
 }
 
 let latestUpdateData = null;
+let updatePollTimer = null;
 
 function openUpdateModal(data) {
   const d = data || latestUpdateData;
@@ -227,21 +228,92 @@ function openUpdateModal(data) {
   const currEl = document.getElementById('update-modal-curr-ver');
   const newEl = document.getElementById('update-modal-new-ver');
   const notesEl = document.getElementById('update-modal-notes-box');
-  const dlBtn = document.getElementById('btn-download-update');
+  const manualBtn = document.getElementById('btn-manual-download');
+  const inAppBtn = document.getElementById('btn-inapp-update');
+  const progContainer = document.getElementById('update-progress-container');
 
   if (currEl && d.version) currEl.textContent = 'v' + d.version;
   if (newEl && d.latest_version) newEl.textContent = 'v' + d.latest_version;
   if (notesEl) notesEl.textContent = d.release_notes || 'Доступны плановые улучшения стабильности и расширение функционала.';
-  if (dlBtn) {
-    dlBtn.href = d.download_url || d.release_url || '#';
+  if (manualBtn) {
+    manualBtn.href = d.download_url || d.release_url || '#';
   }
+
+  // Reset progress UI
+  if (progContainer) progContainer.classList.add('hidden');
+  if (inAppBtn) {
+    inAppBtn.disabled = false;
+    inAppBtn.innerHTML = '<i data-lucide="zap" class="w-3.5 h-3.5"></i><span>Обновить прямо сейчас</span>';
+  }
+
   m.classList.remove('hidden');
   if (window.lucide) lucide.createIcons({ nodes: [m] });
 }
 
 function closeUpdateModal() {
+  if (updatePollTimer) clearInterval(updatePollTimer);
   const m = document.getElementById('modal-update');
   if (m) m.classList.add('hidden');
+}
+
+async function installUpdateNow() {
+  const btn = document.getElementById('btn-inapp-update');
+  const btnLater = document.getElementById('btn-update-later');
+  const progContainer = document.getElementById('update-progress-container');
+  const progBar = document.getElementById('update-progress-bar');
+  const progLabel = document.getElementById('update-progress-label');
+  const progPct = document.getElementById('update-progress-pct');
+
+  if (btn) btn.disabled = true;
+  if (btnLater) btnLater.disabled = true;
+  if (progContainer) progContainer.classList.remove('hidden');
+
+  try {
+    const res = await fetch('/v1/system/update/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ download_url: latestUpdateData?.download_url })
+    });
+    const d = await res.json();
+    if (d.status === 'error') {
+      alert(d.message || 'Ошибка запуска обновления');
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    // Start polling progress
+    if (updatePollTimer) clearInterval(updatePollTimer);
+    updatePollTimer = setInterval(async () => {
+      try {
+        const pRes = await fetch('/v1/system/update/progress');
+        if (!pRes.ok) return;
+        const p = await pRes.json();
+
+        if (progBar) progBar.style.width = (p.percent || 0) + '%';
+        if (progPct) progPct.textContent = (p.percent || 0) + '%';
+        if (progLabel) progLabel.textContent = p.message || 'Скачивание обновления...';
+
+        if (p.status === 'applying') {
+          if (progLabel) progLabel.textContent = 'Замена файлов и перезапуск приложения...';
+          clearInterval(updatePollTimer);
+        } else if (p.status === 'error') {
+          clearInterval(updatePollTimer);
+          alert('Ошибка при обновлении: ' + (p.error || p.message));
+          if (btn) btn.disabled = false;
+          if (btnLater) btnLater.disabled = false;
+        }
+      } catch (err) {
+        // When process terminates and restarts, connection will drop (expected)
+        clearInterval(updatePollTimer);
+        if (progLabel) progLabel.textContent = 'Перезапуск приложения...';
+      }
+    }, 250);
+
+  } catch (err) {
+    alert('Не удалось начать установку: ' + err);
+    if (btn) btn.disabled = false;
+    if (btnLater) btnLater.disabled = false;
+  }
 }
 
 async function checkUpdates(opts = {}) {
