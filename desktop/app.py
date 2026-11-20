@@ -269,7 +269,9 @@ class ZeroCopyUnifiedApp:
                 self.window.destroy()
             except Exception:
                 pass
-        sys.exit(0)
+        # Force terminate process cleanly on Windows
+        import os
+        os._exit(0)
 
     def setup_tray(self):
         """Builds system tray icon and menu."""

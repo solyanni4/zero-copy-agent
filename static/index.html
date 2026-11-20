@@ -681,33 +681,63 @@
       </div>
     </div>
 
+    <!-- Modal: Доступно обновление -->
+    <div id="modal-update" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-surface border border-hairline rounded-md w-full max-w-md shadow-xl overflow-hidden flex flex-col">
+        <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
+          <div class="flex items-center gap-2 text-cobalt font-semibold text-[13px]">
+            <i data-lucide="arrow-down-circle" class="w-4 h-4"></i>
+            <span id="update-modal-header">Доступно обновление</span>
+          </div>
+          <button onclick="closeUpdateModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <div class="p-5 space-y-3">
+          <div class="flex items-baseline justify-between">
+            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.0.0</span></span>
+            <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.0.1</span></span>
+          </div>
+          <p id="update-modal-descr" class="text-[12px] text-ink leading-relaxed">
+            На GitHub доступна новая версия zero-copy-agent с обновлениями и исправлениями.
+          </p>
+          <div id="update-modal-notes-box" class="p-3 bg-panel border border-hairline rounded text-[11px] font-mono text-muted max-h-36 overflow-y-auto whitespace-pre-wrap"></div>
+        </div>
+        <div class="px-5 py-3 border-t border-hairline bg-panel flex items-center justify-end gap-2">
+          <button onclick="closeUpdateModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Напомнить позже</button>
+          <a id="btn-download-update" href="#" target="_blank" class="h-8 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-[#0955A3] inline-flex items-center gap-1.5">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>
+            <span>Скачать обновление (.exe)</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal: Полное удаление ПО -->
     <div id="modal-uninstall" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
       <div class="bg-surface border border-hairline rounded-md w-full max-w-md shadow-xl overflow-hidden flex flex-col">
         <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
           <div class="flex items-center gap-2 text-crimson font-semibold text-[13px]">
             <i data-lucide="alert-triangle" class="w-4 h-4"></i>
-            <span>Удаление zero-copy-agent с компьютера</span>
+            <span>Полное удаление программы с компьютера</span>
           </div>
           <button onclick="closeUninstallModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
         <div class="p-5 space-y-3">
           <p class="text-[12px] text-ink leading-relaxed">
-            Вы действительно хотите удалить zero-copy-agent с этого компьютера?
+            Вы действительно хотите полностью удалить zero-copy-agent и все его конфигурации?
           </p>
           <ul class="text-[11px] text-muted space-y-1 list-disc pl-5">
-            <li>Исходные конфигурации всех сред (VS Code Continue, Cursor, Windsurf, Antigravity) будут автоматически восстановлены.</li>
-            <li>Служебные файлы и логи в <code class="font-mono bg-panel px-1 rounded">~/.zero-copy-agent</code> будут удалены.</li>
-            <li>Фоновый шлюз будет корректно остановлен.</li>
+            <li>Все среды разработки (VS Code, Cursor, Windsurf, Antigravity) будут автоматически очищены от настроек шлюза.</li>
+            <li>Локальные файлы моделей, подписок и кэша будут полностью удалены.</li>
+            <li>Приложение сразу завершит работу и закроет все процессы.</li>
           </ul>
           <label class="inline-flex items-center gap-2 cursor-pointer pt-2 text-[12px] text-ink">
             <input type="checkbox" id="uninstall-keep-backups" class="rounded border-hairline text-cobalt" />
-            <span>Сохранить резервные копии на всякий случай</span>
+            <span>Сохранить резервные копии конфигов на диске (~/.zero-copy-agent/backups)</span>
           </label>
         </div>
         <div class="px-5 py-3 border-t border-hairline bg-panel flex items-center justify-end gap-2">
           <button onclick="closeUninstallModal()" class="h-8 px-3 rounded bg-surface border border-hairline text-[12px] font-medium text-muted hover:text-ink">Отмена</button>
-          <button id="btn-confirm-uninstall" onclick="executeUninstall()" class="h-8 px-3 rounded bg-crimson text-white text-[12px] font-medium hover:bg-[#A31616]">Удалить всё и закрыть</button>
+          <button id="btn-confirm-uninstall" onclick="executeUninstall()" class="h-8 px-3 rounded bg-crimson text-white text-[12px] font-medium hover:bg-[#A31616]">Удалить всё и закрыть программу</button>
         </div>
       </div>
     </div>

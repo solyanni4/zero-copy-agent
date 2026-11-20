@@ -77,6 +77,12 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
     html_url = latest_release.get("html_url", "")
     body = latest_release.get("body", "Плановое обновление стабильности")
 
+    download_url = html_url
+    for asset in latest_release.get("assets", []):
+        if asset.get("name", "").endswith(".exe"):
+            download_url = asset.get("browser_download_url", html_url)
+            break
+
     # Simple semver check
     def parse_ver(v: str):
         try:
@@ -93,6 +99,7 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
         "latest_version": tag_name or current_version,
         "commit": tag_name or "latest",
         "release_url": html_url,
-        "release_notes": body[:200] if body else "",
+        "download_url": download_url,
+        "release_notes": body[:300] if body else "",
         "message": f"Доступна новая версия v{tag_name}!" if has_update else f"Версия v{current_version} актуальна."
     }

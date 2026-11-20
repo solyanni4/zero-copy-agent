@@ -74,6 +74,29 @@ def clean_uninstall_system(keep_backups: bool = False) -> Dict[str, Any]:
             except Exception:
                 pass
 
+    # 5. Remove local subscriptions.yaml, database caches and logs in working directory
+    try:
+        sub_paths = [
+            Path.cwd() / "subscriptions.yaml",
+            Path(__file__).resolve().parent.parent / "subscriptions.yaml",
+            Path.home() / ".zero-copy-agent" / "subscriptions.yaml"
+        ]
+        for sp in sub_paths:
+            if sp.exists():
+                sp.unlink(missing_ok=True)
+                steps_executed.append(f"Удален файл подписок и моделей: {sp.name}")
+    except Exception as e:
+        logger.debug(f"Error removing subscriptions: {e}")
+
+    # 6. Wipe in-memory orchestrator subscriptions
+    try:
+        from core.orchestrator import orchestrator
+        if hasattr(orchestrator, "subscriptions"):
+            orchestrator.subscriptions.accounts = []
+        steps_executed.append("Очищен каталог моделей в оперативной памяти")
+    except Exception:
+        pass
+
     return {
         "status": "ok" if not errors else "partial",
         "steps": steps_executed,

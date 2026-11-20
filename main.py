@@ -686,6 +686,20 @@ async def api_uninstall_system(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Подтверждение обязательно (confirm: true)")
     from core.uninstaller import clean_uninstall_system
     result = clean_uninstall_system(keep_backups=payload.get("keep_backups", False))
+
+    # Automatic clean termination of process
+    import threading, time, os
+    def _delayed_terminate():
+        time.sleep(0.8)
+        d_app = getattr(app.state, "desktop_app", None)
+        if d_app:
+            try:
+                d_app.stop()
+            except Exception:
+                pass
+        os._exit(0)
+    threading.Thread(target=_delayed_terminate, daemon=True).start()
+
     return result
 
 @app.get("/v1/orchestration/config")

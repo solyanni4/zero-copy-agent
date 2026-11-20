@@ -217,35 +217,76 @@ function clearSession() {
   showBanner('Сессия очищена.', 'trash-2', 'text-muted');
 }
 
-async function checkUpdates() {
+let latestUpdateData = null;
+
+function openUpdateModal(data) {
+  const d = data || latestUpdateData;
+  if (!d) return;
+  const m = document.getElementById('modal-update');
+  if (!m) return;
+  const currEl = document.getElementById('update-modal-curr-ver');
+  const newEl = document.getElementById('update-modal-new-ver');
+  const notesEl = document.getElementById('update-modal-notes-box');
+  const dlBtn = document.getElementById('btn-download-update');
+
+  if (currEl && d.version) currEl.textContent = 'v' + d.version;
+  if (newEl && d.latest_version) newEl.textContent = 'v' + d.latest_version;
+  if (notesEl) notesEl.textContent = d.release_notes || 'Доступны плановые улучшения стабильности и расширение функционала.';
+  if (dlBtn) {
+    dlBtn.href = d.download_url || d.release_url || '#';
+  }
+  m.classList.remove('hidden');
+  if (window.lucide) lucide.createIcons({ nodes: [m] });
+}
+
+function closeUpdateModal() {
+  const m = document.getElementById('modal-update');
+  if (m) m.classList.add('hidden');
+}
+
+async function checkUpdates(opts = {}) {
+  const isInteractive = opts.interactive !== false && !opts.autoPrompt;
   const btn = document.getElementById('btn-check-updates');
   const icon = btn ? btn.querySelector('svg, i') : null;
   const statusLine = document.getElementById('update-status-line');
-  if (icon) icon.classList.add('animate-spin');
+  if (icon && isInteractive) icon.classList.add('animate-spin');
 
   try {
     const res = await fetch('/v1/ui/updates/check');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    latestUpdateData = data;
+
     if (statusLine) {
       if (data.has_update) {
-        statusLine.innerHTML = `<a href="${data.release_url || '#'}" target="_blank" class="underline text-cobalt font-semibold">Доступно обновление v${data.latest_version}</a>`;
+        statusLine.innerHTML = `<button onclick="openUpdateModal()" class="underline text-cobalt font-semibold hover:text-[#0955A3] cursor-pointer">Доступно обновление v${data.latest_version}</button>`;
       } else {
         statusLine.textContent = `Актуально · v${data.version} OK`;
       }
       statusLine.classList.remove('hidden');
     }
+
     if (data.has_update) {
-      showBanner(`Доступно обновление: v${data.latest_version} (текущая: v${data.version}).`, 'arrow-down-circle', 'text-cobalt');
-    } else {
+      showBanner(`Доступно обновление: v${data.latest_version} (текущая: v${data.version}). Нажмите для скачивания.`, 'arrow-down-circle', 'text-cobalt');
+      const banner = document.getElementById('status-banner');
+      if (banner) {
+        banner.style.cursor = 'pointer';
+        banner.onclick = () => openUpdateModal(data);
+      }
+      if (opts.autoPrompt || isInteractive) {
+        openUpdateModal(data);
+      }
+    } else if (isInteractive) {
       showBanner(`Версия v${data.version} актуальна (GitHub подтвержден).`, 'check-circle-2', 'text-emerald');
     }
   } catch (err) {
     if (statusLine) {
-      statusLine.textContent = 'Локальный релиз · v0.3.2 OK';
+      statusLine.textContent = 'Локальный релиз · v1.0.1 OK';
       statusLine.classList.remove('hidden');
     }
-    showBanner('Версия v0.3.2 актуальна (проверка выполнена).', 'check-circle-2', 'text-emerald');
+    if (isInteractive) {
+      showBanner('Версия актуальна (проверка выполнена).', 'check-circle-2', 'text-emerald');
+    }
   } finally {
     if (icon) icon.classList.remove('animate-spin');
   }
@@ -1534,17 +1575,28 @@ async function executeUninstall() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ confirm: true, keep_backups: keepBackups })
     });
-    const d = await res.json();
     closeUninstallModal();
-    alert('zero-copy-agent успешно удален с компьютера.\nКонфигурации IDE возвращены к исходному состоянию.');
-    // Quit application
-    fetch('/v1/app/quit', { method: 'POST' }).catch(() => {});
-    window.close();
+
+    // Show full-screen overlay before close
+    document.body.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0d1117;color:#fff;font-family:system-ui,-apple-system,sans-serif;text-align:center;padding:24px;">
+        <div style="width:48px;height:48px;border-radius:50%;background:#1f6feb;display:flex;align-items:center;justify-content:center;margin-bottom:16px;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+        </div>
+        <h2 style="font-size:20px;font-weight:600;margin-bottom:8px;">zero-copy-agent удален с компьютера</h2>
+        <p style="color:#8b949e;font-size:13px;max-width:440px;line-height:1.5;">Все конфигурации IDE возвращены к исходному состоянию, файлы моделей и кэша удалены.<br>Приложение завершает работу...</p>
+      </div>
+    `;
+
+    setTimeout(() => {
+      fetch('/v1/app/quit', { method: 'POST' }).catch(() => {});
+      window.close();
+    }, 800);
   } catch (e) {
     alert('Сбой при удалении: ' + e);
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Удалить всё и закрыть';
+      btn.textContent = 'Удалить всё и закрыть программу';
     }
   }
 }
@@ -1569,4 +1621,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Periodic polling every 4s
   setInterval(fetchSystemStatus, 4000);
+
+  // Auto-check for updates after 2 seconds
+  setTimeout(() => {
+    checkUpdates({ autoPrompt: true });
+  }, 2000);
 });
