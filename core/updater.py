@@ -12,7 +12,11 @@ from typing import Dict, Any
 
 logger = logging.getLogger("zcao.updater")
 
-CURRENT_VERSION = "0.3.2"
+try:
+    from core import __version__
+    CURRENT_VERSION = __version__
+except Exception:
+    CURRENT_VERSION = "1.0.0"
 GITHUB_REPO = "solyanni4/zero-copy-agent-dev"
 PUBLIC_REPO = "solyanni4/zero-copy-agent"
 
