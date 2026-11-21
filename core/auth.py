@@ -116,16 +116,41 @@ def authenticate(provider: str):
     print("[3/3] [OK] Session profile successfully saved!")
     print(f"      You can now start the daemon: .\\start.ps1\n")
 
+def kill_zombie_browser_processes(profile_path: Path):
+    """Terminates stale Chrome/Edge processes holding this specific profile directory on Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import subprocess
+        prof_norm = str(profile_path).replace("/", "\\").lower()
+        # Escape backslashes for PowerShell string literal
+        prof_escaped = prof_norm.replace("\\", "\\\\")
+        cmd = f'Get-CimInstance Win32_Process -Filter "name = \'chrome.exe\' or name = \'msedge.exe\'" | Where-Object {{ $_.CommandLine -and $_.CommandLine.ToLower().Contains(\'{prof_escaped}\') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}'
+        subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=5)
+    except Exception as e:
+        logging.debug(f"[Auth Assistant] Zombie cleanup warning: {e}")
+
+
 def authenticate_desktop(provider: str):
     """Окно авторизации для десктопной версии (поддерживает Chrome/Edge, проверку блокировок и авто-сохранение сессии)."""
     prov = provider.strip().lower()
     url = PROVIDER_URLS.get(prov, "https://gemini.google.com/app")
-    profile_dir = Path(config.browser.user_data_dir).resolve()
+
+    raw_user_data = Path(config.browser.user_data_dir)
+    if not raw_user_data.is_absolute():
+        from core.config import get_runtime_cwd
+        profile_dir = (get_runtime_cwd() / raw_user_data).resolve()
+    else:
+        profile_dir = raw_user_data.resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
+
+    # Release any lingering zombie Chrome/Edge processes holding this profile
+    kill_zombie_browser_processes(profile_dir)
+
     proxy_server = detect_proxy()
     proxy_cfg = {"server": proxy_server} if proxy_server else None
 
-    logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} по адресу {url}...")
+    logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} по адресу {url} (profile: {profile_dir})...")
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -143,7 +168,10 @@ def authenticate_desktop(provider: str):
         with sync_playwright() as p:
             context = None
             last_err = None
-            for channel in ["chrome", "msedge", None]:
+            is_frozen = getattr(sys, "frozen", False)
+            channels_to_try = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+
+            for channel in channels_to_try:
                 try:
                     kwargs = {
                         "user_data_dir": str(profile_dir),
@@ -170,15 +198,22 @@ def authenticate_desktop(provider: str):
 
             if not context:
                 err_detail = str(last_err or "Не удалось запустить контекст браузера")
-                if "user data directory is already in use" in err_detail.lower() or "singletonlock" in err_detail.lower() or "ebusy" in err_detail.lower():
+                is_locked = any(kw in err_detail.lower() for kw in [
+                    "user data directory is already in use",
+                    "singletonlock",
+                    "ebusy",
+                    "exitcode=21",
+                    "target page, context or browser has been closed"
+                ])
+                if is_locked:
                     msg = (
-                        f"Профиль браузера занят другим процессом:\n{profile_dir}\n\n"
+                        f"Профиль браузера занят другим процессом Chrome или Edge:\n{profile_dir}\n\n"
                         f"Закройте открытые окна браузера или фоновые процессы zero-copy-agent и повторите попытку."
                     )
                 else:
                     msg = (
                         f"Не удалось запустить браузер для {prov.upper()}.\n\n"
-                        f"Убедитесь, что в системе установлен Google Chrome, Microsoft Edge или Chromium.\n\n"
+                        f"Убедитесь, что в системе установлен Google Chrome или Microsoft Edge.\n\n"
                         f"Ошибка: {err_detail}"
                     )
                 logging.error(f"[Auth Assistant] {msg}")

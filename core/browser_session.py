@@ -49,7 +49,12 @@ def get_model_badge(model_id: str) -> str:
 
 class BrowserSessionEngine:
     def __init__(self):
-        self.profile_dir = Path(config.browser.user_data_dir).resolve()
+        raw_user_data = Path(config.browser.user_data_dir)
+        if not raw_user_data.is_absolute():
+            from core.config import get_runtime_cwd
+            self.profile_dir = (get_runtime_cwd() / raw_user_data).resolve()
+        else:
+            self.profile_dir = raw_user_data.resolve()
         self.headless = config.browser.headless
         self.playwright = None
         self.context = None
@@ -62,6 +67,17 @@ class BrowserSessionEngine:
 
     async def initialize(self):
         """Initializes the background browser session with stealth and proxy."""
+        from core.healer import config_healer
+        cfg, _ = config_healer.load_or_create()
+        has_active_web = any(
+            getattr(a, "auth_type", None) == "browser_session" and getattr(a, "status", None) == "active"
+            for a in cfg.accounts
+        )
+        if not has_active_web:
+            print("[ENGINE] No active web subscription accounts. Browser engine remains in lazy standby.")
+            self.is_ready = False
+            return
+
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         proxy_server = detect_proxy()
         proxy_cfg = {"server": proxy_server} if proxy_server else None

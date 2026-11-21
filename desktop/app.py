@@ -233,6 +233,17 @@ class ZeroCopyUnifiedApp:
         """Launches interactive browser authentication in separate isolated subprocess."""
         try:
             prov = provider.strip().lower()
+            # If local API server is running, delegate to api_web_auth to release background engine safely
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"http://{self.client_host}:{self.port}/v1/providers/web-auth/{prov}", data=b"", method="POST")
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    if resp.status == 200:
+                        self.notify_tray(f"Открывается окно входа для {prov.upper()}...", title="zero-copy-agent Auth")
+                        return
+            except Exception as net_ex:
+                logging.debug(f"[Desktop App] Delegating auth to HTTP API skipped ({net_ex}), spawning directly.")
+
             if getattr(sys, "frozen", False):
                 cmd = [sys.executable, "--auth", prov]
             else:

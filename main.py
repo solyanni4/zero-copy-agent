@@ -861,6 +861,11 @@ async def api_web_auth(provider: str):
         )
 
     try:
+        # Release background engine context so browser_profile is unlocked for interactive login
+        if getattr(engine, "is_ready", False):
+            logger.info("[Web Auth] Releasing background engine before launching browser auth...")
+            await engine.close()
+
         if getattr(sys, "frozen", False):
             cmd = [sys.executable, "--auth", prov]
         else:
