@@ -508,7 +508,7 @@ function renderDagInspector() {
       stage.status === 'paused' ? 'bg-amber' : 'bg-[#C9CFD6]';
 
     const localModels = state.connectedModels.filter(m => m.local);
-    const defaultLocal = localModels.length ? localModels[0].id : '';
+    const defaultLocal = localModels.length ? localModels[0].id : 'Local Ollama';
     const effectiveModel = state.airGap && !stage.fixed ? (stage.model && localModels.some(m => m.id === stage.model) ? stage.model : defaultLocal) : stage.model;
 
     let controlHtml = '';
