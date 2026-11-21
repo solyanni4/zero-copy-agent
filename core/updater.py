@@ -19,7 +19,7 @@ try:
     from core.version import __version__
     CURRENT_VERSION = __version__
 except Exception:
-    CURRENT_VERSION = "1.0.3"
+    CURRENT_VERSION = "1.0.4"
 GITHUB_REPO = "solyanni4/zero-copy-agent"
 
 
@@ -71,7 +71,7 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
             "latest_version": current_version,
             "commit": "fbadffa",
             "message": f"Версия v{current_version} актуальна (проверка выполнена)",
-            "download_url": f"https://github.com/{PUBLIC_REPO}/releases"
+            "download_url": f"https://github.com/{GITHUB_REPO}/releases"
         }
 
     tag_name = latest_release.get("tag_name", "").lstrip("v")
