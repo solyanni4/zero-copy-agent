@@ -101,9 +101,17 @@ class DLPShield:
     IPV4_PATTERN = re.compile(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b')
 
     @classmethod
-    def sanitize(cls, text: str, req_id: str = "") -> Tuple[str, SessionVault]:
+    def sanitize(
+        cls,
+        text: str,
+        req_id: str = "",
+        mask_keys: bool = True,
+        mask_ips: bool = True,
+        mask_hosts: bool = True
+    ) -> Tuple[str, SessionVault]:
         """
         Sanitizes text by replacing all matched secrets with reversible placeholders.
+        Allows fine-grained policy toggling (keys, private IPs, internal hosts).
         Returns: (sanitized_text, SessionVault)
         """
         if not text:
@@ -114,6 +122,11 @@ class DLPShield:
 
         # 1. Match structured token and key patterns
         for secret_type, regex in cls.PATTERNS:
+            if secret_type == "INTERNAL_DOMAIN" and not mask_hosts:
+                continue
+            if secret_type != "INTERNAL_DOMAIN" and not mask_keys:
+                continue
+
             def replacer(match):
                 # If pattern has capturing groups (e.g. password="secret" or ://user:pass@), mask the secret group
                 if match.groups():
@@ -128,21 +141,22 @@ class DLPShield:
             result = regex.sub(replacer, result)
 
         # 2. Match and validate Private IPv4 addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-        def ip_replacer(match):
-            ip_str = match.group(0)
-            try:
-                ip_obj = ipaddress.ip_address(ip_str)
-                # Only mask private / loopback IPs, do NOT mask public IP benchmarks
-                if ip_obj.is_private or ip_obj.is_loopback:
-                    # Don't mask standard localhost 127.0.0.1 or 0.0.0.0 if user specifies it as gateway
-                    if ip_str in ("127.0.0.1", "0.0.0.0", "localhost"):
-                        return ip_str
-                    return vault.add(ip_str, "IP_ADDR")
-            except ValueError:
-                pass
-            return ip_str
+        if mask_ips:
+            def ip_replacer(match):
+                ip_str = match.group(0)
+                try:
+                    ip_obj = ipaddress.ip_address(ip_str)
+                    # Only mask private / loopback IPs, do NOT mask public IP benchmarks
+                    if ip_obj.is_private or ip_obj.is_loopback:
+                        # Don't mask standard localhost 127.0.0.1 or 0.0.0.0 if user specifies it as gateway
+                        if ip_str in ("127.0.0.1", "0.0.0.0", "localhost"):
+                            return ip_str
+                        return vault.add(ip_str, "IP_ADDR")
+                except ValueError:
+                    pass
+                return ip_str
 
-        result = cls.IPV4_PATTERN.sub(ip_replacer, result)
+            result = cls.IPV4_PATTERN.sub(ip_replacer, result)
 
         if len(vault) > 0:
             logger.info(f"[DLP Shield] Masked {len(vault)} sensitive items in request '{req_id}': {vault.summary()['types']}")

@@ -45,13 +45,33 @@ from core.healer import config_healer
 from core.ide_setup import scan_all, configure_targets, history_manager, test_connection, test_connection_async, print_config_snippet
 from core.registry import model_registry
 
+if sys.platform == "win32":
+    try:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+def sync_mesh_from_subscriptions(sub_cfg=None):
+    """Synchronizes registered and active provider API keys into QuotaMesh pool."""
+    if sub_cfg is None:
+        sub_cfg, _ = config_healer.load_or_create()
+    mesh.clear()
+    for acc in getattr(sub_cfg, "accounts", []):
+        if getattr(acc, "status", "active") == "active" and getattr(acc, "api_key", None):
+            mesh.register_keys(acc.provider, [acc.api_key])
+
 orchestrator = HybridOrchestrator(browser_engine=engine)
 init_mcp(orchestrator)
+sync_mesh_from_subscriptions()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Auto-heal configuration on startup
     sub_cfg, heal_mods = config_healer.load_or_create()
+    sync_mesh_from_subscriptions(sub_cfg)
     client_host = "127.0.0.1" if config.server.host in ("0.0.0.0", "::", "") else config.server.host
     
     print(f"\n=======================================================")
@@ -93,6 +113,13 @@ app = FastAPI(
 cors_env = os.getenv("ZCA_CORS_ORIGINS")
 if cors_env:
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 else:
     allowed_origins = [
         "http://127.0.0.1:8000",
@@ -102,16 +129,15 @@ else:
         "http://127.0.0.1:5173",
         "http://localhost:5173",
         "tauri://localhost",
-        "vscode-webview://*",
     ]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://.*|vscode-webview://.*)$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Include Native Model Context Protocol (MCP) Router
 app.include_router(mcp_router)
@@ -644,8 +670,9 @@ async def api_get_hardware():
 @app.get("/v1/system/update/check")
 async def api_check_updates():
     """Checks GitHub releases for new zero-copy-agent updates."""
+    import asyncio
     from core.updater import check_github_updates
-    return check_github_updates()
+    return await asyncio.to_thread(check_github_updates)
 
 @app.post("/v1/system/update/install")
 async def api_install_update(payload: dict = Body(default={})):
@@ -799,8 +826,8 @@ async def api_add_provider_key(request: AddKeyRequest):
         api_key=request.api_key,
         alias=request.alias
     )
-    mesh.register_keys(request.provider, [request.api_key])
-    await model_registry.get_models(force_refresh=True)
+    sync_mesh_from_subscriptions()
+    await model_registry.get_models(force_refresh=True, mesh=mesh)
 
     return {
         "status": "ok",
@@ -813,7 +840,8 @@ async def api_add_provider_key(request: AddKeyRequest):
 async def api_delete_provider_key(account_id: str):
     """Removes or disables an account by ID."""
     ok = config_healer.remove_account(account_id)
-    await model_registry.get_models(force_refresh=True)
+    sync_mesh_from_subscriptions()
+    await model_registry.get_models(force_refresh=True, mesh=mesh)
     if not ok:
         raise HTTPException(status_code=404, detail="Аккаунт с таким ID не найден")
     return {"status": "ok", "message": f"Аккаунт '{account_id}' успешно удален"}
@@ -824,7 +852,8 @@ async def api_toggle_account(account_id: str):
     new_status = config_healer.toggle_account_status(account_id)
     if not new_status:
         raise HTTPException(status_code=404, detail="Аккаунт не найден")
-    await model_registry.get_models(force_refresh=True)
+    sync_mesh_from_subscriptions()
+    await model_registry.get_models(force_refresh=True, mesh=mesh)
     return {"status": "ok", "account_id": account_id, "new_status": new_status}
 
 @app.post("/v1/providers/accounts/{account_id}/ping")

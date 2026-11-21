@@ -233,7 +233,8 @@ class HybridOrchestrator:
             ollama_driver=self.ollama,
             browser_engine=self.browser_engine,
             aliases=self.aliases,
-            force_refresh=force
+            force_refresh=force,
+            mesh=mesh
         )
 
         self._cached_models = cards
@@ -470,6 +471,76 @@ class HybridOrchestrator:
             if vault is not None and len(vault) > 0:
                 analytics.record_event(req_id, "dlp_restored", model_id, f"Restored {len(vault)} secrets in stream output")
 
+    async def _query_model(self, model_id: str, prompt: str) -> str:
+        """
+        Intelligently routes cascade steps (plan, coder fallback, audit).
+        If browser session is ready, uses browser_engine.
+        If browser session is NOT ready but API key is available in QuotaMesh, routes via API.
+        In test mock environments (where is_ready is not defined on browser_engine), defers to browser_engine.
+        """
+        provider = self._detect_provider(model_id)
+        browser_is_ready = getattr(self.browser_engine, "is_ready", None)
+
+        if browser_is_ready is None and hasattr(self.browser_engine, "query"):
+            return await self.browser_engine.query(prompt, model_id)
+
+        if browser_is_ready is True:
+            return await self.browser_engine.query(prompt, model_id)
+
+        if provider and mesh.get_active_key(provider):
+            return await self._query_api_provider(provider, model_id, prompt)
+
+        try:
+            ollama_models = await self.ollama.list_models()
+            if model_id.startswith("ollama/") or model_id in ollama_models:
+                return await self.ollama.send_prompt(prompt, model=model_id)
+        except Exception:
+            pass
+
+        for p in ("gemini", "openai", "anthropic"):
+            if mesh.get_active_key(p):
+                return await self._query_api_provider(p, model_id, prompt)
+
+        return await self.browser_engine.query(prompt, model_id)
+
+    async def _query_model_stream(self, model_id: str, prompt: str) -> AsyncGenerator[str, None]:
+        """Streams prompt response via QuotaMesh API, Ollama GPU, or Browser Engine."""
+        provider = self._detect_provider(model_id)
+        browser_is_ready = getattr(self.browser_engine, "is_ready", None)
+
+        if browser_is_ready is None and hasattr(self.browser_engine, "query_stream"):
+            async for chunk in self.browser_engine.query_stream(prompt, model_id):
+                yield chunk
+            return
+
+        if browser_is_ready is True:
+            async for chunk in self.browser_engine.query_stream(prompt, model_id):
+                yield chunk
+            return
+
+        if provider and mesh.get_active_key(provider):
+            async for chunk in self._query_api_provider_stream(provider, model_id, prompt):
+                yield chunk
+            return
+
+        try:
+            ollama_models = await self.ollama.list_models()
+            if model_id.startswith("ollama/") or model_id in ollama_models:
+                async for chunk in self.ollama.send_prompt_stream(prompt, model=model_id):
+                    yield chunk
+                return
+        except Exception:
+            pass
+
+        for p in ("gemini", "openai", "anthropic"):
+            if mesh.get_active_key(p):
+                async for chunk in self._query_api_provider_stream(p, model_id, prompt):
+                    yield chunk
+                return
+
+        async for chunk in self.browser_engine.query_stream(prompt, model_id):
+            yield chunk
+
     async def _run_cascade_architect(
         self,
         user_prompt: str,
@@ -499,7 +570,7 @@ class HybridOrchestrator:
                 f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
                 f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
             )
-            plan = await self.browser_engine.query(plan_prompt, arch_model)
+            plan = await self._query_model(arch_model, plan_prompt)
 
         # Breakpoint verification
         if self.breakpoint_enabled:
@@ -524,7 +595,7 @@ class HybridOrchestrator:
                 resp = await self.ollama.send_prompt(prompt_text)
                 return resp, "ollama/default"
             else:
-                resp = await self.browser_engine.query(prompt_text, arch_model)
+                resp = await self._query_model(arch_model, prompt_text)
                 return resp, arch_model
 
         max_rework = getattr(self, "max_rework_iterations", 2)
@@ -584,7 +655,7 @@ class HybridOrchestrator:
             if self.enable_architect_audit:
                 logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num}) via {rev_model}...")
                 audit_prompt = self.auditor.build_audit_prompt(plan, current_code)
-                raw_audit = await self.browser_engine.query(audit_prompt, rev_model)
+                raw_audit = await self._query_model(rev_model, audit_prompt)
                 audit_res = self.auditor.parse_audit_response(raw_audit)
                 verdict = audit_res.get("verdict", "PASS")
                 audit_issues = audit_res.get("issues", [])
@@ -652,7 +723,7 @@ class HybridOrchestrator:
             f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
         )
         plan_tokens = []
-        async for token in self.browser_engine.query_stream(plan_prompt, arch_model):
+        async for token in self._query_model_stream(arch_model, plan_prompt):
             plan_tokens.append(token)
             yield token
 

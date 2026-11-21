@@ -39,6 +39,9 @@ class PolicyUpdateRequest(BaseModel):
 
 class DLPSandboxRequest(BaseModel):
     text: str = Field(..., description="Text or configuration code to sanitize")
+    mask_keys: bool = Field(True, description="Mask API keys, tokens, and passwords")
+    mask_ips: bool = Field(True, description="Mask local RFC1918 IP addresses")
+    mask_hosts: bool = Field(True, description="Mask proprietary internal domains")
 
 @ui_router.get("/status")
 async def get_ui_system_status(request: Request):
@@ -164,7 +167,13 @@ async def trigger_model_discovery(request: Request):
 async def test_dlp_sandbox(body: DLPSandboxRequest):
     """Sanitizes text via DLPShield and returns tokens mapping for UI split-view sandbox."""
     req_id = f"sandbox_{int(time.time() * 1000)}"
-    clean_text, vault = shield.sanitize(body.text, req_id=req_id)
+    clean_text, vault = shield.sanitize(
+        body.text,
+        req_id=req_id,
+        mask_keys=body.mask_keys,
+        mask_ips=body.mask_ips,
+        mask_hosts=body.mask_hosts
+    )
 
     mappings = []
     for token, original in vault.mappings.items():
@@ -219,5 +228,6 @@ async def get_system_history(limit: int = 50):
 @ui_router.get("/updates/check")
 async def check_for_updates():
     """Checks GitHub releases for latest version."""
+    import asyncio
     from core.updater import check_github_updates
-    return check_github_updates()
+    return await asyncio.to_thread(check_github_updates)

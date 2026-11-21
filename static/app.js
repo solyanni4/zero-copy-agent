@@ -507,7 +507,9 @@ function renderDagInspector() {
       stage.status === 'reject' ? 'bg-crimson' :
       stage.status === 'paused' ? 'bg-amber' : 'bg-[#C9CFD6]';
 
-    const effectiveModel = state.airGap && !stage.fixed ? 'qwen2.5-coder:14b' : stage.model;
+    const localModels = state.connectedModels.filter(m => m.local);
+    const defaultLocal = localModels.length ? localModels[0].id : '';
+    const effectiveModel = state.airGap && !stage.fixed ? (stage.model && localModels.some(m => m.id === stage.model) ? stage.model : defaultLocal) : stage.model;
 
     let controlHtml = '';
     if (stage.fixed) {
@@ -1122,11 +1124,20 @@ async function runDlpBench() {
   const raw = document.getElementById('dlp-input')?.value || '';
   if (!raw.trim()) return;
 
+  const maskKeys = document.getElementById('dlp-pol-keys')?.checked ?? true;
+  const maskIps = document.getElementById('dlp-pol-ips')?.checked ?? true;
+  const maskHosts = document.getElementById('dlp-pol-hosts')?.checked ?? true;
+
   try {
     const res = await fetch('/v1/ui/dlp/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: raw })
+      body: JSON.stringify({
+        text: raw,
+        mask_keys: maskKeys,
+        mask_ips: maskIps,
+        mask_hosts: maskHosts
+      })
     });
 
     if (res.ok) {

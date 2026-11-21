@@ -33,7 +33,7 @@ def init_mcp(orchestrator_instance):
 TOOLS_MANIFEST = [
     {
         "name": "cascade_architect",
-        "description": "Запускает двухэтапный каскад 'Архитектор': Шаг 1 (проектирование системного чертежа через Gemini 4 Neon) ➔ Шаг 2 (генерация чистого кода через локальную GPU Qwen2.5-Coder 14B).",
+        "description": "Запускает замкнутый двухэтапный каскад 'Архитектор': Шаг 1 (проектирование системного плана через облачную модель/API-ключ) ➔ Шаг 2 (генерация чистого кода через локальную GPU Ollama или быструю модель).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -66,7 +66,7 @@ TOOLS_MANIFEST = [
     },
     {
         "name": "gemini_deep_analysis",
-        "description": "Отправляет запрос в веб-модель Gemini 4 Neon (Deeper Analysis) для глубокого логического рассуждения и сложного аудита архитектуры.",
+        "description": "Отправляет запрос в модель Gemini Deep Analysis для углублённого логического анализа и аудита архитектуры.",
         "inputSchema": {
             "type": "object",
             "properties": {
