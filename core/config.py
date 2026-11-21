@@ -38,7 +38,7 @@ class ModelConfig(BaseModel):
     provider: str
 
 class ServerConfig(BaseModel):
-    host: str = "0.0.0.0"
+    host: str = Field(default_factory=lambda: os.getenv("ZCA_HOST", "127.0.0.1"))
     port: int = 8000
     workers: int = 1
 

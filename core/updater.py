@@ -16,23 +16,21 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger("zcao.updater")
 
 try:
-    from core import __version__
+    from core.version import __version__
     CURRENT_VERSION = __version__
 except Exception:
     CURRENT_VERSION = "1.0.3"
-GITHUB_REPO = "solyanni4/zero-copy-agent-dev"
-PUBLIC_REPO = "solyanni4/zero-copy-agent"
+GITHUB_REPO = "solyanni4/zero-copy-agent"
 
 
 def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, Any]:
     """
     Checks GitHub releases for latest version.
-    Respects gateway proxy (192.168.50.135:7890) if present or uses direct connection.
+    Respects HTTPS_PROXY or HTTP_PROXY environment variables if present, or uses direct connection.
     """
-    proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "http://192.168.50.135:7890"
+    proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
     
-    # Try public repo first, then dev repo
-    repos = [PUBLIC_REPO, GITHUB_REPO]
+    repos = [GITHUB_REPO]
     latest_release = None
     last_error = ""
 
@@ -186,7 +184,7 @@ def _run_update_worker(download_url: str = None):
         backup_exe = updates_dir / "zero-copy-agent.prev.exe"
 
         # 3. Download via proxy if present
-        proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "http://192.168.50.135:7890"
+        proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
         handlers = []
         if proxy_url:
             handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))

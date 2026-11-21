@@ -17,6 +17,9 @@ from core.attribution import format_badge, format_cascade_badge, get_display_nam
 from core.registry import model_registry
 from core.healer import config_healer
 from core.audit import LocalHardGate, ArchitectAudit
+import json
+import httpx
+from core.mesh import mesh
 from core.config import config
 
 logger = logging.getLogger("zcao.orchestrator")
@@ -63,6 +66,145 @@ class HybridOrchestrator:
             logger.info(f"[Orchestrator] Resolved alias '{req}' -> '{resolved}'")
             return resolved
         return requested_id
+
+    def _detect_provider(self, target: str) -> Optional[str]:
+        """Infers provider name (openai/anthropic/gemini) from model identifier."""
+        low = target.lower()
+        if low.startswith(("gpt-", "o1", "o3", "chatgpt")):
+            return "openai"
+        elif low.startswith("claude-"):
+            return "anthropic"
+        elif low.startswith("gemini-"):
+            return "gemini"
+        return None
+
+    async def _query_api_provider(self, provider: str, model_id: str, prompt: str) -> str:
+        """Routes prompt to official cloud API via QuotaMesh with automatic failover on 429/5xx."""
+        pool = mesh._pools.get(provider.lower(), [])
+        max_attempts = max(1, len(pool))
+        last_error = None
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
+        for _ in range(max_attempts):
+            key = mesh.get_active_key(provider)
+            if not key:
+                break
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if provider == "openai":
+                        url = "https://api.openai.com/v1/chat/completions"
+                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
+                        resp = await client.post(url, headers=headers, json=payload)
+                    elif provider == "anthropic":
+                        url = "https://api.anthropic.com/v1/messages"
+                        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
+                        resp = await client.post(url, headers=headers, json=payload)
+                    elif provider == "gemini":
+                        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
+                        resp = await client.post(url, headers=headers, json=payload)
+                    else:
+                        raise ValueError(f"Unknown provider: {provider}")
+
+                    if resp.status_code == 200:
+                        mesh.record_success(provider, key)
+                        data = resp.json()
+                        if provider in ("openai", "gemini"):
+                            return data["choices"][0]["message"]["content"]
+                        elif provider == "anthropic":
+                            blocks = data.get("content", [])
+                            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                    elif resp.status_code in (429, 500, 502, 503, 504):
+                        mesh.record_failure(provider, key, resp.status_code)
+                        last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                        logger.warning(f"[Orchestrator] Key failure for {provider} ({resp.status_code}). Failing over...")
+                        continue
+                    else:
+                        mesh.record_failure(provider, key, resp.status_code)
+                        raise RuntimeError(f"Provider {provider} API error ({resp.status_code}): {resp.text[:300]}")
+            except httpx.RequestError as e:
+                mesh.record_failure(provider, key, 500)
+                last_error = str(e)
+                logger.warning(f"[Orchestrator] Network error calling {provider} API: {e}. Retrying next key...")
+                continue
+
+        raise RuntimeError(f"Все API-ключи для провайдера '{provider}' исчерпали квоту или недоступны: {last_error}")
+
+    async def _query_api_provider_stream(self, provider: str, model_id: str, prompt: str) -> AsyncGenerator[str, None]:
+        """Streams response from cloud API provider using quota mesh with automatic key failover."""
+        pool = mesh._pools.get(provider.lower(), [])
+        max_attempts = max(1, len(pool))
+        last_error = None
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
+
+        for _ in range(max_attempts):
+            key = mesh.get_active_key(provider)
+            if not key:
+                break
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if provider == "openai":
+                        url = "https://api.openai.com/v1/chat/completions"
+                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "stream": True}
+                    elif provider == "anthropic":
+                        url = "https://api.anthropic.com/v1/messages"
+                        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}], "stream": True}
+                    elif provider == "gemini":
+                        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "stream": True}
+                    else:
+                        raise ValueError(f"Unknown provider: {provider}")
+
+                    async with client.stream("POST", url, headers=headers, json=payload) as response:
+                        if response.status_code in (429, 500, 502, 503, 504):
+                            mesh.record_failure(provider, key, response.status_code)
+                            last_error = f"HTTP {response.status_code}"
+                            continue
+                        elif response.status_code != 200:
+                            mesh.record_failure(provider, key, response.status_code)
+                            body = await response.aread()
+                            raise RuntimeError(f"Provider API stream error ({response.status_code}): {body.decode('utf-8', errors='ignore')[:300]}")
+
+                        mesh.record_success(provider, key)
+                        if provider in ("openai", "gemini"):
+                            async for line in response.aiter_lines():
+                                line = line.strip()
+                                if line.startswith("data: ") and line != "data: [DONE]":
+                                    try:
+                                        chunk_data = json.loads(line[6:])
+                                        choices = chunk_data.get("choices", [])
+                                        if choices:
+                                            delta = choices[0].get("delta", {})
+                                            content = delta.get("content")
+                                            if content:
+                                                yield content
+                                    except Exception:
+                                        pass
+                        elif provider == "anthropic":
+                            async for line in response.aiter_lines():
+                                line = line.strip()
+                                if line.startswith("data: "):
+                                    try:
+                                        chunk_data = json.loads(line[6:])
+                                        if chunk_data.get("type") == "content_block_delta":
+                                            delta = chunk_data.get("delta", {})
+                                            if delta.get("type") == "text_delta":
+                                                yield delta.get("text", "")
+                                    except Exception:
+                                        pass
+                        return
+            except httpx.RequestError as e:
+                mesh.record_failure(provider, key, 500)
+                last_error = str(e)
+                continue
+
+        raise RuntimeError(f"Все API-ключи для провайдера '{provider}' исчерпали квоту или недоступны: {last_error}")
 
     async def discover_models(self, force: bool = False, include_inactive: bool = False) -> List[ModelCard]:
         """
@@ -146,13 +288,28 @@ class HybridOrchestrator:
                     analytics.record_event(req_id, "air_gap_blocked", target, err_msg)
                 raise RuntimeError(err_msg)
 
+        # Provider API via QuotaMesh check
+        provider = self._detect_provider(target)
+        has_mesh_key = bool(provider and mesh.get_active_key(provider))
+
         # 3. Cascade 'Architect' Mode
         if target == "cascade:architect":
             if req_id:
                 analytics.record_event(req_id, "cascade_start", target, "Executing 2-Step Architect Cascade")
             content = await self._run_cascade_architect(compressed_prompt, req_id=req_id, inject_signature=inject_signature)
             routed = "cascade:architect"
-        # 4. Ollama Local Model
+        # 4. Official Cloud Provider API (OpenAI / Anthropic / Gemini) via QuotaMesh
+        elif has_mesh_key:
+            if req_id:
+                analytics.record_event(req_id, "api_mesh_routing", target, f"Routing via {provider} API pool")
+            resp = await self._query_api_provider(provider, target, compressed_prompt)
+            if inject_signature:
+                badge = format_badge(target, role=f"API Pool · {provider.capitalize()}")
+                content = badge + resp
+            else:
+                content = resp
+            routed = target
+        # 5. Ollama Local Model
         elif target.startswith("ollama/") or (target in await self.ollama.list_models()):
             try:
                 resp = await self.ollama.send_prompt(compressed_prompt, model=target)
@@ -252,10 +409,18 @@ class HybridOrchestrator:
         chunks = []
         stream_buffer = ""
 
+        provider = self._detect_provider(target)
+        has_mesh_key = bool(provider and mesh.get_active_key(provider))
+
         # Generator selector
         async def _get_stream():
             if target == "cascade:architect":
                 async for tok in self._run_cascade_architect_stream(compressed_prompt, req_id=req_id, inject_signature=inject_signature):
+                    yield tok
+            elif has_mesh_key:
+                if inject_signature:
+                    yield format_badge(target, role=f"API Pool · {provider.capitalize()}")
+                async for tok in self._query_api_provider_stream(provider, target, compressed_prompt):
                     yield tok
             elif target.startswith("ollama/") or (target in await self.ollama.list_models()):
                 try:

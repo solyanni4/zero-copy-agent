@@ -12,7 +12,7 @@ from typing import Dict, Any, List
 logger = logging.getLogger("zcao.uninstaller")
 
 
-def clean_uninstall_system(keep_backups: bool = False) -> Dict[str, Any]:
+def clean_uninstall_system(keep_backups: bool = False, orchestrator_instance: Any = None) -> Dict[str, Any]:
     """
     Performs full uninstallation:
     1. Reverts all IDE integration configurations back to their clean original states.
@@ -90,10 +90,13 @@ def clean_uninstall_system(keep_backups: bool = False) -> Dict[str, Any]:
 
     # 6. Wipe in-memory orchestrator subscriptions
     try:
-        from core.orchestrator import orchestrator
-        if hasattr(orchestrator, "subscriptions"):
-            orchestrator.subscriptions.accounts = []
-        steps_executed.append("Очищен каталог моделей в оперативной памяти")
+        if orchestrator_instance and hasattr(orchestrator_instance, "subscriptions"):
+            orchestrator_instance.subscriptions.accounts = []
+            steps_executed.append("Очищен каталог моделей в оперативной памяти")
+        else:
+            from core.mesh import mesh
+            mesh.clear()
+            steps_executed.append("Очищен пул моделей в оперативной памяти")
     except Exception:
         pass
 

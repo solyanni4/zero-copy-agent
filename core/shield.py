@@ -168,30 +168,30 @@ class DLPShield:
     def restore_stream_chunk(cls, chunk: str, vault: SessionVault, buffer: str = "") -> Tuple[str, str]:
         """
         Helper for SSE streaming: handles chunk boundaries where placeholder might be split.
+        Uses a sliding tail buffer so that split tokens (e.g. '__SEC_01' + '_KEY__')
+        are reconstructed before de-tokenization and never leak in raw placeholder form.
         Returns: (restored_output, remaining_buffer)
         """
         if not vault or len(vault) == 0:
             return chunk, ""
 
         combined = buffer + chunk
-        # If no placeholder prefix "__SEC_" in stream, flush immediately
-        if "__SEC_" not in combined:
-            return combined, ""
 
-        # Check if an incomplete placeholder is at the end of combined
-        match = re.search(r'__SEC_\d{0,2}[A-Za-z_]{0,15}$', combined)
-        if match:
-            # Hold the partial token in buffer for the next chunk
-            flushable = combined[:match.start()]
-            new_buffer = combined[match.start():]
-        else:
-            flushable = combined
-            new_buffer = ""
-
-        # Restore known placeholders in the flushable portion
+        # First restore any fully formed placeholders in combined
+        restored = combined
         for placeholder, original in vault.mappings.items():
-            if placeholder in flushable:
-                flushable = flushable.replace(placeholder, original)
+            if placeholder in restored:
+                restored = restored.replace(placeholder, original)
+
+        # Check if an incomplete placeholder or candidate prefix sits at the very end
+        # Placeholders look like: __SEC_\d+_[A-Za-z0-9_]+__
+        match = re.search(r'(__SEC_[A-Za-z0-9_]*|__SE?C?|__?)$', restored)
+        if match and len(match.group(0)) <= 35:
+            flushable = restored[:match.start()]
+            new_buffer = restored[match.start():]
+        else:
+            flushable = restored
+            new_buffer = ""
 
         return flushable, new_buffer
 

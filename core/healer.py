@@ -303,6 +303,11 @@ class ConfigHealer:
 
         # Step 4: Atomic replacement
         os.replace(tmp_path, self.target_path)
+        if sys.platform != "win32":
+            try:
+                os.chmod(self.target_path, 0o600)
+            except Exception:
+                pass
         logger.info(f"[Healer] Saved config atomically to {self.target_path} (backup: {bak_path.name})")
 
         return HealingReport(

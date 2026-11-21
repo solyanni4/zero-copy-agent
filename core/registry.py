@@ -132,13 +132,27 @@ class ModelRegistry:
         mesh_status = "No Accounts"
         if mesh:
             try:
-                accounts = getattr(mesh, "accounts", [])
-                active_accs = [a for a in accounts if getattr(a, "is_active", True)]
+                if hasattr(mesh, "get_active_accounts"):
+                    active_accs = mesh.get_active_accounts()
+                else:
+                    accounts = getattr(mesh, "accounts", [])
+                    active_accs = [a for a in accounts if getattr(a, "is_active", True)]
+
                 if len(active_accs) > 0:
                     mesh_connected = True
                     mesh_status = f"{len(active_accs)} active API accounts"
                     for a in active_accs:
-                        mesh_models.extend(getattr(a, "supported_models", []))
+                        prov = (a.get("provider") if isinstance(a, dict) else getattr(a, "provider", "")).lower()
+                        if prov in ("openai", "chatgpt"):
+                            mesh_models.extend(["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"])
+                        elif prov == "anthropic":
+                            mesh_models.extend(["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-haiku"])
+                        elif prov == "gemini":
+                            mesh_models.extend(["gemini-2.5-flash", "gemini-2.5-pro"])
+                        elif isinstance(a, dict):
+                            mesh_models.extend(a.get("models", []))
+                        else:
+                            mesh_models.extend(getattr(a, "supported_models", []))
             except Exception as e:
                 logger.debug(f"[Registry] Mesh check error: {e}")
                 mesh_status = f"Error: {e}"

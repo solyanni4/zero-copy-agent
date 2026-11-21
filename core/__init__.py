@@ -1,5 +1,6 @@
 """
 zero-copy-agent core module
 """
-__version__ = "1.0.3"
+from core.version import __version__
 
+__all__ = ["__version__"]

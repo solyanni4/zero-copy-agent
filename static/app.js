@@ -349,11 +349,11 @@ async function checkUpdates(opts = {}) {
     }
   } catch (err) {
     if (statusLine) {
-      statusLine.textContent = 'Локальный релиз · v1.0.1 OK';
+      statusLine.textContent = 'Ошибка проверки обновлений (нет связи)';
       statusLine.classList.remove('hidden');
     }
     if (isInteractive) {
-      showBanner('Версия актуальна (проверка выполнена).', 'check-circle-2', 'text-emerald');
+      showBanner('Ошибка проверки обновлений (нет связи с GitHub).', 'alert-circle', 'text-amber');
     }
   } finally {
     if (icon) icon.classList.remove('animate-spin');
@@ -1483,9 +1483,9 @@ async function fetchRealHistoryIntoTraces() {
             title: `Маршрутизация · ${h.model_routed}`,
             model: h.model_routed,
             status: 'PASS',
-            ttft: '42ms',
-            duration: `${(h.duration_seconds || 1.2).toFixed(2)}s`,
-            irSaved: '-40%',
+            ttft: h.ttft_ms ? `${h.ttft_ms}ms` : '—',
+            duration: h.duration_seconds != null ? `${Number(h.duration_seconds).toFixed(2)}s` : '—',
+            irSaved: h.tokens_saved_pct != null ? `-${h.tokens_saved_pct}%` : '—',
             dlpCount: 0,
             expanded: false,
             payloadType: 'text',
@@ -1568,7 +1568,7 @@ function insertSampleDlp() {
   if (!input) return;
   input.value = `# Конфигурация шлюза внутренней инфраструктуры
 API_SECRET = "sk-live-94a8f2c19e04b77a88d21f0e"
-HOMELAB_NODE = "http://192.168.50.135:11434"
+HOMELAB_NODE = "http://192.168.1.100:11434"
 DB_ENDPOINT = "postgres://admin@db.internal:5432/core"
 BACKUP_IP = "10.0.4.22"`;
   runDlpBench();

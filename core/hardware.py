@@ -47,7 +47,7 @@ def _detect_system_ram_gb() -> float:
             if res.returncode == 0 and res.stdout.strip():
                 return round(int(res.stdout.strip()) / (1024 ** 3), 1)
         elif sys.platform.startswith("linux"):
-            with open("/proc/meminfo", "r") as f:
+            with open("/proc/meminfo", "r", encoding="utf-8") as f:
                 for line in f:
                     if line.startswith("MemTotal:"):
                         kb = int(line.split()[1])

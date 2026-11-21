@@ -160,11 +160,10 @@ class AnalyticsStorage:
             p_tokens = totals.get("total_prompt_tokens", 0)
             comp = totals.get("total_completion_tokens", 0)
 
-            # For historical rows without raw_prompt_tokens, estimate based on BPE ~35% compression
-            effective_raw_p = max(raw_p, int(p_tokens * 1.55))
-            raw_without_zc = effective_raw_p + comp
-            tokens_saved = max(0, raw_without_zc - total_tokens)
-            tokens_saved_pct = round((tokens_saved / max(1, raw_without_zc)) * 100, 1)
+            # Honest economy strictly based on raw vs compressed prompt tokens
+            tokens_saved = max(0, raw_p - p_tokens)
+            raw_without_zc = raw_p + comp if raw_p > 0 else total_tokens
+            tokens_saved_pct = round((tokens_saved / max(1, raw_without_zc)) * 100, 1) if raw_without_zc > 0 else 0.0
 
             totals["tokens_without_zc"] = raw_without_zc
             totals["tokens_saved"] = tokens_saved

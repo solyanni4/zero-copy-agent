@@ -8,15 +8,17 @@ import time
 import uuid
 import os
 import sys
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core import __version__
+from core.version import __version__
 from core.config import config
 from core.ui_api import ui_router
 from core.models import (
@@ -78,6 +80,8 @@ async def lifespan(app: FastAPI):
     print("[INIT] Shutting down zero-copy-agent...")
     await engine.close()
 
+logger = logging.getLogger("zca.main")
+
 app = FastAPI(
     title="zero-copy-agent",
     description="Zero-Copy Web-to-Agent Bridge & Self-Hosted AI Copilot with Native MCP Server",
@@ -85,10 +89,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for IDEs like Cursor and web clients
+# Restrict CORS to local host origins and IDE webviews (preventing malicious web CSRF)
+cors_env = os.getenv("ZCA_CORS_ORIGINS")
+if cors_env:
+    allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+else:
+    allowed_origins = [
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "tauri://localhost",
+        "vscode-webview://*",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -614,22 +633,6 @@ async def api_revert_integration(target: str):
     ok, msg = rollback_target_clean(target)
     return {"status": "ok" if ok else "error", "message": msg, "results": [msg]}
 
-@app.get("/v1/ui/history")
-async def api_ui_history(limit: int = 10):
-    """Recent completion history for the UI trace viewer."""
-    return {"status": "ok", "history": analytics.get_recent()}
-
-@app.post("/v1/ui/healer/run")
-async def api_ui_healer_run():
-    """Runs config self-healer and returns repairs."""
-    from core.healer import config_healer
-    sub_cfg, mods = config_healer.load_or_create()
-    return {
-        "status": "ok",
-        "modifications": mods,
-        "schema_version": getattr(sub_cfg, "schema_version", 2)
-    }
-
 @app.get("/v1/system/hardware")
 async def api_get_hardware():
     """Returns detected hardware profile (GPU/VRAM/RAM/CPU) and model recommendations."""
@@ -663,7 +666,7 @@ async def api_uninstall_system(payload: dict = Body(...)):
     if not payload.get("confirm", False):
         raise HTTPException(status_code=400, detail="Подтверждение обязательно (confirm: true)")
     from core.uninstaller import clean_uninstall_system
-    result = clean_uninstall_system(keep_backups=payload.get("keep_backups", False))
+    result = clean_uninstall_system(keep_backups=payload.get("keep_backups", False), orchestrator_instance=orchestrator)
 
     # Automatic clean termination of process
     import threading, time, os
@@ -700,30 +703,39 @@ async def api_get_orchestration_config():
 
 @app.post("/v1/orchestration/config")
 async def api_save_orchestration_config(payload: dict = Body(...)):
-    """Saves custom orchestration pipeline settings to config.yaml."""
+    """Saves custom orchestration pipeline settings to config.yaml and applies to live orchestrator."""
     from core.config import config, save_config
     if "architect_model" in payload:
         config.cascade.architect_model = payload["architect_model"]
+        orchestrator.architect_model = payload["architect_model"]
     if "coder_model" in payload:
         config.cascade.coder_model = payload["coder_model"]
+        orchestrator.executor_model = payload["coder_model"]
     if "auditor_model" in payload:
         config.cascade.auditor_model = payload["auditor_model"]
+        orchestrator.reviewer_model = payload["auditor_model"]
     if "hard_gate_cmd" in payload:
         config.cascade.hard_gate_cmd = payload["hard_gate_cmd"]
     if "max_rework" in payload:
         config.cascade.max_rework_iterations = int(payload["max_rework"])
+        orchestrator.max_rework_iterations = int(payload["max_rework"])
     if "mode" in payload:
         config.cascade.mode = str(payload["mode"])
+        orchestrator.mode = str(payload["mode"])
+    if "breakpoint_enabled" in payload:
+        orchestrator.breakpoint_enabled = bool(payload["breakpoint_enabled"])
     if "enable_local_gate" in payload:
         config.cascade.enable_local_gate = bool(payload["enable_local_gate"])
+        orchestrator.enable_local_gate = bool(payload["enable_local_gate"])
     if "enable_architect_audit" in payload:
         config.cascade.enable_architect_audit = bool(payload["enable_architect_audit"])
+        orchestrator.enable_architect_audit = bool(payload["enable_architect_audit"])
     ok = save_config(config)
     return {"status": "ok" if ok else "error", "message": "Настройки оркестрации успешно сохранены"}
 
 @app.delete("/v1/models/{model_id:path}")
 async def api_delete_model(model_id: str):
-    """Removes model from user's subscriptions catalog."""
+    """Removes model from user's subscriptions catalog atomically with backup."""
     from core.healer import config_healer
     sub_cfg, _ = config_healer.load_or_create()
     removed = False
@@ -733,7 +745,7 @@ async def api_delete_model(model_id: str):
             acc.models = new_models
             removed = True
     if removed:
-        sub_cfg.save()
+        config_healer.atomic_save(sub_cfg)
         return {"status": "ok", "message": f"Модель {model_id} удалена из каталога"}
     return {"status": "ok", "message": f"Модель {model_id} не найдена в пользовательских аккаунтах"}
 
@@ -756,9 +768,15 @@ async def api_get_snippet(target: str):
 
 @app.get("/v1/subscriptions")
 async def api_get_subscriptions():
-    """Returns self-healed subscriptions configuration."""
+    """Returns self-healed subscriptions configuration with masked API keys."""
     cfg, mods = config_healer.load_or_create()
     sub_dict = cfg.model_dump() if hasattr(cfg, "model_dump") else cfg.dict()
+    for acc in sub_dict.get("accounts", []):
+        raw_key = acc.get("api_key") or ""
+        if len(raw_key) > 8:
+            acc["api_key"] = f"{raw_key[:4]}...{raw_key[-4:]}"
+        elif raw_key:
+            acc["api_key"] = "***"
     return {"status": "ok", "subscriptions": sub_dict, "healing_modifications": mods}
 
 @app.get("/v1/providers/keys")
@@ -822,9 +840,11 @@ async def api_ping_account(account_id: str):
     is_ok = False
     status_detail = ""
 
-    if acc.provider == "ollama" or acc.auth_type == "local_ollama":
+    if acc.provider == "ollama" or acc.auth_type in ("local", "local_ollama"):
         try:
-            base_url = getattr(config.ollama, "base_url", "http://localhost:11434")
+            base_url = os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434"
+            if not base_url.startswith("http"):
+                base_url = f"http://{base_url}"
             async with httpx.AsyncClient(timeout=2.5) as client:
                 r = await client.get(f"{base_url}/api/tags")
                 if r.status_code == 200:
@@ -868,7 +888,7 @@ async def api_playground_run(request: PlaygroundRequest):
     duration_ms = int((time.time() - start_time) * 1000)
 
     recent_events = analytics.get_recent_events(limit=6)
-    req_events = [e for e in recent_events if e.get("request_id") == req_id]
+    req_events = [e for e in recent_events if (e.get("req_id") or e.get("request_id")) == req_id]
 
     dlp_masked = sum(1 for e in req_events if e.get("stage") == "dlp_sanitized")
     bpe_saved = next((e.get("message") for e in req_events if e.get("stage") == "bpe_compressed"), None)
@@ -1040,9 +1060,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
     return JSONResponse(content=payload_dict, headers=headers)
 
 if __name__ == "__main__":
+    bind_host = os.getenv("ZCA_HOST") or getattr(config.server, "host", "127.0.0.1") or "127.0.0.1"
     uvicorn.run(
         "main:app",
-        host=config.server.host,
+        host=bind_host,
         port=config.server.port,
         reload=False,
         workers=config.server.workers,

@@ -107,4 +107,26 @@ class QuotaMesh:
             }
         return summary
 
+    def get_active_accounts(self) -> List[Dict[str, Any]]:
+        """Returns active accounts registered in the quota mesh with healthy key pools."""
+        accounts = []
+        for provider, pool in self._pools.items():
+            healthy = [k for k in pool if k.is_healthy]
+            if healthy:
+                accounts.append({
+                    "id": f"{provider}-mesh",
+                    "provider": provider,
+                    "auth_type": "api_key",
+                    "status": "active",
+                    "keys_count": len(pool),
+                    "healthy_count": len(healthy),
+                })
+        return accounts
+
+    def clear(self):
+        """Clears all registered key pools and indices."""
+        self._pools.clear()
+        self._index.clear()
+
+
 mesh = QuotaMesh()

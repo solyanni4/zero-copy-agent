@@ -66,7 +66,7 @@ def test_ui_policies_update_endpoint():
 
 def test_ui_dlp_sandbox_test_endpoint():
     payload = {
-        "text": "Check secret: OPENAI_KEY=sk-proj-9481948194819481948194819481 and server IP 192.168.50.135"
+        "text": "Check secret: OPENAI_KEY=sk-proj-9481948194819481948194819481 and server IP 192.168.1.100"
     }
     res = client.post("/v1/ui/dlp/test", json=payload)
     assert res.status_code == 200
