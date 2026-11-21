@@ -92,7 +92,8 @@ function Invoke-CloudSync() {
             $FilterLines += "- $rule"
         }
         $FilterLines += "+ **"
-        Set-Content -Path $FilterFile -Value $FilterLines -Encoding utf8
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllLines($FilterFile, $FilterLines, $utf8NoBom)
 
         # Выполняем rclone copy в целевую папку Google Диска
         $rcloneArgs = @(
