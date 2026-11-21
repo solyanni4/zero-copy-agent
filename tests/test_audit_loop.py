@@ -177,8 +177,8 @@ async def test_cascade_pass_first_attempt():
 
     assert "Аудит: PASS" in result
     assert "class Calc:" in result
-    assert "### 📐 Архитектурный план" in result
-    assert "### 💻 Реализация" in result
+    assert "[Plan] Архитектурный план" in result
+    assert "[Code] Реализация" in result
 
 
 @pytest.mark.asyncio

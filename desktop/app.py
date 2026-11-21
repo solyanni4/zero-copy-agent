@@ -102,7 +102,7 @@ if sys.stderr is None or not hasattr(sys.stderr, "write"):
 else:
     sys.stderr = DualWriter(sys.stderr, logging.error)
 
-from core.config import config
+from core.config import config, get_runtime_cwd
 from desktop.app_icon import create_default_icon, ensure_icon_file
 
 # Check GUI availability
@@ -237,8 +237,9 @@ class ZeroCopyUnifiedApp:
                 cmd = [sys.executable, "--auth", prov]
             else:
                 cmd = [sys.executable, str(Path(__file__).resolve()), "--auth", prov]
-            logging.info(f"Spawning browser auth subprocess: {cmd}")
-            subprocess.Popen(cmd, cwd=str(ROOT_DIR))
+            cwd_path = get_runtime_cwd()
+            logging.info(f"Spawning browser auth subprocess: {cmd} (cwd={cwd_path})")
+            subprocess.Popen(cmd, cwd=str(cwd_path))
             self.notify_tray(f"Открывается окно входа для {prov.upper()}...", title="zero-copy-agent Auth")
         except Exception as e:
             logging.exception(f"Failed to spawn auth subprocess for {provider}: {e}")
@@ -316,15 +317,15 @@ class ZeroCopyUnifiedApp:
             pystray.MenuItem("Открыть zero-copy-agent", self.show_window, default=True),
             pystray.MenuItem(f"Статус: Порт {self.port} активен", lambda icon, item: None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("📋 Скопировать API URL (Cursor/IDE)", _copy_api),
-            pystray.MenuItem("🔌 Скопировать MCP URL (Antigravity)", _copy_mcp),
-            pystray.MenuItem("⚡ Настроить все IDE (1 клик)", lambda icon, item: self.auto_setup_ides()),
+            pystray.MenuItem("Скопировать API URL (Cursor/IDE)", _copy_api),
+            pystray.MenuItem("Скопировать MCP URL (Antigravity)", _copy_mcp),
+            pystray.MenuItem("Настроить все IDE (1 клик)", lambda icon, item: self.auto_setup_ides()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("🔑 Войти в Gemini", lambda icon, item: self.open_browser_auth("gemini")),
-            pystray.MenuItem("🔑 Войти в ChatGPT", lambda icon, item: self.open_browser_auth("chatgpt")),
-            pystray.MenuItem("🔑 Войти в Claude", lambda icon, item: self.open_browser_auth("claude")),
+            pystray.MenuItem("Войти в Gemini", lambda icon, item: self.open_browser_auth("gemini")),
+            pystray.MenuItem("Войти в ChatGPT", lambda icon, item: self.open_browser_auth("chatgpt")),
+            pystray.MenuItem("Войти в Claude", lambda icon, item: self.open_browser_auth("claude")),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("🚪 Выход", self.stop)
+            pystray.MenuItem("Выход", self.stop)
         )
 
         self.tray_icon = pystray.Icon(

@@ -326,7 +326,9 @@ async function checkUpdates(opts = {}) {
     latestUpdateData = data;
 
     if (statusLine) {
-      if (data.has_update) {
+      if (data.status === 'offline') {
+        statusLine.textContent = 'Нет связи с GitHub';
+      } else if (data.has_update) {
         statusLine.innerHTML = `<button onclick="openUpdateModal()" class="underline text-cobalt font-semibold hover:text-[#0955A3] cursor-pointer">Доступно обновление v${data.latest_version}</button>`;
       } else {
         statusLine.textContent = `Актуально · v${data.version} OK`;
@@ -334,7 +336,7 @@ async function checkUpdates(opts = {}) {
       statusLine.classList.remove('hidden');
     }
 
-    if (data.has_update) {
+    if (data.status !== 'offline' && data.has_update) {
       showBanner(`Доступно обновление: v${data.latest_version} (текущая: v${data.version}). Нажмите для скачивания.`, 'arrow-down-circle', 'text-cobalt');
       const banner = document.getElementById('status-banner');
       if (banner) {
@@ -343,6 +345,10 @@ async function checkUpdates(opts = {}) {
       }
       if (opts.autoPrompt || isInteractive) {
         openUpdateModal(data);
+      }
+    } else if (data.status === 'offline') {
+      if (isInteractive) {
+        showBanner('Нет связи с GitHub. Проверка обновлений не выполнена.', 'alert-circle', 'text-muted');
       }
     } else if (isInteractive) {
       showBanner(`Версия v${data.version} актуальна (GitHub подтвержден).`, 'check-circle-2', 'text-emerald');
@@ -658,7 +664,7 @@ function runQuickPrompt(type) {
   if (type === 'refactor') {
     input.value = 'Рефакторинг auth.py: вынести валидацию сессии и ротацию токенов в отдельный класс';
   } else {
-    input.value = 'Тест REJECT ➔ Rework: добавить проверку таймаута в core/drivers/ollama.py с обработкой ошибок';
+    input.value = 'Тест REJECT -> Rework: добавить проверку таймаута в core/drivers/ollama.py с обработкой ошибок';
   }
   startRealOrSimulatedExecution(input.value);
   input.value = '';
@@ -698,7 +704,7 @@ async function startRealOrSimulatedExecution(promptText) {
         dlpCount: 0,
         expanded: true,
         payloadType: 'text',
-        payload: '⚠️ Нет подключённых моделей для выполнения запроса.\nПерейдите в раздел «Модели и пул» и подключите API-ключ или запустите локальную модель через Ollama.'
+        payload: 'Нет подключённых моделей для выполнения запроса.\nПерейдите в раздел «Модели и пул» и подключите API-ключ или запустите локальную модель через Ollama.'
       }]
     };
     state.traces.unshift(run);
@@ -828,23 +834,58 @@ async function startRealOrSimulatedExecution(promptText) {
 // ------------------------------------------------------------------------
 // 5. VIEW 2: Real Models & Accounts Pool (Quota Mesh & Web Subscriptions)
 // ------------------------------------------------------------------------
+let _webAuthPollTimer = null;
+
 async function startWebAuth(provider) {
   const prov = (provider || 'gemini').toLowerCase();
   showModelsLog(`[AUTH] Запуск окна авторизации для ${prov.toUpperCase()}... Пожалуйста, выполните вход в браузере.`, 'text-cobalt');
+
+  if (_webAuthPollTimer) {
+    clearInterval(_webAuthPollTimer);
+    _webAuthPollTimer = null;
+  }
+
   try {
     const res = await fetch(`/v1/providers/web-auth/${encodeURIComponent(prov)}`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       showModelsLog(`[AUTH] ${data.message || 'Окно авторизации открыто. Завершите вход в браузере и нажмите OK.'}`, 'text-emerald');
-      // Schedule background poll to pick up updated subscriptions.yaml
-      setTimeout(async () => {
-        await fetchAccountsAndModels();
-        await syncConnectedModels();
-      }, 3500);
-      setTimeout(async () => {
-        await fetchAccountsAndModels();
-        await syncConnectedModels();
-      }, 7000);
+
+      let attempts = 0;
+      const maxAttempts = 45;
+      _webAuthPollTimer = setInterval(async () => {
+        attempts++;
+        try {
+          const subRes = await fetch('/v1/subscriptions');
+          if (subRes.ok) {
+            const subData = await subRes.json();
+            const accounts = subData.subscriptions?.accounts || [];
+            const activeAcc = accounts.find(a => 
+              a.provider === prov && 
+              a.auth_type === 'browser_session' && 
+              a.status === 'active'
+            );
+
+            if (activeAcc) {
+              clearInterval(_webAuthPollTimer);
+              _webAuthPollTimer = null;
+              showModelsLog(`[AUTH] Подписка ${prov.toUpperCase()} успешно подключена!`, 'text-emerald');
+              await fetchAccountsAndModels();
+              await syncConnectedModels();
+              return;
+            }
+          }
+          await fetch('/v1/models?refresh=true').catch(() => {});
+        } catch (e) {
+          // ignore network glitches during polling
+        }
+
+        if (attempts >= maxAttempts) {
+          clearInterval(_webAuthPollTimer);
+          _webAuthPollTimer = null;
+          showModelsLog(`[AUTH] Ожидание авторизации ${prov.toUpperCase()} завершено. Обновите список вручную при необходимости.`, 'text-muted');
+        }
+      }, 3000);
     } else {
       showModelsLog(`[ERROR] Не удалось запустить авторизацию: ${data.detail || res.statusText}`, 'text-crimson');
     }
@@ -1610,7 +1651,7 @@ function renderHardwareManual(hw) {
       <div><strong>Видеокарта (GPU):</strong> ${escapeHtml(hw.gpu_name)} (${hw.vram_gb} ГБ VRAM)</div>
       <div><strong>Процессор (CPU):</strong> ${escapeHtml(hw.cpu_name)} (${hw.cpu_cores} потоков)</div>
       <div><strong>Оперативная память (RAM):</strong> ${hw.total_ram_gb} ГБ</div>
-      <div><strong>Локальный рантайм:</strong> ${hw.ollama_online ? '<span class="text-emerald font-semibold">Ollama активна 🟢</span>' : '<span class="text-amber">Ollama офлайн ⚪</span>'}</div>
+      <div><strong>Локальный рантайм:</strong> ${hw.ollama_online ? '<span class="text-emerald font-semibold">Ollama активна [OK]</span>' : '<span class="text-amber">Ollama офлайн [OFFLINE]</span>'}</div>
     </div>
     <div class="mt-2.5 pt-2 border-t border-hairline text-cobalt font-semibold">
       Рекомендованный класс моделей: ${escapeHtml(hw.recommended_tier)}

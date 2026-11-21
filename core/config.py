@@ -5,6 +5,18 @@ from typing import List, Optional, Dict
 import yaml
 from pydantic import BaseModel, Field
 
+def get_runtime_cwd() -> Path:
+    """
+    Returns the persistent runtime directory for zero-copy-agent.
+    For frozen PyInstaller binaries, returns the directory containing the executable.
+    CRITICAL: Never returns temporary extracted directory _MEIPASS.
+    For source execution, returns repository root.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
 def get_config_path() -> Path:
     env_path = os.getenv("CONFIG_PATH")
     if env_path:

@@ -25,7 +25,7 @@ def test_get_display_name():
 
 def test_format_badge():
     badge = format_badge("gemini-advanced")
-    assert badge.startswith("⚡ **[zero-copy-agent |")
+    assert badge.startswith("**[zero-copy-agent |")
     assert "Gemini Argon" in badge
     assert badge.endswith("]**\n\n")
 

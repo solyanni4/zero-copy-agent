@@ -107,7 +107,7 @@ class ZCAPNativeEngine:
         yield ZCAPFrame(channel=ChannelType.THOUGHT_STREAM, payload=thought_data)
 
         # 2. Token stream
-        response_text = f"⚡ [ZCAP Native Response to '{envelope.payload}']"
+        response_text = f"[ZCAP Native Response to '{envelope.payload}']"
         for word in response_text.split(" "):
             chunk = (word + " ").encode("utf-8")
             yield ZCAPFrame(channel=ChannelType.TOKEN_STREAM, payload=chunk)

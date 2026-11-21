@@ -283,7 +283,7 @@ class HybridOrchestrator:
             ollama_active = await self.ollama.list_models()
             is_local = target.startswith("ollama/") or (target in ollama_active) or target == "mock-test"
             if not is_local:
-                err_msg = f"🛡️ [Air-Gap Policy] Внешний сетевой вызов заблокирован для модели '{target}'. Разрешены только локальные модели (Ollama)."
+                err_msg = f"[Air-Gap Policy] Внешний сетевой вызов заблокирован для модели '{target}'. Разрешены только локальные модели (Ollama)."
                 logger.warning(err_msg)
                 if req_id:
                     analytics.record_event(req_id, "air_gap_blocked", target, err_msg)
@@ -335,7 +335,7 @@ class HybridOrchestrator:
             resp = await self.browser_engine.query(compressed_prompt, target)
             if inject_signature:
                 if not is_browser_ready and target != "mock-test":
-                    badge = format_badge("mock-test", role="Демо-симулятор (Сессия не подключена ⚪)")
+                    badge = format_badge("mock-test", role="Демо-симулятор (Сессия не подключена)")
                 else:
                     badge = format_badge(target)
                 content = badge + resp
@@ -401,7 +401,7 @@ class HybridOrchestrator:
             ollama_active = await self.ollama.list_models()
             is_local = target.startswith("ollama/") or (target in ollama_active) or target == "mock-test"
             if not is_local:
-                err_msg = f"🛡️ [Air-Gap Policy] Внешний сетевой вызов заблокирован для модели '{target}'. Разрешены только локальные модели (Ollama)."
+                err_msg = f"[Air-Gap Policy] Внешний сетевой вызов заблокирован для модели '{target}'. Разрешены только локальные модели (Ollama)."
                 logger.warning(err_msg)
                 if req_id:
                     analytics.record_event(req_id, "air_gap_blocked", target, err_msg)
@@ -439,7 +439,7 @@ class HybridOrchestrator:
                 is_browser_ready = getattr(self.browser_engine, "is_ready", False)
                 if inject_signature:
                     if not is_browser_ready and target != "mock-test":
-                        yield format_badge("mock-test", role="Демо-симулятор (Сессия не подключена ⚪)")
+                        yield format_badge("mock-test", role="Демо-симулятор (Сессия не подключена)")
                     else:
                         yield format_badge(target)
                 async for tok in self.browser_engine.query_stream(compressed_prompt, target):
@@ -580,7 +580,7 @@ class HybridOrchestrator:
             badge = format_cascade_badge(arch_model, "pending", status="PAUSED", iterations=0) if inject_signature else ""
             return (
                 f"{badge}"
-                f"### ⏸️ [Breakpoint] Архитектурный план сформирован (Ожидает подтверждения):\n{plan}\n\n"
+                f"### [Breakpoint] Архитектурный план сформирован (Ожидает подтверждения):\n{plan}\n\n"
                 f"> **Точка останова активна.** Проверьте спецификацию архитектора перед переходом к генерации кода."
             )
 
@@ -692,18 +692,18 @@ class HybridOrchestrator:
             ])
             return (
                 f"{badge}"
-                f"### ⚠️ Внимание: Требуется ручное подтверждение (Статус: ESCALATED)\n"
+                f"### [Внимание] Требуется ручное подтверждение (Статус: ESCALATED)\n"
                 f"Автоматический цикл доработки исчерпал лимит итераций ({max_rework}).\n\n"
                 f"**Нерешённые замечания аудитора:**\n{escalation_report}\n\n"
-                f"---\n### 📐 Исходный архитектурный план:\n{plan}\n\n"
-                f"---\n### 💻 Последняя версия реализации:\n{current_code}"
+                f"---\n### [Plan] Исходный архитектурный план:\n{plan}\n\n"
+                f"---\n### [Code] Последняя версия реализации:\n{current_code}"
             )
 
         badge = format_cascade_badge(arch_model, executor_id, status="PASS", iterations=iteration + 1) if inject_signature else ""
         return (
             f"{badge}"
-            f"### 📐 Архитектурный план (Шаг 1):\n{plan}\n\n"
-            f"---\n### 💻 Реализация (Шаг 2):\n{current_code}"
+            f"### [Plan] Архитектурный план (Шаг 1):\n{plan}\n\n"
+            f"---\n### [Code] Реализация (Шаг 2):\n{current_code}"
         )
 
     async def _run_cascade_architect_stream(
@@ -717,7 +717,7 @@ class HybridOrchestrator:
         if req_id:
             analytics.record_event(req_id, "cascade_step1", arch_model, "Streaming Architectural Blueprint")
         if inject_signature:
-            yield "⚡ **[ZCAO Cascade: Архитектор (Шаг 1: Проектирование)]**\n\n"
+            yield "**[ZCAO Cascade: Архитектор (Шаг 1: Проектирование)]**\n\n"
         plan_prompt = (
             f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
             f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
@@ -733,11 +733,11 @@ class HybridOrchestrator:
         if self.breakpoint_enabled:
             if req_id:
                 analytics.record_event(req_id, "cascade_breakpoint", arch_model, "Cascade paused at breakpoint after architectural plan")
-            yield "\n\n---\n⏸️ **[Breakpoint] Выполнение приостановлено:** Архитектурный план сформирован. Проверьте план перед запуском генерации кода."
+            yield "\n\n---\n**[Breakpoint] Выполнение приостановлено:** Архитектурный план сформирован. Проверьте план перед запуском генерации кода."
             return
 
         if inject_signature:
-            yield "\n\n---\n⚡ **[ZCAO Cascade: Запуск замкнутого цикла реализации и аудита...]**\n\n"
+            yield "\n\n---\n**[ZCAO Cascade: Запуск замкнутого цикла реализации и аудита...]**\n\n"
 
         # Execute full closed-loop cascade reusing the generated plan
         result_full = await self._run_cascade_architect(
@@ -746,10 +746,10 @@ class HybridOrchestrator:
             inject_signature=False,
             existing_plan=plan
         )
-        if "### 💻 Реализация (Шаг 2):" in result_full:
-            code_part = result_full.split("### 💻 Реализация (Шаг 2):", 1)[1]
-            yield f"### 💻 Реализация (Шаг 2, проверено аудитором):{code_part}"
-        elif "### ⚠️ Внимание: Требуется ручное подтверждение" in result_full:
+        if "### [Code] Реализация (Шаг 2):" in result_full:
+            code_part = result_full.split("### [Code] Реализация (Шаг 2):", 1)[1]
+            yield f"### [Code] Реализация (Шаг 2, проверено аудитором):{code_part}"
+        elif "### [Внимание] Требуется ручное подтверждение" in result_full:
             yield f"\n\n{result_full}"
         else:
             yield f"\n\n{result_full}"

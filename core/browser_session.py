@@ -32,20 +32,20 @@ def detect_proxy():
 def get_model_badge(model_id: str) -> str:
     m = model_id.lower()
     if "neon" in m:
-        label = "Gemini 4 Neon (Deeper Analysis 🧠 🟢)"
+        label = "Gemini 4 Neon (Deeper Analysis)"
     elif "hydrogen" in m:
-        label = "Gemini 4 Hydrogen (Everyday Help ⚡ 🟢)"
+        label = "Gemini 4 Hydrogen (Everyday Help)"
     elif "auto" in m:
-        label = "Gemini Auto (Adaptive 🤖 🟢)"
+        label = "Gemini Auto (Adaptive)"
     elif "gemini" in m:
-        label = "Gemini Advanced (Живая веб-подписка 🟢)"
+        label = "Gemini Advanced (Живая веб-подписка)"
     elif "chatgpt" in m or "gpt" in m:
-        label = "ChatGPT Plus / GPT-4o (Живая веб-подписка 🟢)"
+        label = "ChatGPT Plus / GPT-4o (Живая веб-подписка)"
     elif "claude" in m:
-        label = "Claude Pro (Живая веб-подписка 🟢)"
+        label = "Claude Pro (Живая веб-подписка)"
     else:
-        label = f"{model_id} (Живая веб-сессия 🟢)"
-    return f"⚡ **[zero-copy-agent | {label}]**\n\n"
+        label = f"{model_id} (Живая веб-сессия)"
+    return f"**[zero-copy-agent | {label}]**\n\n"
 
 class BrowserSessionEngine:
     def __init__(self):

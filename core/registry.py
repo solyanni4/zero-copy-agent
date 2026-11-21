@@ -33,6 +33,35 @@ class ModelRegistry:
         self._cached_active_cards: List[ModelCard] = []
         self._cached_all_cards: List[ModelCard] = []
         self._provider_health: Dict[str, ProviderHealth] = {}
+        self._subscriptions_mtime: float = 0.0
+        self._config_mtime: float = 0.0
+
+    def check_disk_updates(self) -> bool:
+        """Returns True and updates tracking if subscriptions.yaml or config.yaml mtime changed."""
+        changed = False
+        try:
+            from core.healer import config_healer
+            sub_path = config_healer.target_path
+            if sub_path.exists():
+                mtime = sub_path.stat().st_mtime
+                if mtime != self._subscriptions_mtime:
+                    self._subscriptions_mtime = mtime
+                    changed = True
+        except Exception:
+            pass
+
+        try:
+            from core.config import get_runtime_cwd
+            cfg_path = get_runtime_cwd() / "config.yaml"
+            if cfg_path.exists():
+                mtime = cfg_path.stat().st_mtime
+                if mtime != self._config_mtime:
+                    self._config_mtime = mtime
+                    changed = True
+        except Exception:
+            pass
+
+        return changed
 
     async def check_providers(
         self,
@@ -178,6 +207,9 @@ class ModelRegistry:
         By default (include_inactive=False), ONLY returns models that have
         an active, ready inference source.
         """
+        if self.check_disk_updates():
+            force_refresh = True
+
         now = time.time()
         if not force_refresh and (now - self._last_refresh) < self.ttl_seconds:
             if include_inactive:

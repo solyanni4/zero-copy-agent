@@ -9,8 +9,8 @@ from typing import Dict, Any, Optional, List
 # Core dictionary mapping technical IDs to clean, human-readable display names
 DISPLAY_NAME_REGISTRY: Dict[str, str] = {
     # Gemini
-    "gemini-advanced": "Gemini Argon (Web 🟢)",
-    "gemini-4-neon": "Gemini 4 Neon (Deeper Analysis 🧠)",
+    "gemini-advanced": "Gemini Argon (Web)",
+    "gemini-4-neon": "Gemini 4 Neon (Deeper Analysis)",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     "gemini-2.5-pro": "Gemini 2.5 Pro",
     "gemini-pro": "Gemini Pro",
@@ -29,20 +29,20 @@ DISPLAY_NAME_REGISTRY: Dict[str, str] = {
     "claude-3-haiku": "Claude 3 Haiku",
     
     # Local GPU (Ollama)
-    "qwen2.5-coder:14b": "Qwen2.5-Coder 14B (Local GPU 🦙)",
-    "qwen2.5-coder:7b": "Qwen2.5-Coder 7B (Local GPU 🦙)",
-    "qwen2.5-coder:1.5b": "Qwen2.5-Coder 1.5B (Local GPU 🦙)",
-    "qwen2.5-coder": "Qwen2.5-Coder (Local GPU 🦙)",
-    "qwen2.5:0.5b": "Qwen2.5 0.5B (Local GPU 🦙)",
+    "qwen2.5-coder:14b": "Qwen2.5-Coder 14B (Local GPU)",
+    "qwen2.5-coder:7b": "Qwen2.5-Coder 7B (Local GPU)",
+    "qwen2.5-coder:1.5b": "Qwen2.5-Coder 1.5B (Local GPU)",
+    "qwen2.5-coder": "Qwen2.5-Coder (Local GPU)",
+    "qwen2.5:0.5b": "Qwen2.5 0.5B (Local GPU)",
     "nomic-embed-text:latest": "Nomic Embeddings (Local)",
     
     # Dynamic aliases
-    "tier:local-fast": "Local GPU Fast (Qwen2.5-Coder 🦙)",
-    "tier:coding-top": "Coding Top (Qwen2.5-Coder 14B 🦙)",
-    "tier:reasoning-top": "Reasoning Top (Gemini 4 Neon 🧠)",
+    "tier:local-fast": "Local GPU Fast (Qwen2.5-Coder)",
+    "tier:coding-top": "Coding Top (Qwen2.5-Coder 14B)",
+    "tier:reasoning-top": "Reasoning Top (Gemini 4 Neon)",
     
     # Cascades
-    "cascade:architect": "Cascade «Архитектор» (Blueprint ➔ Code)",
+    "cascade:architect": "Cascade «Архитектор» (Blueprint -> Code)",
     
     # Testing
     "mock-test": "Zero-Copy Mock Engine (Instant Test)",
@@ -63,10 +63,10 @@ def get_display_name(model_id: str, custom_overrides: Optional[Dict[str, str]] =
     raw = model_id.lower()
     if raw.startswith("ollama/"):
         sub_name = model_id.split("/", 1)[1]
-        return f"{sub_name} (Local GPU 🦙)"
+        return f"{sub_name} (Local GPU)"
 
     if "qwen" in raw:
-        return f"{model_id} (Local GPU 🦙)"
+        return f"{model_id} (Local GPU)"
     if "gemini" in raw:
         return f"{model_id} (Google)"
     if "claude" in raw:
@@ -85,8 +85,8 @@ def format_badge(
     """Formats markdown badge for chat messages and notifications."""
     display = get_display_name(model_id, custom_overrides)
     if role:
-        return f"⚡ **[zero-copy-agent | {role}: {display}]**\n\n"
-    return f"⚡ **[zero-copy-agent | {display}]**\n\n"
+        return f"**[zero-copy-agent | {role}: {display}]**\n\n"
+    return f"**[zero-copy-agent | {display}]**\n\n"
 
 def format_cascade_badge(
     architect_id: str,
@@ -100,10 +100,10 @@ def format_cascade_badge(
     exec_display = get_display_name(executor_id, custom_overrides)
     if status == "PASS":
         iter_str = f" ({iterations} итер.)" if iterations > 1 else ""
-        return f"⚡ **[ZCAO Cascade: Архитектор ({arch_display}) ➔ Исполнитель ({exec_display}) | Аудит: PASS{iter_str}]**\n\n"
+        return f"**[ZCAO Cascade: Архитектор ({arch_display}) -> Исполнитель ({exec_display}) | Аудит: PASS{iter_str}]**\n\n"
     elif status == "ESCALATED":
-        return f"⚠️ **[ZCAO Cascade: Архитектор ({arch_display}) ➔ Исполнитель ({exec_display}) | Аудит: ESCALATED ({iterations} итер.)]**\n\n"
-    return f"⚡ **[ZCAO Cascade: Архитектор ({arch_display}) ➔ Исполнитель ({exec_display})]**\n\n"
+        return f"**[ZCAO Cascade: Архитектор ({arch_display}) -> Исполнитель ({exec_display}) | Аудит: ESCALATED ({iterations} итер.)]**\n\n"
+    return f"**[ZCAO Cascade: Архитектор ({arch_display}) -> Исполнитель ({exec_display})]**\n\n"
 
 def format_meta_badge_html(model_id: str, role: Optional[str] = None) -> str:
     """HTML tag badge for Web UI cards and event viewer."""

@@ -27,14 +27,14 @@ class MockDriver(BaseDriver):
     def _generate_response(self, prompt: str) -> str:
         prompt_preview = prompt[:180] + ("..." if len(prompt) > 180 else "")
         return (
-            f"🎉 **IDE связь установлена успешно!** Запрос получен и обработан через локальный OpenAI-совместимый шлюз.\n\n"
+            f"**IDE связь установлена успешно!** Запрос получен и обработан через локальный OpenAI-совместимый шлюз.\n\n"
             f"- **Эндпоинт:** `http://127.0.0.1:8000/v1`\n"
             f"- **Длина промпта:** {len(prompt)} символов\n"
             f"- **Режим:** Standby / Demo (готов к подключению веб-сессии)\n\n"
             f"> **Входящий запрос:**\n"
             f"> `{prompt_preview}`\n\n"
             f"---\n"
-            f"### 🚀 Как переключить на живую подписку (Gemini Advanced / ChatGPT Plus):\n"
+            f"### Как переключить на живую подписку (Gemini Advanced / ChatGPT Plus):\n"
             f"В терминале выполните разовую авторизацию:\n"
             f"```bash\n"
             f"python -m core.auth --provider gemini\n"

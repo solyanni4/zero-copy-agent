@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 from pydantic import BaseModel, Field
 
 from core.attribution import get_display_name
+from core.config import get_runtime_cwd
 
 logger = logging.getLogger("zcao.healer")
 
@@ -69,7 +70,7 @@ class ConfigHealer:
     """Manages schema validation, self-healing, and atomic persistence for subscriptions."""
 
     def __init__(self, target_path: Optional[Path] = None):
-        self.target_path = target_path or (Path.cwd() / "subscriptions.yaml")
+        self.target_path = target_path or (get_runtime_cwd() / "subscriptions.yaml")
 
     def load_or_create(self) -> Tuple[SubscriptionsConfig, List[str]]:
         """Loads subscriptions.yaml or creates default starter schema if missing."""

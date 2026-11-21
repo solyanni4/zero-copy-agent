@@ -47,7 +47,7 @@ def authenticate(provider: str):
     proxy_server = detect_proxy()
 
     print(f"\n=======================================================")
-    print(f"  🔐 zero-copy-agent Authentication Assistant")
+    print(f"  [ZCA] zero-copy-agent Authentication Assistant")
     print(f"  Target Provider : {provider.upper()} ({url})")
     print(f"  Profile Storage : {profile_dir}")
     if proxy_server:
@@ -107,13 +107,13 @@ def authenticate(provider: str):
         page = context.new_page() if len(context.pages) == 0 else context.pages[0]
         page.goto(url)
 
-        input("\n👉 Press [ENTER] after you have successfully logged in: ")
+        input("\nPress [ENTER] after you have successfully logged in: ")
 
         print("\n[2/3] Saving cookies and persistent storage state...")
         time.sleep(2)
         context.close()
 
-    print("[3/3] ✅ Session profile successfully saved!")
+    print("[3/3] [OK] Session profile successfully saved!")
     print(f"      You can now start the daemon: .\\start.ps1\n")
 
 def authenticate_desktop(provider: str):

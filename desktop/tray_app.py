@@ -289,7 +289,7 @@ class ZeroCopyDesktopApp:
             from core.ide_setup import configure_targets
             results = configure_targets(["all"])
             configured = [name for name, ok, _ in results if ok]
-            msg = f"✓ Настроены среды:\n" + "\n".join(f"• {c}" for c in configured)
+            msg = f"[OK] Настроены среды:\n" + "\n".join(f"- {c}" for c in configured)
             if self.icon:
                 self.icon.notify(msg, title="zero-copy-agent IDE Setup")
         except Exception as e:
@@ -341,7 +341,7 @@ class ZeroCopyDesktopApp:
 
         # Если запрошен CLI режим или графическая оболочка недоступна:
         if force_cli or not check_gui_available():
-            print(f"\n[CLI Mode] ⚡ zero-copy-agent running in background console mode")
+            print(f"\n[CLI Mode] [ZCA] zero-copy-agent running in background console mode")
             print(f"  API Endpoint : {self.api_url}")
             print(f"  Web Dashboard: http://{self.client_host}:{self.port}/")
             print(f"  Swagger Docs : http://{self.client_host}:{self.port}/docs")
@@ -365,22 +365,22 @@ class ZeroCopyDesktopApp:
             MenuItem("zero-copy-agent", lambda: None, enabled=False),
             MenuItem(f"Статус: Порт {self.port} активен", lambda: None, enabled=False),
             pystray.Menu.SEPARATOR,
-            MenuItem("✨ Мастер настройки (Onboarding Wizard)", lambda: self.open_dashboard()),
-            MenuItem("📊 Открыть Дашборд & Песочницу", lambda: self.open_dashboard()),
+            MenuItem("Мастер настройки (Onboarding Wizard)", lambda: self.open_dashboard()),
+            MenuItem("Открыть Дашборд & Песочницу", lambda: self.open_dashboard()),
             pystray.Menu.SEPARATOR,
-            MenuItem("📋 Скопировать API URL для Cursor/IDE", lambda: self.copy_api_url_to_clipboard()),
-            MenuItem("🔌 Скопировать MCP URL (Antigravity / Cursor)", lambda: self.copy_mcp_url_to_clipboard()),
-            MenuItem("⚡ Автонастройка всех IDE (1 клик)", lambda: self.auto_setup_ides()),
+            MenuItem("Скопировать API URL для Cursor/IDE", lambda: self.copy_api_url_to_clipboard()),
+            MenuItem("Скопировать MCP URL (Antigravity / Cursor)", lambda: self.copy_mcp_url_to_clipboard()),
+            MenuItem("Автонастройка всех IDE (1 клик)", lambda: self.auto_setup_ides()),
             pystray.Menu.SEPARATOR,
-            MenuItem("🔑 Войти в Gemini Advanced", lambda: self.open_browser_auth("gemini")),
-            MenuItem("🔑 Войти в ChatGPT Plus", lambda: self.open_browser_auth("chatgpt")),
-            MenuItem("🔑 Войти в Claude Pro", lambda: self.open_browser_auth("claude")),
+            MenuItem("Войти в Gemini Advanced", lambda: self.open_browser_auth("gemini")),
+            MenuItem("Войти в ChatGPT Plus", lambda: self.open_browser_auth("chatgpt")),
+            MenuItem("Войти в Claude Pro", lambda: self.open_browser_auth("claude")),
             pystray.Menu.SEPARATOR,
-            MenuItem("🌐 Открыть Web Swagger API", lambda: self.open_docs()),
-            MenuItem("📁 Открыть папку профилей браузера", lambda: self.open_profiles_folder()),
-            MenuItem("📄 Открыть лог-файл (Troubleshooting)", lambda: self.open_log_file()),
+            MenuItem("Открыть Web Swagger API", lambda: self.open_docs()),
+            MenuItem("Открыть папку профилей браузера", lambda: self.open_profiles_folder()),
+            MenuItem("Открыть лог-файл (Troubleshooting)", lambda: self.open_log_file()),
             pystray.Menu.SEPARATOR,
-            MenuItem("🚪 Выход (Stop & Exit)", lambda: self.stop())
+            MenuItem("Выход (Stop & Exit)", lambda: self.stop())
         )
 
         self.icon = pystray.Icon(
@@ -395,7 +395,7 @@ class ZeroCopyDesktopApp:
 
 def main():
     if "--help" in sys.argv or "-h" in sys.argv:
-        print("⚡ zero-copy-agent — Self-Hosted AI Gateway & Sidecar")
+        print("[ZCA] zero-copy-agent — Self-Hosted AI Gateway & Sidecar")
         print("\nUsage:")
         print("  zero-copy-agent [OPTIONS]")
         print("\nOptions:")

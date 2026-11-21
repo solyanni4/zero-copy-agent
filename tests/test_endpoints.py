@@ -56,7 +56,7 @@ def test_chat_completions_headers_and_signature_suppression():
     assert "x-zca-model" in res.headers
     body = res.json()
     content = body["choices"][0]["message"]["content"]
-    assert "⚡ **[zero-copy-agent" in content
+    assert "**[zero-copy-agent" in content
 
     # 2. JSON format request must suppress text badge to keep parseable
     json_payload = {

@@ -14,20 +14,26 @@ param (
 $ErrorActionPreference = "Stop"
 $SourceDir = (Resolve-Path "$PSScriptRoot/..").Path
 
+$versionMatch = (Get-Content "$SourceDir/core/__init__.py" -Raw -ErrorAction SilentlyContinue | Select-String '__version__\s*=\s*"([^"]+)"')
+$CurrentVersion = if ($versionMatch) { $versionMatch.Matches.Groups[1].Value } else { "1.0.6" }
+$CloudDestination = "gdrive:zero-copy-agent/zero-copy-agent-$CurrentVersion"
+
 # Папки и файлы для исключения из синхронизации
 $ExcludeRules = @(
     ".git/**",
     "venv/**",
     ".venv/**",
     "**/__pycache__/**",
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
     ".pytest_cache/**",
     "browser_profile/**",
     "dist/**",
     "build/**",
+    "*.bak",
     ".env",
-    "*.db",
-    "*.db-wal",
-    "*.db-shm",
+    "*.db*",
     "*.log",
     "zero-copy-agent.exe"
 )
@@ -43,7 +49,7 @@ function Invoke-LocalSync([string]$DestDir) {
     }
 
     $ExcludeDirs = @(".git", "venv", ".venv", "__pycache__", ".pytest_cache", "browser_profile", "dist", "build")
-    $ExcludeFiles = @(".env", "*.db", "*.db-wal", "*.db-shm", "*.log", "zero-copy-agent.exe")
+    $ExcludeFiles = @(".env", "*.db*", "*.log", "zero-copy-agent.exe", "*.bak", "*.pyc")
 
     $RoboArgs = @(
         "`"$SourceDir`"",
@@ -83,7 +89,7 @@ function Invoke-CloudSync() {
 
     Write-Host ">>> Облачная синхронизация через rclone..." -ForegroundColor Cyan
     Write-Host "    Папка Google Drive ID: $TargetFolderId"
-    Write-Host "    Целевой путь: gdrive:zero-copy-agent"
+    Write-Host "    Целевой путь: $CloudDestination"
 
     $FilterFile = [System.IO.Path]::GetTempFileName()
     try {
@@ -99,8 +105,7 @@ function Invoke-CloudSync() {
         $rcloneArgs = @(
             "copy",
             "$SourceDir",
-            "gdrive:zero-copy-agent",
-            "--drive-root-folder-id", "$TargetFolderId",
+            "$CloudDestination",
             "--filter-from", "$FilterFile",
             "--stats", "2s",
             "-v"

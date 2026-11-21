@@ -23,17 +23,17 @@ def cmd_list():
     """Prints table of detected IDEs and AI agents."""
     results = scan_all()
     print("\n" + "=" * 70)
-    print("  🚀 zero-copy-agent | Сканирование поддерживаемых IDE и агентов")
+    print("  [ZCA] zero-copy-agent | Сканирование поддерживаемых IDE и агентов")
     print("=" * 70)
     print(f"  {'Инструмент':<22} | {'Статус':<15} | {'Конфигурация'}")
     print("  " + "-" * 66)
     for key, info in results.items():
         if info["configured"]:
-            status = "🟢 Подключен"
+            status = "[OK] Подключен"
         elif info["installed"]:
-            status = "🟡 Не настроен"
+            status = "Не настроен"
         else:
-            status = "⚪ Не найден"
+            status = "Не найден"
         name = info["name"]
         details = info["details"]
         print(f"  {name:<22} | {status:<15} | {details}")
@@ -44,16 +44,16 @@ def cmd_list():
 
 def cmd_apply(targets: List[str], dry_run: bool = False):
     """Applies configuration to requested target(s)."""
-    print(f"\n🚀 Применение настроек для: {', '.join(targets)}...")
+    print(f"\n[Apply] Применение настроек для: {', '.join(targets)}...")
     results = configure_targets(targets, dry_run=dry_run)
     for name, ok, msg in results:
-        icon = "✅" if ok else "❌"
+        icon = "[OK]" if ok else "[ERROR]"
         print(f"  {icon} {name}: {msg}")
-    print("\n✓ Все изменения защищены точками отката (~/.zero-copy-agent/backups).\n")
+    print("\n[OK] Все изменения защищены точками отката (~/.zero-copy-agent/backups).\n")
 
 def cmd_revert(target: str):
     """Rolls back the target from its previous backup."""
-    print(f"\n🔄 Выполняю откат конфигурации для: {target}...")
+    print(f"\n[Revert] Выполняю откат конфигурации для: {target}...")
     results = history_manager.rollback(target)
     for line in results:
         print(f"  {line}")
@@ -61,16 +61,16 @@ def cmd_revert(target: str):
 
 def cmd_print_config(target: str, port: int = 8000):
     """Prints configuration snippet for manual insertion or env export."""
-    print(f"\n📋 Конфигурационный сниппет для [{target}] (шлюз на порту {port}):\n")
+    print(f"\n[Config] Конфигурационный сниппет для [{target}] (шлюз на порту {port}):\n")
     snippet = print_config_snippet(target, port=port)
     print(snippet)
     print()
 
 def cmd_test(target: str, port: int = 8000):
     """Verifies connection to zero-copy-agent gateway."""
-    print(f"\n🔍 Проверка связи шлюза для [{target}]...")
+    print(f"\n[Test] Проверка связи шлюза для [{target}]...")
     ok, msg = test_connection(target, port=port)
-    icon = "✅" if ok else "❌"
+    icon = "[OK]" if ok else "[ERROR]"
     print(f"  {icon} {msg}\n")
 
 def main():

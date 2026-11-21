@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 def create_default_icon(size: int = 128) -> Image.Image:
-    """Генерирует стильную фирменную иконку агента (синий градиент + молния ⚡)."""
+    """Генерирует стильную фирменную иконку агента (синий градиент + молния)."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 

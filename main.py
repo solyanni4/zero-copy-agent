@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from core.version import __version__
-from core.config import config
+from core.config import config, get_runtime_cwd
 from core.ui_api import ui_router
 from core.models import (
     AddKeyRequest,
@@ -74,25 +74,25 @@ async def lifespan(app: FastAPI):
     client_host = "127.0.0.1" if config.server.host in ("0.0.0.0", "::", "") else config.server.host
     
     print(f"\n=======================================================")
-    print(f"  ⚡ zero-copy-agent v{__version__} is active!")
+    print(f"  [ZCA] zero-copy-agent v{__version__} is active!")
     print(f"=======================================================")
     print(f"  API Endpoint : http://{client_host}:{config.server.port}/v1")
     print(f"  MCP Server   : http://{client_host}:{config.server.port}/sse")
     print(f"  Default Model: {config.models.default}")
     if heal_mods:
-        print(f"  Config Healer: {len(heal_mods)} auto-repairs executed 🩺")
+        print(f"  Config Healer: {len(heal_mods)} auto-repairs executed [OK]")
     print(f"")
-    print(f"  👉 30-Second IDE Setup (Cursor / Continue / Aider):")
+    print(f"  [Setup] 30-Second IDE Setup (Cursor / Continue / Aider):")
     print(f"     • Base URL : http://{client_host}:{config.server.port}/v1")
     print(f"     • API Key  : sk-zero-copy")
     print(f"     • Model    : gemini-4-neon / cascade:architect")
     print(f"")
-    print(f"  🔌 Antigravity & Cursor MCP Config:")
+    print(f"  [MCP] Antigravity & Cursor MCP Config:")
     print(f"     • URL      : http://{client_host}:{config.server.port}/sse")
     print(f"")
-    print(f"  📊 Live Analytics & Dashboard:")
+    print(f"  [Web] Live Analytics & Dashboard:")
     print(f"     http://{client_host}:{config.server.port}/")
-    print(f"  💡 (В браузере используйте 127.0.0.1 или localhost, не 0.0.0.0)")
+    print(f"  [Info] (В браузере используйте 127.0.0.1 или localhost, не 0.0.0.0)")
     print(f"=======================================================\n")
     await engine.initialize()
     yield
@@ -373,7 +373,7 @@ def render_styled_api_page(title: str, endpoint: str, data: dict, summary_html: 
                     <div style="font-size: 12px; color: #8b949e; margin-top: 4px;">Эндпоинт: <code>{endpoint}</code></div>
                 </div>
             </div>
-            <a href="/" class="btn btn-outline">⬅ Вернуться в Дашборд</a>
+            <a href="/" class="btn btn-outline">Вернуться в Дашборд</a>
         </div>
 
         {summary_html}
@@ -385,8 +385,8 @@ def render_styled_api_page(title: str, endpoint: str, data: dict, summary_html: 
             </div>
             <pre><code id="jsonCode">{json_str}</code></pre>
             <div class="actions">
-                <button onclick="copyJson()" id="copyBtn" class="btn">📋 Скопировать JSON</button>
-                <a href="{endpoint}?format=json" target="_blank" class="btn btn-outline">🔗 Сырой JSON (?format=json)</a>
+                <button onclick="copyJson()" id="copyBtn" class="btn">Скопировать JSON</button>
+                <a href="{endpoint}?format=json" target="_blank" class="btn btn-outline">Сырой JSON (?format=json)</a>
             </div>
         </div>
     </div>
@@ -396,7 +396,7 @@ def render_styled_api_page(title: str, endpoint: str, data: dict, summary_html: 
             navigator.clipboard.writeText(text).then(() => {{
                 const btn = document.getElementById('copyBtn');
                 const orig = btn.innerText;
-                btn.innerText = 'Скопировано! ✅';
+                btn.innerText = 'Скопировано!';
                 setTimeout(() => {{ btn.innerText = orig; }}, 2000);
             }});
         }}
@@ -423,12 +423,12 @@ async def get_savings_analytics(request: Request):
             <div style="font-weight: 600; color: var(--title); margin-bottom: 8px;">Сводка экономии токенов:</div>
             <div class="grid">
                 <div class="metric-box">
-                    <div class="metric-label">💰 Сэкономлено на API</div>
+                    <div class="metric-label">Сэкономлено на API</div>
                     <div class="metric-val money">${total_saved:.2f}</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">Сегодня: ${today_saved:.2f}</div>
                 </div>
                 <div class="metric-box">
-                    <div class="metric-label">⚡ Токенов обработано</div>
+                    <div class="metric-label">Токенов обработано</div>
                     <div class="metric-val">{total_tokens}</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">Без агента: <span style="text-decoration:line-through;color:#f85149;">{tokens_without_zc}</span> <span style="color:#3fb950;font-weight:600;">(-{tokens_saved_pct}%)</span></div>
                 </div>
@@ -488,14 +488,9 @@ async def get_auth_status():
 @app.post("/v1/auth/login")
 async def trigger_browser_auth(payload: dict = Body(...)):
     """Launches interactive browser assistant to log in to web subscription."""
-    provider = payload.get("provider", "gemini").lower()
-    if provider not in ("gemini", "chatgpt", "claude"):
-        raise HTTPException(status_code=400, detail="Неподдерживаемый провайдер. Допустимо: gemini, chatgpt, claude")
-
-    import threading
-    from core.auth import authenticate_desktop
-    threading.Thread(target=authenticate_desktop, args=(provider,), daemon=True).start()
-    return {"status": "ok", "message": f"Окно авторизации для {provider.upper()} запущено"}
+    provider = payload.get("provider", "gemini")
+    res = await api_web_auth(provider)
+    return {"status": "ok", "provider": provider, "message": res.get("message", "")}
 
 @app.post("/v1/app/minimize")
 async def app_minimize(request: Request):
@@ -570,22 +565,22 @@ async def health_check(request: Request):
             <div class="grid">
                 <div class="metric-box">
                     <div class="metric-label">Служба</div>
-                    <div class="metric-val" style="font-size: 18px; color: #3fb950;">v{__version__} 🟢</div>
+                    <div class="metric-val" style="font-size: 18px; color: #3fb950;">v{__version__} [OK]</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">zero-copy-agent Active</div>
                 </div>
                 <div class="metric-box">
                     <div class="metric-label">MCP Сервер</div>
-                    <div class="metric-val" style="font-size: 18px; color: #bc8cff;">SSE Active 🟢</div>
+                    <div class="metric-val" style="font-size: 18px; color: #bc8cff;">SSE Active [OK]</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">Порт {config.server.port}</div>
                 </div>
                 <div class="metric-box">
                     <div class="metric-label">DLP Shield</div>
-                    <div class="metric-val" style="font-size: 18px; color: #58a6ff;">Защищен 🛡️</div>
+                    <div class="metric-val" style="font-size: 18px; color: #58a6ff;">Защищен</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">Санитайзер секретов</div>
                 </div>
                 <div class="metric-box">
                     <div class="metric-label">GPU / Ollama</div>
-                    <div class="metric-val" style="font-size: 18px; color: {'#58a6ff' if ollama_ok else '#8b949e'};">{'Онлайн 🦙' if ollama_ok else 'Остановлен ⚪'}</div>
+                    <div class="metric-val" style="font-size: 18px; color: {'#58a6ff' if ollama_ok else '#8b949e'};">{'Онлайн' if ollama_ok else 'Остановлен'}</div>
                     <div style="font-size:11px;color:#8b949e;margin-top:4px;">{len(ollama_models)} локальных весов</div>
                 </div>
             </div>
@@ -603,10 +598,10 @@ async def get_cognitive_events(limit: int = 30):
     }
 
 @app.get("/v1/models")
-async def list_models(request: Request, include_inactive: bool = False):
+async def list_models(request: Request, include_inactive: bool = False, refresh: bool = False):
     """Returns available models, filtering only currently connected ones by default."""
     hide_inactive = config.ux.hide_inactive_models and not include_inactive
-    models_data = await orchestrator.discover_models(include_inactive=not hide_inactive)
+    models_data = await orchestrator.discover_models(force=refresh, include_inactive=not hide_inactive)
     if is_browser_request(request):
         cards_html = ""
         for m in models_data:
@@ -619,7 +614,7 @@ async def list_models(request: Request, include_inactive: bool = False):
                     <strong style="color:#f0f6fc; font-family:monospace; font-size:14px;">{m_id}</strong>
                     <div style="font-size:11px; color:#8b949e; margin-top:3px;">Провайдер: <span style="color:#58a6ff;">{prov}</span></div>
                 </div>
-                <span class="badge">🟢 Активна</span>
+                <span class="badge">[OK] Активна</span>
             </div>
             """
         summary = f"""
@@ -634,7 +629,7 @@ async def list_models(request: Request, include_inactive: bool = False):
         </div>
         """
         raw_list = [m.model_dump() if hasattr(m, "model_dump") else (m.dict() if hasattr(m, "dict") else m) for m in models_data]
-        return render_styled_api_page("🤖 Каталог моделей (/v1/models)", "/v1/models", {"object": "list", "data": raw_list}, summary_html=summary)
+        return render_styled_api_page("Каталог моделей (/v1/models)", "/v1/models", {"object": "list", "data": raw_list}, summary_html=summary)
     return ModelListResponse(data=models_data)
 
 @app.get("/v1/integrations/scan")
@@ -872,8 +867,9 @@ async def api_web_auth(provider: str):
             desktop_script = Path(__file__).resolve().parent / "desktop" / "app.py"
             cmd = [sys.executable, str(desktop_script), "--auth", prov]
 
-        logger.info(f"Spawning browser auth process: {cmd}")
-        subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parent))
+        cwd_path = get_runtime_cwd()
+        logger.info(f"Spawning browser auth process: {cmd} with cwd={cwd_path}")
+        subprocess.Popen(cmd, cwd=str(cwd_path))
         return {
             "status": "started",
             "provider": prov,
@@ -992,7 +988,7 @@ async def api_get_onboarding_status():
             "id": "step_local",
             "title": "Локальная модель (Ollama)",
             "completed": step1_ok,
-            "summary": f"Онлайн ({', '.join(ollama_models)}) 🟢" if step1_ok else "Ожидает запуска (бесплатные токены, данные не уходят в сеть) ⚪",
+            "summary": f"Онлайн ({', '.join(ollama_models)})" if step1_ok else "Ожидает запуска (бесплатные токены, данные не уходят в сеть)",
             "action_type": "command",
             "action_data": "ollama run qwen2.5-coder:14b"
         },
@@ -1000,7 +996,7 @@ async def api_get_onboarding_status():
             "id": "step_cloud",
             "title": "Облачные ключи (Gemini / Claude / GPT)",
             "completed": step2_ok,
-            "summary": f"Подключено: {len(active_accounts)} 🟢" if step2_ok else "Добавьте API-ключ в настройках ниже ⚪",
+            "summary": f"Подключено: {len(active_accounts)}" if step2_ok else "Добавьте API-ключ в настройках ниже",
             "action_type": "scroll",
             "action_data": "providers-card"
         },
@@ -1008,7 +1004,7 @@ async def api_get_onboarding_status():
             "id": "step_ide",
             "title": "Подключение к редактору (1 клик)",
             "completed": step3_ok,
-            "summary": f"Подключено: {', '.join(connected_ides)} 🟢" if step3_ok else "Подключите Antigravity, VS Code или Cursor ⚪",
+            "summary": f"Подключено: {', '.join(connected_ides)}" if step3_ok else "Подключите Antigravity, VS Code или Cursor",
             "action_type": "scroll",
             "action_data": "ide-integrations-card"
         },
@@ -1016,7 +1012,7 @@ async def api_get_onboarding_status():
             "id": "step_test",
             "title": "Проверка связи",
             "completed": step4_ok,
-            "summary": "Шлюз и маскировка паролей активны 🟢",
+            "summary": "Шлюз и маскировка паролей активны",
             "action_type": "scroll",
             "action_data": "test-playground-card"
         }

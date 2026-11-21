@@ -98,7 +98,7 @@ class HistoryManager:
 
                 bak_path = Path(item.get("backup_path"))
                 if not bak_path.exists():
-                    rolled_back.append(f"⚠️ Файл бэкапа не найден: {bak_path}")
+                    rolled_back.append(f"[WARN] Файл бэкапа не найден: {bak_path}")
                     continue
 
                 try:
@@ -106,13 +106,13 @@ class HistoryManager:
                     if content == "__FILE_DID_NOT_EXIST__":
                         if orig_path.exists():
                             orig_path.unlink()
-                            rolled_back.append(f"✓ Удален созданный файл: {orig_path}")
+                            rolled_back.append(f"[OK] Удален созданный файл: {orig_path}")
                     else:
                         orig_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(bak_path, orig_path)
-                        rolled_back.append(f"✓ Восстановлен из бэкапа: {orig_path}")
+                        rolled_back.append(f"[OK] Восстановлен из бэкапа: {orig_path}")
                 except Exception as e:
-                    rolled_back.append(f"❌ Ошибка восстановления {orig_path}: {e}")
+                    rolled_back.append(f"[ERROR] Ошибка восстановления {orig_path}: {e}")
 
         # Also apply surgical cleanup for known IDE targets
         target_name = (target or "all").lower()
@@ -121,7 +121,7 @@ class HistoryManager:
 
         for t in targets_to_clean:
             ok, msg = rollback_target_clean(t)
-            icon = "✓" if ok else "❌"
+            icon = "[OK]" if ok else "[ERROR]"
             rolled_back.append(f"{icon} {t.upper()}: {msg}")
 
         if not rolled_back:
@@ -184,7 +184,7 @@ def safe_update_json(file_path: Path, update_fn, target: str, dry_run: bool = Fa
 
         # Atomic replacement
         shutil.move(str(tmp_path), str(file_path))
-        return True, f"✓ Успешно обновлен: {file_path} (Бэкап: {backup_path.name})"
+        return True, f"[OK] Успешно обновлен: {file_path} (Бэкап: {backup_path.name})"
     except Exception as e:
         # Automatic Rollback on failure!
         if tmp_path.exists():
@@ -196,7 +196,7 @@ def safe_update_json(file_path: Path, update_fn, target: str, dry_run: bool = Fa
             shutil.copy2(backup_path, file_path)
         elif file_path.exists():
             file_path.unlink()
-        return False, f"🚨 Сбой верификации ({e}). Сработал АВТООТКАТ к исходному состоянию!"
+        return False, f"[ERROR] Сбой верификации ({e}). Сработал АВТООТКАТ к исходному состоянию!"
 
 
 # ==============================================================================
@@ -262,7 +262,7 @@ def configure_antigravity(dry_run: bool = False) -> Tuple[bool, str]:
             "# Zero-Copy Agent Environment for Antigravity CLI (agy)\n"
             "$env:OPENAI_API_BASE = \"http://127.0.0.1:8000/v1\"\n"
             "$env:OPENAI_API_KEY = \"sk-zero-copy\"\n"
-            "Write-Host \"✓ Переменные окружения для Antigravity CLI настроены!\" -ForegroundColor Green\n"
+            "Write-Host \"[OK] Переменные окружения для Antigravity CLI настроены!\" -ForegroundColor Green\n"
         )
         with open(env_helper, "w", encoding="utf-8") as f:
             f.write(env_content)
@@ -319,7 +319,7 @@ version: 1.0.0
 schema: v1
 
 models:
-  - name: Gemini 4 Neon (Deeper Analysis 🧠)
+  - name: Gemini 4 Neon (Deeper Analysis)
     provider: openai
     model: gemini-4-neon
     apiBase: http://127.0.0.1:8000/v1
@@ -337,7 +337,7 @@ models:
       - chat
       - edit
 
-  - name: Cascade Architect 🏛️ (Blueprint ➔ Code)
+  - name: Cascade Architect (Blueprint -> Code)
     provider: openai
     model: cascade:architect
     apiBase: http://127.0.0.1:8000/v1
@@ -370,7 +370,7 @@ models:
     try:
         with open(continue_yaml, "w", encoding="utf-8") as f:
             f.write(yaml_template)
-        return True, f"✓ Конфигурация Continue 2.0 обновлена: {continue_yaml} (Бэкап: {backup_path.name})"
+        return True, f"[OK] Конфигурация Continue 2.0 обновлена: {continue_yaml} (Бэкап: {backup_path.name})"
     except Exception as e:
         return False, f"Ошибка записи {continue_yaml}: {e}"
 
@@ -623,10 +623,10 @@ async def test_connection_async(target: str, port: int = 8000) -> Tuple[bool, st
             if resp.status_code == 200:
                 body = resp.json()
                 version = body.get("version", "unknown")
-                return True, f"Шлюз активен (v{version}). Порт {port} отвечает на запросы 🟢"
+                return True, f"Шлюз активен (v{version}). Порт {port} отвечает на запросы [OK]"
             return False, f"Шлюз вернул HTTP {resp.status_code}"
     except Exception as e:
-        return False, f"Шлюз недоступен по адресу {url}: {e} 🔴"
+        return False, f"Шлюз недоступен по адресу {url}: {e} [ERROR]"
 
 
 def test_connection(target: str, port: int = 8000) -> Tuple[bool, str]:
@@ -639,10 +639,10 @@ def test_connection(target: str, port: int = 8000) -> Tuple[bool, str]:
             if resp.status_code == 200:
                 body = resp.json()
                 version = body.get("version", "unknown")
-                return True, f"Шлюз активен (v{version}). Порт {port} отвечает на запросы 🟢"
+                return True, f"Шлюз активен (v{version}). Порт {port} отвечает на запросы [OK]"
             return False, f"Шлюз вернул HTTP {resp.status_code}"
     except Exception as e:
-        return False, f"Шлюз недоступен по адресу {url}: {e} 🔴"
+        return False, f"Шлюз недоступен по адресу {url}: {e} [ERROR]"
 
 
 def print_config_snippet(target: str, port: int = 8000) -> str:
@@ -707,10 +707,10 @@ def print_scan_report():
     """Prints a clear, formatted console report of detected environments."""
     results = scan_all()
     print("\n" + "=" * 65)
-    print("  🔍 Сканирование поддерживаемых IDE и AI-агентов")
+    print("  [Scan] Сканирование поддерживаемых IDE и AI-агентов")
     print("=" * 65)
     for key, info in results.items():
-        status = "🟢 НАСТРОЕН" if info["configured"] else ("🟡 УСТАНОВЛЕН (Требует настройки)" if info["installed"] else "⚪ Не обнаружен")
+        status = "[OK] НАСТРОЕН" if info["configured"] else ("УСТАНОВЛЕН (Требует настройки)" if info["installed"] else "Не обнаружен")
         print(f"  • {info['name']:<35} : {status}")
         print(f"    Детали: {info['details']}")
     print("=" * 65 + "\n")
@@ -931,7 +931,7 @@ def main():
     if args.history:
         history = history_manager.load_history()
         print("\n" + "=" * 65)
-        print("  📜 История конфигураций и бэкапов (~/.zero-copy-agent/backups)")
+        print("  [History] История конфигураций и бэкапов (~/.zero-copy-agent/backups)")
         print("=" * 65)
         if not history:
             print("  История пуста.")
@@ -943,7 +943,7 @@ def main():
         return
 
     if args.rollback:
-        print(f"\n🔄 Выполняю откат для цели: {args.rollback}...")
+        print(f"\n[Rollback] Выполняю откат для цели: {args.rollback}...")
         results = history_manager.rollback(args.rollback)
         for line in results:
             print(f"  {line}")
@@ -952,12 +952,12 @@ def main():
 
     if args.configure:
         print_scan_report()
-        print(f"🚀 Настройка выбранных целей: {', '.join(args.configure)}...\n")
+        print(f"[Configure] Настройка выбранных целей: {', '.join(args.configure)}...\n")
         results = configure_targets(args.configure, dry_run=args.dry_run)
         for name, ok, msg in results:
-            icon = "✅" if ok else "❌"
+            icon = "[OK]" if ok else "[ERROR]"
             print(f"  {icon} {name}: {msg}")
-        print("\n✓ Все операции завершены безопасно с созданием точек отката.")
+        print("\n[OK] Все операции завершены безопасно с созданием точек отката.")
         return
 
     # Default action: scan

@@ -33,7 +33,7 @@ def init_mcp(orchestrator_instance):
 TOOLS_MANIFEST = [
     {
         "name": "cascade_architect",
-        "description": "Запускает замкнутый двухэтапный каскад 'Архитектор': Шаг 1 (проектирование системного плана через облачную модель/API-ключ) ➔ Шаг 2 (генерация чистого кода через локальную GPU Ollama или быструю модель).",
+        "description": "Запускает замкнутый двухэтапный каскад 'Архитектор': Шаг 1 (проектирование системного плана через облачную модель/API-ключ) -> Шаг 2 (генерация чистого кода через локальную GPU Ollama или быструю модель).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -106,7 +106,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
     """Executes the requested tool and returns the text response."""
     global _orchestrator
     if not _orchestrator:
-        return "⚠️ Ошибка: Оркестратор шлюза не инициализирован."
+        return "[ERROR] Ошибка: Оркестратор шлюза не инициализирован."
 
     if name == "cascade_architect":
         task = arguments.get("task", "")
@@ -129,23 +129,23 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
 
     elif name == "get_token_savings":
         summary = analytics.get_summary()
-        local_status = "Офлайн ⚪"
+        local_status = "Офлайн [OFFLINE]"
         if _orchestrator and getattr(_orchestrator, "ollama", None):
             try:
                 if await _orchestrator.ollama.is_authenticated():
                     models = await _orchestrator.ollama.list_models()
                     if models:
-                        local_status = f"{models[0]} (Онлайн 🟢)"
+                        local_status = f"{models[0]} (Онлайн [OK])"
                     else:
-                        local_status = "Ollama активен (0 моделей) ⚪"
+                        local_status = "Ollama активен (0 моделей) [OFFLINE]"
             except Exception:
                 pass
         return (
-            f"📊 **Метрики экономии Zero-Copy Agent:**\n"
-            f"- 💰 Сэкономлено на API: **${summary.get('total_saved_usd', 0.0):.2f}** (Сегодня: ${summary.get('today_saved_usd', 0.0):.2f})\n"
-            f"- ⚡ Всего токенов: **{summary.get('total_tokens', 0):,}**\n"
-            f"- 📥 Запросов выполнено: **{summary.get('total_requests', 0)}**\n"
-            f"- 🦙 Локальный GPU: **{local_status}**"
+            f"**Метрики экономии Zero-Copy Agent:**\n"
+            f"- Сэкономлено на API: **${summary.get('total_saved_usd', 0.0):.2f}** (Сегодня: ${summary.get('today_saved_usd', 0.0):.2f})\n"
+            f"- Всего токенов: **{summary.get('total_tokens', 0):,}**\n"
+            f"- Запросов выполнено: **{summary.get('total_requests', 0)}**\n"
+            f"- Локальный GPU: **{local_status}**"
         )
 
     elif name == "compress_code_context":
@@ -154,7 +154,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
         saved = orig_t - comp_t
         pct = (saved / orig_t * 100) if orig_t > 0 else 0
         return (
-            f"⚡ **Результат L1-сжатия:**\n"
+            f"**Результат L1-сжатия:**\n"
             f"- До: ~{orig_t} токенов | После: ~{comp_t} токенов | Сэкономлено: {saved} токенов ({pct:.1f}%)\n\n"
             f"```\n{compressed}\n```"
         )
