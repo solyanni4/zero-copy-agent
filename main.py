@@ -58,10 +58,7 @@ def sync_mesh_from_subscriptions(sub_cfg=None):
     """Synchronizes registered and active provider API keys into QuotaMesh pool."""
     if sub_cfg is None:
         sub_cfg, _ = config_healer.load_or_create()
-    mesh.clear()
-    for acc in getattr(sub_cfg, "accounts", []):
-        if getattr(acc, "status", "active") == "active" and getattr(acc, "api_key", None):
-            mesh.register_keys(acc.provider, [acc.api_key])
+    mesh.sync_active_accounts(getattr(sub_cfg, "accounts", []))
 
 orchestrator = HybridOrchestrator(browser_engine=engine)
 init_mcp(orchestrator)

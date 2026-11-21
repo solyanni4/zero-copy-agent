@@ -5,6 +5,7 @@ and performs seamless idempotent failover.
 """
 import time
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("zcao.mesh")
@@ -35,6 +36,29 @@ class QuotaMesh:
         # provider -> list of KeyState
         self._pools: Dict[str, List[KeyState]] = {}
         self._index: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def sync_active_accounts(self, accounts: List[Any]):
+        """Atomically synchronizes registered and active provider keys preserving health state."""
+        with self._lock:
+            new_pools: Dict[str, List[KeyState]] = {}
+            for acc in accounts:
+                status = getattr(acc, "status", "active")
+                api_key = getattr(acc, "api_key", None)
+                provider = getattr(acc, "provider", "").lower()
+                if status == "active" and api_key and provider:
+                    if provider not in new_pools:
+                        new_pools[provider] = []
+                    existing_state = next((k for k in self._pools.get(provider, []) if k.key == api_key), None)
+                    if existing_state:
+                        new_pools[provider].append(existing_state)
+                    else:
+                        new_pools[provider].append(KeyState(api_key.strip()))
+
+            self._pools = new_pools
+            for prov in new_pools:
+                if prov not in self._index:
+                    self._index[prov] = 0
 
     def register_keys(self, provider: str, keys: List[str]):
         """Registers a list of API keys for a provider."""
