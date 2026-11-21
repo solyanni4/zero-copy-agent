@@ -1,74 +1,188 @@
 ﻿# scripts/sync_gdrive.ps1
-# Скрипт синхронизации кодовой базы zero-copy-agent с локальной зеркальной папкой Google Диска
+# Синхронизация кодовой базы zero-copy-agent с Google Диском.
+# Поддерживает:
+# 1. Прямую облачную выгрузку через rclone в целевую папку:
+#    https://drive.google.com/drive/folders/15QGMGj3jwkz0BxYL0izu3GfZP09kwfJS
+# 2. Локальную синхронизацию через robocopy (Google Drive Desktop), если диск смонтирован или задан ZCA_GDRIVE_DIR.
+
+param (
+    [string]$TargetFolderId = "15QGMGj3jwkz0BxYL0izu3GfZP09kwfJS",
+    [string]$LocalTargetDir = $env:ZCA_GDRIVE_DIR,
+    [switch]$ForceLocal
+)
 
 $ErrorActionPreference = "Stop"
-
 $SourceDir = (Resolve-Path "$PSScriptRoot/..").Path
-$TargetDir = $env:ZCA_GDRIVE_DIR
 
-if (-not $TargetDir) {
-    # Автопоиск стандартных путей Google Drive Desktop
-    $CandidatePaths = @(
-        "G:\Мой диск\zero-copy-agent",
-        "G:\My Drive\zero-copy-agent",
-        "G:\zero-copy-agent",
-        "$env:USERPROFILE\Google Drive\zero-copy-agent",
-        "$env:USERPROFILE\GoogleDrive\zero-copy-agent",
-        "$env:USERPROFILE\Мой диск\zero-copy-agent"
-    )
+# Папки и файлы для исключения из синхронизации
+$ExcludeRules = @(
+    ".git/**",
+    "venv/**",
+    ".venv/**",
+    "**/__pycache__/**",
+    ".pytest_cache/**",
+    "browser_profile/**",
+    "dist/**",
+    "build/**",
+    ".env",
+    "*.db",
+    "*.db-wal",
+    "*.db-shm",
+    "*.log",
+    "zero-copy-agent.exe"
+)
 
-    foreach ($Candidate in $CandidatePaths) {
-        $Parent = Split-Path -Parent $Candidate
-        if (Test-Path $Parent) {
-            $TargetDir = $Candidate
+# Функция локальной синхронизации через robocopy
+function Invoke-LocalSync([string]$DestDir) {
+    Write-Host ">>> Запуск локальной синхронизации через robocopy..." -ForegroundColor Cyan
+    Write-Host "    Источник:   $SourceDir"
+    Write-Host "    Назначение: $DestDir"
+
+    if (-not (Test-Path $DestDir)) {
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    }
+
+    $ExcludeDirs = @(".git", "venv", ".venv", "__pycache__", ".pytest_cache", "browser_profile", "dist", "build")
+    $ExcludeFiles = @(".env", "*.db", "*.db-wal", "*.db-shm", "*.log", "zero-copy-agent.exe")
+
+    $RoboArgs = @(
+        "`"$SourceDir`"",
+        "`"$DestDir`"",
+        "/MIR",
+        "/FFT",
+        "/R:1",
+        "/W:1",
+        "/XD"
+    ) + $ExcludeDirs + @("/XF") + $ExcludeFiles
+
+    $Process = Start-Process -FilePath "robocopy.exe" -ArgumentList $RoboArgs -NoNewWindow -Wait -PassThru
+    $ExitCode = $Process.ExitCode
+
+    if ($ExitCode -le 7) {
+        Write-Host "[OK] Локальная синхронизация успешно завершена (Код robocopy: $ExitCode)." -ForegroundColor Green
+        return $true
+    } else {
+        Write-Error "[ОШИБКА] Сбой robocopy. Код завершения: $ExitCode"
+        return $false
+    }
+}
+
+# Функция облачной синхронизации через rclone
+function Invoke-CloudSync() {
+    $rcloneCmd = Get-Command rclone -ErrorAction SilentlyContinue
+    if (-not $rcloneCmd) {
+        return $false
+    }
+
+    Write-Host ">>> Проверка подключения rclone к Google Диску..." -ForegroundColor Cyan
+    $remoteCheck = & rclone listremotes 2>$null
+    if ($remoteCheck -notcontains "gdrive:") {
+        Write-Host "    [!] Remote 'gdrive:' не настроен в rclone." -ForegroundColor Yellow
+        return $false
+    }
+
+    Write-Host ">>> Облачная синхронизация через rclone..." -ForegroundColor Cyan
+    Write-Host "    Папка Google Drive ID: $TargetFolderId"
+    Write-Host "    Целевой путь: gdrive:zero-copy-agent"
+
+    $FilterFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $FilterLines = @()
+        foreach ($rule in $ExcludeRules) {
+            $FilterLines += "- $rule"
+        }
+        $FilterLines += "+ **"
+        Set-Content -Path $FilterFile -Value $FilterLines -Encoding utf8
+
+        # Выполняем rclone copy в целевую папку Google Диска
+        $rcloneArgs = @(
+            "copy",
+            "$SourceDir",
+            "gdrive:zero-copy-agent",
+            "--drive-root-folder-id", "$TargetFolderId",
+            "--filter-from", "$FilterFile",
+            "--stats", "2s",
+            "-v"
+        )
+
+        Write-Host ">>> Передача файлов..." -ForegroundColor Cyan
+        $process = Start-Process -FilePath "rclone.exe" -ArgumentList $rcloneArgs -NoNewWindow -Wait -PassThru
+        
+        if ($process.ExitCode -eq 0) {
+            Write-Host "[OK] Облачная синхронизация с Google Диском завершена успешно!" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host ""
+            Write-Host "============================================================" -ForegroundColor Yellow
+            Write-Host " [ВНИМАНИЕ] rclone вернул ошибку прав доступа (Код: $($process.ExitCode))." -ForegroundColor Yellow
+            Write-Host " Токен gdrive был зарегистрирован только для чтения (drive.readonly)." -ForegroundColor Yellow
+            Write-Host " Чтобы разрешить запись в Google Диск, выполните один раз в терминале:" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "   rclone config reconnect gdrive:" -ForegroundColor White
+            Write-Host ""
+            Write-Host " Откроется браузер для подтверждения доступа к Google Drive." -ForegroundColor Yellow
+            Write-Host "============================================================" -ForegroundColor Yellow
+            return $false
+        }
+    } finally {
+        if (Test-Path $FilterFile) {
+            Remove-Item $FilterFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# --- Основной цикл выполнения ---
+
+# 1. Если задан явный локальный путь через параметр или $env:ZCA_GDRIVE_DIR
+if ($LocalTargetDir -and (Test-Path (Split-Path -Parent $LocalTargetDir -ErrorAction SilentlyContinue))) {
+    Invoke-LocalSync -DestDir $LocalTargetDir
+    exit 0
+}
+
+# 2. Если не включен принудительный локальный режим — пробуем облачный rclone
+if (-not $ForceLocal) {
+    $cloudSuccess = Invoke-CloudSync
+    if ($cloudSuccess) {
+        exit 0
+    }
+}
+
+# 3. Автопоиск смонтированного Google Drive Desktop (только настоящие папки диска, исключая флешки)
+$DriveCandidates = @(
+    "G:\Мой диск\zero-copy-agent",
+    "G:\My Drive\zero-copy-agent",
+    "$env:USERPROFILE\Google Drive\zero-copy-agent",
+    "$env:USERPROFILE\GoogleDrive\zero-copy-agent",
+    "$env:USERPROFILE\Мой диск\zero-copy-agent"
+)
+
+$FoundLocal = $null
+foreach ($cand in $DriveCandidates) {
+    $parent = Split-Path -Parent $cand
+    if (Test-Path $parent) {
+        # Дополнительная проверка: убедимся, что это не флешка без папки диска
+        $driveLetter = (Split-Path -Qualifier $parent).TrimEnd(':')
+        $vol = Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue
+        if ($vol -and $vol.DriveType -ne 'Removable') {
+            $FoundLocal = $cand
             break
         }
     }
 }
 
-if (-not $TargetDir) {
-    Write-Host ""
-    Write-Host "============================================================" -ForegroundColor Yellow
-    Write-Host " [ИНФО] Локальный путь к Google Диску не обнаружен." -ForegroundColor Yellow
-    Write-Host "============================================================" -ForegroundColor Yellow
-    Write-Host "Для запуска синхронизации задайте переменную окружения ZCA_GDRIVE_DIR:"
-    Write-Host ""
-    Write-Host '  $env:ZCA_GDRIVE_DIR = "G:\Мой диск\zero-copy-agent"' -ForegroundColor Cyan
-    Write-Host '  .\scripts\sync_gdrive.ps1' -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Либо укажите целевую папку параметром при вызове."
-    Write-Host "============================================================"
+if ($FoundLocal) {
+    Invoke-LocalSync -DestDir $FoundLocal
     exit 0
 }
 
-Write-Host ">>> Запуск синхронизации с Google Диском..." -ForegroundColor Cyan
-Write-Host "    Источник:   $SourceDir"
-Write-Host "    Назначение: $TargetDir"
-
-if (-not (Test-Path $TargetDir)) {
-    New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-}
-
-$ExcludeDirs = @(".git", "venv", ".venv", "__pycache__", ".pytest_cache", "browser_profile", "dist", "build")
-$ExcludeFiles = @(".env", "*.db", "*.db-wal", "*.db-shm", "*.log", "zero-copy-agent.exe")
-
-$RoboArgs = @(
-    "`"$SourceDir`"",
-    "`"$TargetDir`"",
-    "/MIR",
-    "/FFT",
-    "/R:1",
-    "/W:1",
-    "/XD"
-) + $ExcludeDirs + @("/XF") + $ExcludeFiles
-
-Write-Host ">>> Выполняется robocopy..."
-$Process = Start-Process -FilePath "robocopy.exe" -ArgumentList $RoboArgs -NoNewWindow -Wait -PassThru
-$ExitCode = $Process.ExitCode
-
-# Коды возврата robocopy: 0-7 - успех (0: нет изменений, 1-7: файлы скопированы/обновлены), >=8 - ошибка
-if ($ExitCode -le 7) {
-    Write-Host "[OK] Синхронизация с Google Диском успешно завершена! (Код: $ExitCode)" -ForegroundColor Green
-} else {
-    Write-Error "[ОШИБКА] Ошибка при выполнении robocopy. Код завершения: $ExitCode"
-}
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host " Ссылка на целевую папку Google Диска:" -ForegroundColor White
+Write-Host " https://drive.google.com/drive/folders/$TargetFolderId" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "Для включения прямой облачной синхронизации выдайте права на запись:"
+Write-Host '  rclone config reconnect gdrive:' -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Либо укажите локальную смонтированную папку:"
+Write-Host '  $env:ZCA_GDRIVE_DIR = "C:\Users\...\Google Drive\zero-copy-agent"' -ForegroundColor Yellow
+Write-Host "============================================================"
