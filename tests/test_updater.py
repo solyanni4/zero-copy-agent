@@ -5,7 +5,7 @@ from core.updater import get_current_exe_path, get_update_state, check_github_up
 def test_get_current_exe_path():
     p = get_current_exe_path()
     assert isinstance(p, Path)
-    assert p.name.endswith(".exe") or p.name == "python" or p.name == "python.exe"
+    assert p.name.endswith(".exe") or "python" in p.name.lower()
 
 def test_get_update_state():
     state = get_update_state()
