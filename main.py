@@ -8,6 +8,8 @@ import time
 import uuid
 import os
 import sys
+import subprocess
+from pathlib import Path
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -852,6 +854,34 @@ async def api_toggle_account(account_id: str):
     sync_mesh_from_subscriptions()
     await model_registry.get_models(force_refresh=True, mesh=mesh)
     return {"status": "ok", "account_id": account_id, "new_status": new_status}
+
+@app.post("/v1/providers/web-auth/{provider}")
+async def api_web_auth(provider: str):
+    """Launches interactive browser authentication in isolated subprocess."""
+    prov = provider.strip().lower()
+    if prov not in {"gemini", "chatgpt", "claude"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимый провайдер: '{provider}'. Поддерживаются: gemini, chatgpt, claude"
+        )
+
+    try:
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--auth", prov]
+        else:
+            desktop_script = Path(__file__).resolve().parent / "desktop" / "app.py"
+            cmd = [sys.executable, str(desktop_script), "--auth", prov]
+
+        logger.info(f"Spawning browser auth process: {cmd}")
+        subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parent))
+        return {
+            "status": "started",
+            "provider": prov,
+            "message": f"Окно авторизации для {prov.upper()} запущено"
+        }
+    except Exception as e:
+        logger.exception(f"Failed to spawn auth process for {prov}: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка запуска процесса авторизации: {e}")
 
 @app.post("/v1/providers/accounts/{account_id}/ping")
 async def api_ping_account(account_id: str):

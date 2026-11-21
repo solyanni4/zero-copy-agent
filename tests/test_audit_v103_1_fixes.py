@@ -25,9 +25,10 @@ def test_updater_unreachable_github_no_name_error():
         mock_instance.open.side_effect = Exception("Connection refused")
         mock_opener.return_value = mock_instance
 
-        res = check_github_updates(current_version="1.0.5")
-        assert res["status"] == "ok"
+        res = check_github_updates(current_version="1.0.6")
+        assert res["status"] == "offline"
         assert res["has_update"] is False
+        assert "Нет связи с GitHub" in res["message"]
         assert f"https://github.com/{GITHUB_REPO}/releases" in res["download_url"]
         assert "PUBLIC_REPO" not in res["download_url"]
 

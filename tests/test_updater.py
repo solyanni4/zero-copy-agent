@@ -17,7 +17,7 @@ def test_get_update_state():
 def test_check_github_updates_structure():
     info = check_github_updates("1.0.0")
     assert isinstance(info, dict)
-    assert info["status"] == "ok"
+    assert info["status"] in ("ok", "offline")
     assert "has_update" in info
     assert "version" in info
     assert "download_url" in info

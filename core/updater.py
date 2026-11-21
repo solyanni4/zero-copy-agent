@@ -19,7 +19,7 @@ try:
     from core.version import __version__
     CURRENT_VERSION = __version__
 except Exception:
-    CURRENT_VERSION = "1.0.5"
+    CURRENT_VERSION = "1.0.6"
 GITHUB_REPO = "solyanni4/zero-copy-agent"
 
 
@@ -63,14 +63,14 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
             last_error = str(e)
 
     if not latest_release:
-        # Fallback to local status
+        # Offline / unreachable status
         return {
-            "status": "ok",
+            "status": "offline",
             "has_update": False,
             "version": current_version,
             "latest_version": current_version,
-            "commit": "fbadffa",
-            "message": f"Версия v{current_version} актуальна (проверка выполнена)",
+            "commit": "local",
+            "message": "Нет связи с GitHub (проверка не выполнена)",
             "download_url": f"https://github.com/{GITHUB_REPO}/releases"
         }
 

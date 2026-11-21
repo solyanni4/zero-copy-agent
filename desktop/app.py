@@ -230,12 +230,29 @@ class ZeroCopyUnifiedApp:
             self.window.hide()
 
     def open_browser_auth(self, provider: str):
-        """Launches interactive browser authentication in separate process/thread."""
-        def _run():
-            from core.auth import authenticate_desktop
-            authenticate_desktop(provider)
-
-        threading.Thread(target=_run, daemon=True).start()
+        """Launches interactive browser authentication in separate isolated subprocess."""
+        try:
+            prov = provider.strip().lower()
+            if getattr(sys, "frozen", False):
+                cmd = [sys.executable, "--auth", prov]
+            else:
+                cmd = [sys.executable, str(Path(__file__).resolve()), "--auth", prov]
+            logging.info(f"Spawning browser auth subprocess: {cmd}")
+            subprocess.Popen(cmd, cwd=str(ROOT_DIR))
+            self.notify_tray(f"Открывается окно входа для {prov.upper()}...", title="zero-copy-agent Auth")
+        except Exception as e:
+            logging.exception(f"Failed to spawn auth subprocess for {provider}: {e}")
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(
+                        0,
+                        f"Не удалось запустить процесс авторизации для {provider}:\n\n{e}",
+                        "zero-copy-agent | Ошибка запуска авторизации",
+                        0x10 | 0x0
+                    )
+                except Exception:
+                    pass
 
     def auto_setup_ides(self):
         """Configures all detected IDEs in 1 click."""
@@ -285,17 +302,27 @@ class ZeroCopyUnifiedApp:
         except Exception:
             image = create_default_icon(64)
 
+        def _copy_api(icon=None, item=None):
+            self.copy_to_clipboard(self.api_url)
+            logging.info(f"Copied API URL to clipboard: {self.api_url}")
+            self.notify_tray(f"Скопировано: {self.api_url}", title="zero-copy-agent API")
+
+        def _copy_mcp(icon=None, item=None):
+            self.copy_to_clipboard(self.mcp_url)
+            logging.info(f"Copied MCP URL to clipboard: {self.mcp_url}")
+            self.notify_tray(f"Скопировано: {self.mcp_url}", title="zero-copy-agent MCP")
+
         menu = pystray.Menu(
             pystray.MenuItem("Открыть zero-copy-agent", self.show_window, default=True),
-            pystray.MenuItem(f"Статус: Порт {self.port} активен", lambda: None, enabled=False),
+            pystray.MenuItem(f"Статус: Порт {self.port} активен", lambda icon, item: None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("📋 Скопировать API URL (Cursor/IDE)", lambda: (self.copy_to_clipboard(self.api_url), self.notify_tray(f"Скопировано: {self.api_url}"))),
-            pystray.MenuItem("🔌 Скопировать MCP URL (Antigravity)", lambda: (self.copy_to_clipboard(self.mcp_url), self.notify_tray(f"Скопировано: {self.mcp_url}"))),
-            pystray.MenuItem("⚡ Настроить все IDE (1 клик)", lambda: self.auto_setup_ides()),
+            pystray.MenuItem("📋 Скопировать API URL (Cursor/IDE)", _copy_api),
+            pystray.MenuItem("🔌 Скопировать MCP URL (Antigravity)", _copy_mcp),
+            pystray.MenuItem("⚡ Настроить все IDE (1 клик)", lambda icon, item: self.auto_setup_ides()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("🔑 Войти в Gemini", lambda: self.open_browser_auth("gemini")),
-            pystray.MenuItem("🔑 Войти в ChatGPT", lambda: self.open_browser_auth("chatgpt")),
-            pystray.MenuItem("🔑 Войти в Claude", lambda: self.open_browser_auth("claude")),
+            pystray.MenuItem("🔑 Войти в Gemini", lambda icon, item: self.open_browser_auth("gemini")),
+            pystray.MenuItem("🔑 Войти в ChatGPT", lambda icon, item: self.open_browser_auth("chatgpt")),
+            pystray.MenuItem("🔑 Войти в Claude", lambda icon, item: self.open_browser_auth("claude")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("🚪 Выход", self.stop)
         )
@@ -391,6 +418,31 @@ class ZeroCopyUnifiedApp:
 
 
 def main():
+    if "--auth" in sys.argv:
+        provider = "gemini"
+        try:
+            idx = sys.argv.index("--auth")
+            if len(sys.argv) > idx + 1:
+                provider = sys.argv[idx + 1]
+            logging.info(f"Main entrypoint executing desktop auth for '{provider}'")
+            from core.auth import authenticate_desktop
+            authenticate_desktop(provider)
+            sys.exit(0)
+        except Exception as e:
+            logging.exception(f"Fatal error during desktop authentication for {provider}: {e}")
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(
+                        0,
+                        f"Произошла ошибка при авторизации в {provider}:\n\n{e}",
+                        "zero-copy-agent | Ошибка авторизации",
+                        0x10 | 0x0
+                    )
+                except Exception:
+                    pass
+            sys.exit(1)
+
     if "--help" in sys.argv or "-h" in sys.argv:
         print("zero-copy-agent — Unified Desktop Application & AI Gateway")
         print("\nИспользование:")
@@ -409,12 +461,6 @@ def main():
         print(f"zero-copy-agent v{__version__}")
         sys.exit(0)
 
-    if "--auth" in sys.argv:
-        idx = sys.argv.index("--auth")
-        provider = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else "gemini"
-        from core.auth import authenticate_desktop
-        authenticate_desktop(provider)
-        sys.exit(0)
 
     force_cli = ("--cli" in sys.argv) or ("--headless" in sys.argv)
     start_hidden = ("--minimized" in sys.argv) or ("--tray-only" in sys.argv)

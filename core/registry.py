@@ -92,15 +92,11 @@ class ModelRegistry:
                     for m in acc.models:
                         collected_models.add(m.id)
 
-                if collected_models and is_ready:
+                if collected_models:
                     browser_connected = True
                     browser_models = sorted(list(collected_models))
                     prov_names = [a.provider for a in active_web_accs]
                     browser_status = f"Active ({', '.join(prov_names)})"
-                elif collected_models:
-                    browser_connected = False
-                    browser_models = []
-                    browser_status = "Idle (Not Authenticated)"
                 elif type(browser_engine).__name__.startswith("Mock") and is_ready:
                     if active_prov == "gemini":
                         browser_models = ["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"]
@@ -209,16 +205,17 @@ class ModelRegistry:
         browser_h = health.get("browser")
         active_browser_models = set(browser_h.available_models) if (browser_h and browser_h.connected) else set()
 
-        # Check active accounts with valid API keys from subscriptions.yaml
+        # Check active accounts with valid API keys or active browser sessions from subscriptions.yaml
         sub_account_models: Set[str] = set()
         try:
             from core.healer import config_healer
             sub_cfg, _ = config_healer.load_or_create()
             for acc in sub_cfg.accounts:
-                if acc.status == "active" and acc.api_key and acc.api_key.strip():
-                    for m in acc.models:
-                        if m.status == "active":
-                            sub_account_models.add(m.id)
+                if acc.status == "active":
+                    if (acc.api_key and acc.api_key.strip()) or acc.auth_type == "browser_session":
+                        for m in acc.models:
+                            if m.status == "active":
+                                sub_account_models.add(m.id)
         except Exception:
             pass
 

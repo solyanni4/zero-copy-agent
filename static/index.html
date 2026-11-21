@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>zero-copy-agent · v1.0.5</title>
+  <title>zero-copy-agent · v1.0.6</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <!-- Typography: Inter for UI, JetBrains Mono for metrics, IDs, and code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -58,7 +58,7 @@
         <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
         <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
       </div>
-      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.0.5</span>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.0.6</span>
     </div>
 
     <!-- Primary Navigation -->
@@ -329,6 +329,31 @@
           <button id="btn-healer" onclick="runConfigHealer()" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[12px] font-medium text-ink hover:border-emerald hover:text-emerald inline-flex items-center gap-1.5">
             <i data-lucide="wrench" class="w-3.5 h-3.5 text-emerald"></i>
             <span>Config Healer</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Web Subscriptions Quick Auth Band -->
+      <div class="px-4 py-2 border-b border-hairline bg-surface/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div class="flex items-center gap-2 text-[12px]">
+          <span class="font-medium text-ink flex items-center gap-1.5">
+            <i data-lucide="globe" class="w-3.5 h-3.5 text-cobalt"></i>
+            <span>Веб-подписки:</span>
+          </span>
+          <span class="text-muted text-[11px]">Бесплатный вход через браузер без API-ключей</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="startWebAuth('gemini')" class="h-6.5 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-cobalt hover:text-cobalt inline-flex items-center gap-1.5 transition">
+            <i data-lucide="key" class="w-3 h-3 text-cobalt"></i>
+            <span>Войти в Gemini</span>
+          </button>
+          <button onclick="startWebAuth('chatgpt')" class="h-6.5 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-emerald hover:text-emerald inline-flex items-center gap-1.5 transition">
+            <i data-lucide="key" class="w-3 h-3 text-emerald"></i>
+            <span>Войти в ChatGPT</span>
+          </button>
+          <button onclick="startWebAuth('claude')" class="h-6.5 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-amber hover:text-amber inline-flex items-center gap-1.5 transition">
+            <i data-lucide="key" class="w-3 h-3 text-amber"></i>
+            <span>Войти в Claude</span>
           </button>
         </div>
       </div>
@@ -731,8 +756,8 @@
         </div>
         <div class="p-5 space-y-3">
           <div class="flex items-baseline justify-between">
-            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.0.5</span></span>
-            <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.0.5</span></span>
+            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.0.6</span></span>
+            <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.0.6</span></span>
           </div>
           <p id="update-modal-descr" class="text-[12px] text-ink leading-relaxed">
             На GitHub доступна новая версия zero-copy-agent с обновлениями и исправлениями.

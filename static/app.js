@@ -826,8 +826,33 @@ async function startRealOrSimulatedExecution(promptText) {
 }
 
 // ------------------------------------------------------------------------
-// 5. VIEW 2: Real Models & Accounts Pool (Quota Mesh)
+// 5. VIEW 2: Real Models & Accounts Pool (Quota Mesh & Web Subscriptions)
 // ------------------------------------------------------------------------
+async function startWebAuth(provider) {
+  const prov = (provider || 'gemini').toLowerCase();
+  showModelsLog(`[AUTH] Запуск окна авторизации для ${prov.toUpperCase()}... Пожалуйста, выполните вход в браузере.`, 'text-cobalt');
+  try {
+    const res = await fetch(`/v1/providers/web-auth/${encodeURIComponent(prov)}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      showModelsLog(`[AUTH] ${data.message || 'Окно авторизации открыто. Завершите вход в браузере и нажмите OK.'}`, 'text-emerald');
+      // Schedule background poll to pick up updated subscriptions.yaml
+      setTimeout(async () => {
+        await fetchAccountsAndModels();
+        await syncConnectedModels();
+      }, 3500);
+      setTimeout(async () => {
+        await fetchAccountsAndModels();
+        await syncConnectedModels();
+      }, 7000);
+    } else {
+      showModelsLog(`[ERROR] Не удалось запустить авторизацию: ${data.detail || res.statusText}`, 'text-crimson');
+    }
+  } catch (err) {
+    showModelsLog(`[ERROR] Ошибка запроса авторизации: ${err.message}`, 'text-crimson');
+  }
+}
+
 async function fetchAccountsAndModels() {
   try {
     const res = await fetch('/v1/providers/keys');
@@ -840,6 +865,8 @@ async function fetchAccountsAndModels() {
       return {
         id: acc.id,
         provider: acc.alias || acc.provider,
+        rawProvider: acc.provider,
+        authType: acc.auth_type,
         models: acc.models || [],
         rpmUsed: acc.rpm_used !== undefined ? acc.rpm_used : null,
         rpmLimit: acc.rpm_limit !== undefined ? acc.rpm_limit : 60,
@@ -872,11 +899,15 @@ function renderAccountsTable() {
             </div>
             <div class="text-[13px] font-semibold text-ink">Нет подключенных аккаунтов</div>
             <p class="text-[12px] text-muted leading-relaxed">
-              Вы запустили чистый профиль. Добавьте API-ключ провайдера, войдите в браузерную сессию или запустите локальную Ollama с моделями.
+              Вы запустили чистый профиль. Войдите в веб-сессию через браузер (Gemini / ChatGPT / Claude), добавьте API-ключ или запустите Ollama.
             </p>
             <div class="flex items-center justify-center gap-2 pt-1">
-              <button onclick="openAddKeyModal()" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90 inline-flex items-center gap-1.5">
-                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <button onclick="startWebAuth('gemini')" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90 inline-flex items-center gap-1.5">
+                <i data-lucide="globe" class="w-3.5 h-3.5"></i>
+                <span>Войти в Gemini</span>
+              </button>
+              <button onclick="openAddKeyModal()" class="h-7 px-3 rounded bg-surface border border-hairline text-ink text-[12px] font-medium hover:border-cobalt inline-flex items-center gap-1.5">
+                <i data-lucide="plus" class="w-3.5 h-3.5 text-cobalt"></i>
                 <span>+ Подключить ключ</span>
               </button>
               <button onclick="runModelDiscovery()" class="h-7 px-3 rounded bg-surface border border-hairline text-ink text-[12px] font-medium hover:border-cobalt inline-flex items-center gap-1.5">
@@ -897,9 +928,15 @@ function renderAccountsTable() {
     const pct = hasRpm ? Math.round((acc.rpmUsed / acc.rpmLimit) * 100) : 0;
     const barColor = pct > 80 ? 'bg-crimson' : pct > 55 ? 'bg-amber' : 'bg-cobalt';
     const isActive = acc.status === 'active';
+    const isWeb = acc.authType === 'browser_session';
+
     const statusHtml = isActive
       ? `<span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-emerald"><span class="w-2 h-2 rounded-full bg-emerald shrink-0"></span>active</span>`
       : `<span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted"><span class="w-2 h-2 rounded-full bg-[#C9CFD6] shrink-0"></span>inactive</span>`;
+
+    const webBadge = isWeb
+      ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-cobalt/10 text-cobalt border border-cobalt/20 ml-1.5">Веб</span>`
+      : '';
 
     const modelsHtml = acc.models.length
       ? acc.models.map(m =>
@@ -921,16 +958,23 @@ function renderAccountsTable() {
       ? `${acc.ewmaMs} ms`
       : '—';
 
+    const webAuthBtn = isWeb
+      ? `<button onclick="startWebAuth('${escapeHtml(acc.rawProvider || 'gemini')}')" class="icon-btn tip tip-left hover:text-cobalt" data-tip="Переавторизоваться" title="Переавторизоваться в веб-сессии" aria-label="Авторизация веб-сессии">
+           <i data-lucide="key" class="w-3.5 h-3.5 text-cobalt"></i>
+         </button>`
+      : '';
+
     return `
       <tr class="hover:bg-panel/40">
         <td class="py-2.5 px-4 font-mono font-medium text-ink">${escapeHtml(acc.id)}</td>
-        <td class="py-2.5 px-3 text-muted">${escapeHtml(acc.provider)}</td>
+        <td class="py-2.5 px-3 text-muted">${escapeHtml(acc.provider)}${webBadge}</td>
         <td class="py-2.5 px-3">${modelsHtml}</td>
         <td class="py-2.5 px-3">${rpmHtml}</td>
         <td class="py-2.5 px-3 font-mono text-ink">${latencyHtml}</td>
         <td class="py-2.5 px-3">${statusHtml}</td>
         <td class="py-2.5 px-4 text-right whitespace-nowrap">
           <div class="inline-flex items-center gap-1.5">
+            ${webAuthBtn}
             <button onclick="pingAccount('${acc.id}')" class="icon-btn tip tip-left" data-tip="Пинг узла" title="Пинг узла" aria-label="Пинг узла">
               <i data-lucide="activity" class="w-3.5 h-3.5"></i>
             </button>
@@ -1465,7 +1509,7 @@ async function fetchSystemStatus() {
           btn.classList.toggle('text-ink', btn.dataset.mode === p.mode);
         });
       }
-      if (p.max_rework_iterations && p.max_rework_iterations !== state.maxRework) {
+      if (p.max_rework_iterations != null && p.max_rework_iterations !== state.maxRework) {
         state.maxRework = p.max_rework_iterations;
         const rwEl = document.getElementById('rework-val');
         if (rwEl) rwEl.textContent = p.max_rework_iterations;

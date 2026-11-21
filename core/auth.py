@@ -7,6 +7,7 @@ import os
 import socket
 import sys
 import time
+import logging
 from pathlib import Path
 from core.config import config
 
@@ -116,7 +117,7 @@ def authenticate(provider: str):
     print(f"      You can now start the daemon: .\\start.ps1\n")
 
 def authenticate_desktop(provider: str):
-    """Окно авторизации для десктопной версии (поддерживает Chrome/Edge и диалог сохранения)."""
+    """Окно авторизации для десктопной версии (поддерживает Chrome/Edge, проверку блокировок и авто-сохранение сессии)."""
     prov = provider.strip().lower()
     url = PROVIDER_URLS.get(prov, "https://gemini.google.com/app")
     profile_dir = Path(config.browser.user_data_dir).resolve()
@@ -124,65 +125,117 @@ def authenticate_desktop(provider: str):
     proxy_server = detect_proxy()
     proxy_cfg = {"server": proxy_server} if proxy_server else None
 
-    print(f"[Auth Assistant] Запуск браузера для {prov.upper()} по адресу {url}...")
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        context = None
-        for channel in ["chrome", "msedge", None]:
-            try:
-                kwargs = {
-                    "user_data_dir": str(profile_dir),
-                    "headless": False,
-                    "viewport": {"width": 1280, "height": 800},
-                    "args": [
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-first-run",
-                        "--no-default-browser-check"
-                    ],
-                    "ignore_default_args": ["--enable-automation"]
-                }
-                if channel:
-                    kwargs["channel"] = channel
-                if proxy_cfg:
-                    kwargs["proxy"] = proxy_cfg
-                context = p.chromium.launch_persistent_context(**kwargs)
-                break
-            except Exception:
-                if channel:
-                    continue
-                raise
-
-        page = context.new_page() if len(context.pages) == 0 else context.pages[0]
-        page.goto(url)
-
+    logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} по адресу {url}...")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        err_msg = "Playwright не установлен или не найдены зависимости браузера."
+        logging.error(f"[Auth Assistant] {err_msg} ({e})")
         if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(
-                0,
-                f"Открыт браузер для авторизации в {prov.upper()}.\n\n"
-                f"1. Войдите в свой аккаунт в окне браузера.\n"
-                f"2. Дождитесь загрузки страницы чата.\n"
-                f"3. Нажмите 'ОК' в этом окне, чтобы сохранить профиль сессии.",
-                f"zero-copy-agent | Авторизация {prov.upper()}",
-                0x40 | 0x0
-            )
-        else:
             try:
-                page.wait_for_event("close", timeout=300000)
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"{err_msg}\n\nДетали: {e}", "zero-copy-agent | Ошибка Playwright", 0x10)
             except Exception:
                 pass
+        return
 
-        time.sleep(1)
-        context.close()
-        print(f"[Auth Assistant] Сессия для {prov} успешно сохранена!")
+    try:
+        with sync_playwright() as p:
+            context = None
+            last_err = None
+            for channel in ["chrome", "msedge", None]:
+                try:
+                    kwargs = {
+                        "user_data_dir": str(profile_dir),
+                        "headless": False,
+                        "viewport": {"width": 1280, "height": 800},
+                        "args": [
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-first-run",
+                            "--no-default-browser-check"
+                        ],
+                        "ignore_default_args": ["--enable-automation"]
+                    }
+                    if channel:
+                        kwargs["channel"] = channel
+                    if proxy_cfg:
+                        kwargs["proxy"] = proxy_cfg
+                    context = p.chromium.launch_persistent_context(**kwargs)
+                    logging.info(f"[Auth Assistant] Браузер успешно запущен через канал: {channel or 'chromium'}")
+                    break
+                except Exception as e:
+                    last_err = e
+                    logging.warning(f"[Auth Assistant] Канал '{channel}' не подошел: {e}")
+                    continue
 
-        try:
-            from core.healer import config_healer
-            alias_name = "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt" else f"{prov.upper()} (Веб-сессия)"
-            config_healer.register_web_session(provider=prov, alias=alias_name)
-            print(f"[Auth Assistant] Веб-сессия {prov} добавлена в subscriptions.yaml")
-        except Exception as e:
-            print(f"[Auth Assistant] Ошибка добавления в subscriptions: {e}")
+            if not context:
+                err_detail = str(last_err or "Не удалось запустить контекст браузера")
+                if "user data directory is already in use" in err_detail.lower() or "singletonlock" in err_detail.lower() or "ebusy" in err_detail.lower():
+                    msg = (
+                        f"Профиль браузера занят другим процессом:\n{profile_dir}\n\n"
+                        f"Закройте открытые окна браузера или фоновые процессы zero-copy-agent и повторите попытку."
+                    )
+                else:
+                    msg = (
+                        f"Не удалось запустить браузер для {prov.upper()}.\n\n"
+                        f"Убедитесь, что в системе установлен Google Chrome, Microsoft Edge или Chromium.\n\n"
+                        f"Ошибка: {err_detail}"
+                    )
+                logging.error(f"[Auth Assistant] {msg}")
+                if sys.platform == "win32":
+                    try:
+                        import ctypes
+                        ctypes.windll.user32.MessageBoxW(0, msg, "zero-copy-agent | Ошибка запуска браузера", 0x10)
+                    except Exception:
+                        pass
+                return
+
+            page = context.new_page() if len(context.pages) == 0 else context.pages[0]
+            page.goto(url)
+
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(
+                        0,
+                        f"Открыт браузер для авторизации в {prov.upper()}.\n\n"
+                        f"1. Войдите в свой аккаунт в открывшемся окне браузера.\n"
+                        f"2. Дождитесь загрузки страницы чата/диалогов.\n"
+                        f"3. Нажмите 'ОК' в этом системном окне, чтобы сохранить профиль сессии.",
+                        f"zero-copy-agent | Авторизация {prov.upper()}",
+                        0x40 | 0x0
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    page.wait_for_event("close", timeout=300000)
+                except Exception:
+                    pass
+
+            time.sleep(1)
+            try:
+                context.close()
+            except Exception:
+                pass
+            logging.info(f"[Auth Assistant] Сессия для {prov} успешно сохранена!")
+
+            try:
+                from core.healer import config_healer
+                alias_name = "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt" else f"{prov.upper()} (Веб-сессия)"
+                acc, mods = config_healer.register_web_session(provider=prov, alias=alias_name)
+                logging.info(f"[Auth Assistant] Веб-сессия {prov} добавлена в subscriptions.yaml (id={acc.id}, mods={mods})")
+            except Exception as e:
+                logging.exception(f"[Auth Assistant] Ошибка добавления в subscriptions: {e}")
+
+    except Exception as e:
+        logging.exception(f"[Auth Assistant] Непредвиденная ошибка при авторизации {prov}: {e}")
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"Произошла ошибка при авторизации в {prov.upper()}:\n\n{e}", "zero-copy-agent | Ошибка авторизации", 0x10)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Authenticate web subscriptions for zero-copy-agent")
