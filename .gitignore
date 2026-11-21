@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 browser_profile/
+browser_profiles/
 *.log
 .env
 .DS_Store

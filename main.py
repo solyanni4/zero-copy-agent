@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional, Dict, List, Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Body
@@ -830,14 +830,30 @@ async def api_add_provider_key(request: AddKeyRequest):
         "modifications": mods
     }
 
+@app.delete("/v1/providers/accounts/{account_id}")
 @app.delete("/v1/providers/keys/{account_id}")
-async def api_delete_provider_key(account_id: str):
-    """Removes or disables an account by ID."""
+async def api_delete_account(account_id: str):
+    """Removes an account by ID, closes browser context and cleans up profile folder if web session."""
+    import shutil
+    cfg, _ = config_healer.load_or_create()
+    target_acc = next((a for a in cfg.accounts if a.id == account_id), None)
+    if not target_acc:
+        raise HTTPException(status_code=404, detail="Аккаунт с таким ID не найден")
+
+    if getattr(target_acc, "auth_type", None) == "browser_session":
+        await engine.close_account(account_id)
+        p_rel = getattr(target_acc, "profile_dir", None) or f"browser_profiles/{account_id}"
+        profile_path = (get_runtime_cwd() / p_rel).resolve()
+        if profile_path.exists() and profile_path.is_dir():
+            try:
+                shutil.rmtree(profile_path, ignore_errors=True)
+                logger.info(f"[Account] Deleted profile directory for '{account_id}': {profile_path}")
+            except Exception as e:
+                logger.warning(f"[Account] Failed to remove profile dir for '{account_id}': {e}")
+
     ok = config_healer.remove_account(account_id)
     sync_mesh_from_subscriptions()
     await model_registry.get_models(force_refresh=True, mesh=mesh)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Аккаунт с таким ID не найден")
     return {"status": "ok", "message": f"Аккаунт '{account_id}' успешно удален"}
 
 @app.post("/v1/providers/accounts/{account_id}/toggle")
@@ -851,8 +867,8 @@ async def api_toggle_account(account_id: str):
     return {"status": "ok", "account_id": account_id, "new_status": new_status}
 
 @app.post("/v1/providers/web-auth/{provider}")
-async def api_web_auth(provider: str):
-    """Launches interactive browser authentication in isolated subprocess."""
+async def api_web_auth(provider: str, account_id: Optional[str] = None):
+    """Launches interactive browser authentication in isolated subprocess for specific profile."""
     prov = provider.strip().lower()
     if prov not in {"gemini", "chatgpt", "claude"}:
         raise HTTPException(
@@ -861,16 +877,29 @@ async def api_web_auth(provider: str):
         )
 
     try:
-        # Release background engine context so browser_profile is unlocked for interactive login
-        if getattr(engine, "is_ready", False):
-            logger.info("[Web Auth] Releasing background engine before launching browser auth...")
-            await engine.close()
+        target_account_id = account_id
+        if not target_account_id:
+            cfg, _ = config_healer.load_or_create()
+            primary_id = f"{prov}-web-primary"
+            primary_acc = next((a for a in cfg.accounts if a.id == primary_id and a.auth_type == "browser_session"), None)
+            if primary_acc and primary_acc.status == "active":
+                existing_ids = {a.id for a in cfg.accounts}
+                idx = 2
+                while f"{prov}-web-{idx}" in existing_ids:
+                    idx += 1
+                target_account_id = f"{prov}-web-{idx}"
+            else:
+                target_account_id = primary_id
+
+        # Release background engine context for this specific account only
+        logger.info(f"[Web Auth] Closing background context for account '{target_account_id}' before interactive auth...")
+        await engine.close_account(target_account_id)
 
         if getattr(sys, "frozen", False):
-            cmd = [sys.executable, "--auth", prov]
+            cmd = [sys.executable, "--auth", prov, "--account-id", target_account_id]
         else:
             desktop_script = Path(__file__).resolve().parent / "desktop" / "app.py"
-            cmd = [sys.executable, str(desktop_script), "--auth", prov]
+            cmd = [sys.executable, str(desktop_script), "--auth", prov, "--account-id", target_account_id]
 
         cwd_path = get_runtime_cwd()
         logger.info(f"Spawning browser auth process: {cmd} with cwd={cwd_path}")
@@ -878,7 +907,8 @@ async def api_web_auth(provider: str):
         return {
             "status": "started",
             "provider": prov,
-            "message": f"Окно авторизации для {prov.upper()} запущено"
+            "account_id": target_account_id,
+            "message": f"Окно авторизации для {prov.upper()} ({target_account_id}) запущено"
         }
     except Exception as e:
         logger.exception(f"Failed to spawn auth process for {prov}: {e}")
@@ -886,7 +916,7 @@ async def api_web_auth(provider: str):
 
 @app.post("/v1/providers/accounts/{account_id}/ping")
 async def api_ping_account(account_id: str):
-    """Measures real latency to the provider account."""
+    """Measures real latency and live authentication status to the provider account."""
     t0 = time.time()
     cfg, _ = config_healer.load_or_create()
     acc = next((a for a in cfg.accounts if a.id == account_id), None)
@@ -917,10 +947,30 @@ async def api_ping_account(account_id: str):
         is_ok = True
         status_detail = "API-ключ активен"
     elif acc.auth_type == "browser_session":
-        is_ready = getattr(engine, "is_ready", False)
-        is_ok = is_ready
-        latency_ms = 45 if is_ready else None
-        status_detail = "Веб-сессия авторизована" if is_ready else "Веб-сессия не подключена"
+        try:
+            ready = await engine.ensure_account_ready(account_id)
+            if ready:
+                driver = engine.get_driver(account_id)
+                t_auth0 = time.time()
+                is_auth = await driver.is_authenticated()
+                latency_ms = max(1, int((time.time() - t_auth0) * 1000))
+                if is_auth:
+                    is_ok = True
+                    status_detail = "Веб-сессия авторизована"
+                    from core.mesh import mesh
+                    mesh.record_web_success(acc.provider, account_id)
+                else:
+                    is_ok = False
+                    status_detail = "Требуется авторизация (вход не выполнен)"
+                    from core.mesh import mesh
+                    mesh.record_web_failure(acc.provider, account_id)
+            else:
+                is_ok = False
+                status_detail = "Не удалось открыть контекст браузера"
+        except Exception as e:
+            logger.error(f"[Ping] Error pinging browser account {account_id}: {e}")
+            is_ok = False
+            status_detail = f"Ошибка веб-сессии: {e}"
     else:
         status_detail = "Нет данных для проверки"
 

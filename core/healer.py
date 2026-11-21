@@ -52,6 +52,7 @@ class AccountSubscription(BaseModel):
     status: str = "active"  # "active" | "expired" | "disabled"
     alias: Optional[str] = None
     api_key: Optional[str] = None
+    profile_dir: Optional[str] = None
     models: List[SubscriptionModel] = Field(default_factory=list)
 
 class SubscriptionsConfig(BaseModel):
@@ -90,7 +91,46 @@ class ConfigHealer:
 
         config, fix_log = self._heal_dictionary(raw_data)
         modifications.extend(fix_log)
+
+        # One-time legacy migration from browser_profile to browser_profiles/{account_id}
+        migration_log = self._migrate_legacy_browser_profile(config.accounts)
+        if migration_log:
+            modifications.extend(migration_log)
+            try:
+                self.atomic_save(config)
+            except Exception as e:
+                logger.warning(f"[Healer] Failed to save config after migration: {e}")
+
         return config, modifications
+
+    def _migrate_legacy_browser_profile(self, accounts: List[AccountSubscription]) -> List[str]:
+        """Performs gentle one-time migration from legacy browser_profile to browser_profiles/{account_id}."""
+        fixes: List[str] = []
+        runtime_cwd = get_runtime_cwd()
+        old_dir = runtime_cwd / "browser_profile"
+        new_profiles_dir = runtime_cwd / "browser_profiles"
+
+        if old_dir.exists() and old_dir.is_dir():
+            try:
+                has_files = any(old_dir.iterdir())
+            except Exception:
+                has_files = False
+
+            if has_files and not new_profiles_dir.exists():
+                new_profiles_dir.mkdir(parents=True, exist_ok=True)
+                web_accs = [a for a in accounts if a.auth_type == "browser_session"]
+                target_ids = [a.id for a in web_accs] if web_accs else ["gemini-web-primary", "chatgpt-web-primary"]
+
+                for tid in target_ids:
+                    dest = new_profiles_dir / tid
+                    if not dest.exists():
+                        try:
+                            shutil.copytree(old_dir, dest)
+                            fixes.append(f"Migrated legacy browser_profile to browser_profiles/{tid}")
+                            logger.info(f"[Healer] Migrated legacy profile to {dest}")
+                        except Exception as e:
+                            logger.warning(f"[Healer] Migration error for {tid}: {e}")
+        return fixes
 
     def _create_default_config(self) -> SubscriptionsConfig:
         """Creates initial clean config structure without phantom accounts."""
@@ -139,6 +179,11 @@ class ConfigHealer:
 
             provider = str(acc.get("provider", "mock")).lower()
             acc["provider"] = provider
+
+            if acc.get("auth_type") == "browser_session":
+                if not acc.get("profile_dir"):
+                    acc["profile_dir"] = f"browser_profiles/{acc_id}"
+                    fixes.append(f"Set profile_dir to 'browser_profiles/{acc_id}' for account '{acc_id}'")
 
             # Heal models inside account
             raw_models = acc.get("models")
@@ -338,6 +383,7 @@ class ConfigHealer:
                 "status": acc.status,
                 "alias": acc.alias or acc.id,
                 "api_key_masked": masked,
+                "profile_dir": acc.profile_dir or (f"browser_profiles/{acc.id}" if acc.auth_type == "browser_session" else None),
                 "models_count": len(acc.models),
                 "models": [m.id for m in acc.models]
             })
@@ -392,42 +438,81 @@ class ConfigHealer:
     def register_web_session(
         self,
         provider: str,
+        account_id: Optional[str] = None,
         alias: Optional[str] = None,
-        models: Optional[List[str]] = None
+        models: Optional[List[str]] = None,
+        profile_dir: Optional[str] = None
     ) -> Tuple[AccountSubscription, List[str]]:
         """Registers or activates a web browser session account in subscriptions.yaml."""
         config, modifications = self.load_or_create()
         prov = provider.strip().lower()
 
-        existing = next((a for a in config.accounts if a.provider == prov and a.auth_type == "browser_session"), None)
-        if existing:
-            existing.status = "active"
-            if alias:
-                existing.alias = alias
-            modifications.append(f"Активирована веб-сессия для '{prov}' (аккаунт {existing.id})")
-            target_acc = existing
-        else:
-            acc_id = f"{prov}-web-primary"
-            m_list = models or DEFAULT_PROVIDER_MODELS.get(prov, [f"{prov}-default"])
-            sub_models = [
-                SubscriptionModel(
-                    id=mid,
-                    display_name=get_display_name(mid),
-                    status="active"
+        target_acc = None
+        if account_id:
+            target_acc = next((a for a in config.accounts if a.id == account_id), None)
+            if target_acc:
+                target_acc.status = "active"
+                if alias:
+                    target_acc.alias = alias
+                if profile_dir:
+                    target_acc.profile_dir = profile_dir
+                elif not target_acc.profile_dir:
+                    target_acc.profile_dir = f"browser_profiles/{target_acc.id}"
+                modifications.append(f"Активирована веб-сессия '{target_acc.id}' для '{prov}'")
+
+        if not target_acc:
+            if not account_id:
+                primary_id = f"{prov}-web-primary"
+                primary_acc = next((a for a in config.accounts if a.id == primary_id and a.auth_type == "browser_session"), None)
+                if primary_acc:
+                    if primary_acc.status != "active":
+                        target_acc = primary_acc
+                        target_acc.status = "active"
+                        if alias:
+                            target_acc.alias = alias
+                        if profile_dir:
+                            target_acc.profile_dir = profile_dir
+                        elif not target_acc.profile_dir:
+                            target_acc.profile_dir = f"browser_profiles/{target_acc.id}"
+                        modifications.append(f"Активирована веб-сессия '{target_acc.id}' для '{prov}'")
+                    else:
+                        existing_ids = {a.id for a in config.accounts}
+                        idx = 2
+                        while f"{prov}-web-{idx}" in existing_ids:
+                            idx += 1
+                        acc_id = f"{prov}-web-{idx}"
+                else:
+                    acc_id = primary_id
+            else:
+                acc_id = account_id
+
+            if not target_acc:
+                m_list = models or DEFAULT_PROVIDER_MODELS.get(prov, [f"{prov}-default"])
+                sub_models = [
+                    SubscriptionModel(
+                        id=mid,
+                        display_name=get_display_name(mid),
+                        status="active"
+                    )
+                    for mid in m_list
+                ]
+                final_pdir = profile_dir or f"browser_profiles/{acc_id}"
+                default_alias = alias or (
+                    "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt"
+                    else f"{prov.upper()} Web Session ({acc_id})"
                 )
-                for mid in m_list
-            ]
-            target_acc = AccountSubscription(
-                id=acc_id,
-                provider=prov,
-                auth_type="browser_session",
-                status="active",
-                alias=alias or f"{prov.upper()} Web Session (Живая веб-сессия / Free)",
-                api_key=None,
-                models=sub_models
-            )
-            config.accounts.append(target_acc)
-            modifications.append(f"Добавлен веб-аккаунт '{acc_id}' для '{prov}'")
+                target_acc = AccountSubscription(
+                    id=acc_id,
+                    provider=prov,
+                    auth_type="browser_session",
+                    status="active",
+                    alias=default_alias,
+                    api_key=None,
+                    profile_dir=final_pdir,
+                    models=sub_models
+                )
+                config.accounts.append(target_acc)
+                modifications.append(f"Добавлен веб-аккаунт '{acc_id}' для '{prov}' (профиль: {final_pdir})")
 
         self.atomic_save(config)
         return target_acc, modifications

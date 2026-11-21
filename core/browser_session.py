@@ -1,15 +1,27 @@
 """
 Browser Session Engine for zero-copy-agent.
-Manages headless persistent context, driver lifecycle, stealth, proxy routing,
-session keep-alive daemon (SKD), and model badges.
+Manages headless persistent contexts, driver lifecycle, stealth, proxy routing,
+session keep-alive daemon (SKD), and LRU multi-account isolation.
 """
 import asyncio
 import os
+import sys
+import time
 import socket
+import logging
 from pathlib import Path
-from typing import AsyncGenerator, Optional
-from core.config import config
+from typing import AsyncGenerator, Optional, Dict, Any
+
+from core.config import config, get_runtime_cwd
 from core.drivers import GeminiDriver, ChatGPTDriver, MockDriver, BaseDriver
+
+logger = logging.getLogger("zcao.browser")
+
+PROVIDER_URLS = {
+    "gemini": "https://gemini.google.com/app",
+    "chatgpt": "https://chatgpt.com",
+    "claude": "https://claude.ai/chats"
+}
 
 def detect_proxy():
     # 1. Environment variables
@@ -51,52 +63,136 @@ class BrowserSessionEngine:
     def __init__(self):
         raw_user_data = Path(config.browser.user_data_dir)
         if not raw_user_data.is_absolute():
-            from core.config import get_runtime_cwd
             self.profile_dir = (get_runtime_cwd() / raw_user_data).resolve()
         else:
             self.profile_dir = raw_user_data.resolve()
         self.headless = config.browser.headless
+        self.max_active_contexts: int = getattr(config.browser, "max_active_contexts", 3)
         self.playwright = None
-        self.context = None
-        self.page = None
+        self._contexts: Dict[str, Any] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._last_used: Dict[str, float] = {}
+        self._pages: Dict[str, Any] = {}
+        self._drivers: Dict[str, BaseDriver] = {}
         self.active_provider = config.browser.provider
         self.lock = asyncio.Lock()
         self.is_ready = False
         self.mock_driver = MockDriver()
         self.keepalive_task = None
 
+    @property
+    def context(self):
+        if self._contexts:
+            return next(iter(self._contexts.values()))
+        return None
+
+    @context.setter
+    def context(self, val):
+        if val is None:
+            self._contexts.clear()
+        else:
+            self._contexts["default"] = val
+
+    @property
+    def page(self):
+        if self._pages:
+            return next(iter(self._pages.values()))
+        return None
+
+    @page.setter
+    def page(self, val):
+        if val is None:
+            self._pages.clear()
+        else:
+            self._pages["default"] = val
+
+    def _get_lock(self, account_id: str) -> asyncio.Lock:
+        if account_id not in self._locks:
+            self._locks[account_id] = asyncio.Lock()
+        return self._locks[account_id]
+
     async def initialize(self):
-        """Initializes the background browser session with stealth and proxy."""
-        from core.healer import config_healer
-        cfg, _ = config_healer.load_or_create()
-        has_active_web = any(
-            getattr(a, "auth_type", None) == "browser_session" and getattr(a, "status", None) == "active"
-            for a in cfg.accounts
-        )
-        if not has_active_web:
-            print("[ENGINE] No active web subscription accounts. Browser engine remains in lazy standby.")
-            self.is_ready = False
-            return
-
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        proxy_server = detect_proxy()
-        proxy_cfg = {"server": proxy_server} if proxy_server else None
-
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-infobars"
-        ]
-
+        """Initializes the background browser runtime in lazy standby mode without pre-locking profiles."""
         try:
             from playwright.async_api import async_playwright
-            self.playwright = await async_playwright().start()
+            if not self.playwright:
+                self.playwright = await async_playwright().start()
+            self.is_ready = True
+            logger.info("[ENGINE] Playwright browser runtime ready in lazy multi-account standby mode.")
+            self.keepalive_task = asyncio.create_task(self._keepalive_loop())
+        except Exception as e:
+            logger.warning(f"[ENGINE-WARN] Could not initialize Playwright runtime ({e}). Running in Standby mode.")
+            self.is_ready = False
 
-            for channel in ["chrome", "msedge", None]:
+    async def close_account(self, account_id: str):
+        """Cleanly closes browser context for a specific account without affecting others."""
+        ctx = self._contexts.pop(account_id, None)
+        self._pages.pop(account_id, None)
+        self._drivers.pop(account_id, None)
+        self._last_used.pop(account_id, None)
+        if ctx:
+            try:
+                await ctx.close()
+                logger.info(f"[ENGINE] Successfully closed browser context for account '{account_id}'")
+            except Exception as e:
+                logger.warning(f"[ENGINE] Error closing context for '{account_id}': {e}")
+
+    async def ensure_account_ready(self, account_id: str) -> bool:
+        """Initializes or reconnects browser context for a specific account ID."""
+        acc_id = account_id.strip()
+        lock = self._get_lock(acc_id)
+        async with lock:
+            if acc_id in self._contexts:
+                page = self._pages.get(acc_id)
+                if page and not page.is_closed():
+                    self._last_used[acc_id] = time.time()
+                    return True
+                # Stale or closed, clean up before re-launching
+                await self.close_account(acc_id)
+
+            from core.healer import config_healer
+            cfg, _ = config_healer.load_or_create()
+            acc = next((a for a in cfg.accounts if a.id == acc_id), None)
+            provider = acc.provider if acc else ("chatgpt" if "chatgpt" in acc_id.lower() else ("claude" if "claude" in acc_id.lower() else "gemini"))
+            p_dir_rel = acc.profile_dir if (acc and acc.profile_dir) else f"browser_profiles/{acc_id}"
+
+            profile_path = (get_runtime_cwd() / p_dir_rel).resolve()
+            profile_path.mkdir(parents=True, exist_ok=True)
+
+            # LRU Eviction check
+            if len(self._contexts) >= self.max_active_contexts:
+                candidates = [aid for aid in self._last_used if aid != acc_id and aid in self._contexts]
+                if candidates:
+                    lru_id = min(candidates, key=self._last_used.get)
+                    logger.info(f"[ENGINE] LRU limit reached ({self.max_active_contexts}). Evicting account '{lru_id}'...")
+                    await self.close_account(lru_id)
+
+            if not self.playwright:
+                try:
+                    from playwright.async_api import async_playwright
+                    self.playwright = await async_playwright().start()
+                except Exception as pw_err:
+                    logger.error(f"[ENGINE] Could not start playwright: {pw_err}")
+                    return False
+
+            proxy_server = detect_proxy()
+            proxy_cfg = {"server": proxy_server} if proxy_server else None
+
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-infobars"
+            ]
+            is_frozen = getattr(sys, "frozen", False)
+            channels = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+
+            context = None
+            last_err = None
+            for channel in channels:
                 try:
                     kwargs = {
-                        "user_data_dir": str(self.profile_dir),
+                        "user_data_dir": str(profile_path),
                         "headless": self.headless,
                         "viewport": {"width": 1280, "height": 800},
                         "args": launch_args,
@@ -106,159 +202,190 @@ class BrowserSessionEngine:
                         kwargs["channel"] = channel
                     if proxy_cfg:
                         kwargs["proxy"] = proxy_cfg
-
-                    self.context = await self.playwright.chromium.launch_persistent_context(**kwargs)
+                    context = await self.playwright.chromium.launch_persistent_context(**kwargs)
                     break
-                except Exception:
-                    if channel:
-                        continue
-                    raise
+                except Exception as e:
+                    last_err = e
+                    continue
 
-            # Stealth: mask navigator.webdriver
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
+            if not context:
+                logger.error(f"[ENGINE] Failed to launch context for '{acc_id}': {last_err}")
+                return False
 
-            self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
-            self.is_ready = True
-            print(f"[ENGINE] Headless browser session initialized (profile: {self.profile_dir}, proxy: {proxy_server})")
-
-            # Start Session Keep-Alive Daemon (SKD) to prevent cookie expiration
-            self.keepalive_task = asyncio.create_task(self._keepalive_loop())
-        except Exception as e:
-            print(f"[ENGINE-WARN] Could not launch Playwright browser ({e}). Running in Zero-Copy Standby mode.")
-            self.is_ready = False
-
-    async def _keepalive_loop(self):
-        """Periodically pings the active web session every 90 minutes to keep cookies fresh."""
-        while True:
             try:
-                await asyncio.sleep(5400)  # 90 minutes
-                if self.is_ready and self.page:
-                    print("[KEEP-ALIVE] Refreshing web subscription session to prevent cookie expiration...")
-                    async with self.lock:
-                        if "gemini.google.com" in self.page.url:
-                            await self.page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=20000)
-                        elif "chatgpt.com" in self.page.url:
-                            await self.page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=20000)
-                    print("[KEEP-ALIVE] Session refreshed successfully. Active for long-running workflows.")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"[KEEP-ALIVE-WARN] Could not ping session: {e}")
+                await context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                """)
+            except Exception:
+                pass
 
-    async def close(self):
-        """Gracefully closes browser context and stops keepalive daemon."""
-        if self.keepalive_task:
-            self.keepalive_task.cancel()
-        if self.context:
-            await self.context.close()
-        if self.playwright:
-            await self.playwright.stop()
-        self.is_ready = False
+            page = context.pages[0] if context.pages else await context.new_page()
+            target_url = PROVIDER_URLS.get(provider.lower(), "https://gemini.google.com/app")
+            if page.url == "about:blank":
+                try:
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception as nav_e:
+                    logger.warning(f"[ENGINE] Initial navigation for '{acc_id}' timed out or errored: {nav_e}")
 
-    async def _get_page_for_model(self, model_id: str):
-        """Gets or creates dedicated tab for the model provider."""
-        if not self.is_ready or not self.context:
-            return None
+            if provider == "chatgpt":
+                driver = ChatGPTDriver(page)
+            else:
+                driver = GeminiDriver(page)
 
-        if not hasattr(self, "provider_pages"):
-            self.provider_pages = {}
+            self._contexts[acc_id] = context
+            self._pages[acc_id] = page
+            self._drivers[acc_id] = driver
+            self._last_used[acc_id] = time.time()
+            self.is_ready = True
+            logger.info(f"[ENGINE] Account '{acc_id}' ready (channel={channel or 'chromium'}, profile={profile_path})")
+            return True
 
+    def get_driver(self, account_id: str) -> BaseDriver:
+        return self._drivers.get(account_id, self.mock_driver)
+
+    def resolve_target_account(self, model_id: str, account_id: Optional[str] = None) -> Optional[str]:
+        if account_id:
+            return account_id
         model_lower = model_id.lower()
         if "chatgpt" in model_lower or "gpt" in model_lower:
             prov = "chatgpt"
-            url = "https://chatgpt.com"
         elif "claude" in model_lower:
             prov = "claude"
-            url = "https://claude.ai"
         else:
             prov = "gemini"
-            url = "https://gemini.google.com/app"
-
-        page = self.provider_pages.get(prov)
-        if page is not None and not page.is_closed():
-            return page
-
-        for p in self.context.pages:
-            if prov in p.url.lower():
-                self.provider_pages[prov] = p
-                return p
-
-        if self.page and (self.page.url == "about:blank" or prov in self.page.url.lower()):
-            self.provider_pages[prov] = self.page
-            return self.page
 
         try:
-            new_p = await self.context.new_page()
-            await new_p.goto(url, wait_until="domcontentloaded", timeout=25000)
-            self.provider_pages[prov] = new_p
-            return new_p
-        except Exception as e:
-            print(f"[ENGINE-WARN] Could not open dedicated tab for {prov}: {e}")
-            return self.page
+            from core.mesh import mesh
+            mesh_acc = mesh.get_active_web_account(prov)
+            if mesh_acc:
+                return mesh_acc
+        except Exception:
+            pass
 
-    async def _get_driver_async(self, model_id: str) -> BaseDriver:
-        """Selects driver based on model requested with dedicated provider page."""
-        if not self.is_ready:
-            return self.mock_driver
+        from core.healer import config_healer
+        cfg, _ = config_healer.load_or_create()
+        matching = [
+            a for a in cfg.accounts
+            if a.provider == prov and a.auth_type == "browser_session" and a.status == "active"
+        ]
+        if matching:
+            return matching[0].id
+        return None
 
-        model_lower = model_id.lower()
-        if "mock" in model_lower:
-            return self.mock_driver
+    async def _keepalive_loop(self):
+        """Periodically pings active web sessions every 90 minutes to keep cookies fresh."""
+        while True:
+            try:
+                await asyncio.sleep(5400)  # 90 minutes
+                active_ids = list(self._contexts.keys())
+                for aid in active_ids:
+                    page = self._pages.get(aid)
+                    if page and not page.is_closed():
+                        lock = self._get_lock(aid)
+                        async with lock:
+                            logger.info(f"[KEEP-ALIVE] Refreshing web subscription session for '{aid}'...")
+                            if "gemini.google.com" in page.url:
+                                await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=20000)
+                            elif "chatgpt.com" in page.url:
+                                await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=20000)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"[KEEP-ALIVE-WARN] Could not ping sessions: {e}")
 
-        page = await self._get_page_for_model(model_id) or self.page
-        if not page:
-            return self.mock_driver
+    async def close(self):
+        """Gracefully closes all browser contexts and stops playwright runtime."""
+        if self.keepalive_task:
+            self.keepalive_task.cancel()
+        for aid in list(self._contexts.keys()):
+            await self.close_account(aid)
+        if self.playwright:
+            try:
+                await self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
+        self.is_ready = False
 
-        if "chatgpt" in model_lower or "gpt" in model_lower:
-            return ChatGPTDriver(page)
-        return GeminiDriver(page)
+    async def query(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> str:
+        """Executes query through selected account driver with automatic fallback."""
+        target_acc = self.resolve_target_account(model_id, account_id)
+        if not target_acc:
+            return await self.mock_driver.send_prompt(prompt)
 
-    def _get_driver(self, model_id: str) -> BaseDriver:
-        """Synchronous driver selector fallback."""
-        if not self.is_ready or not self.page:
-            return self.mock_driver
+        lock = self._get_lock(target_acc)
+        async with lock:
+            ready = await self.ensure_account_ready(target_acc)
+            if not ready:
+                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready. Serving Mock.")
+                return await self.mock_driver.send_prompt(prompt)
 
-        model_lower = model_id.lower()
-        if "chatgpt" in model_lower or "gpt" in model_lower:
-            return ChatGPTDriver(self.page)
-        elif "mock" in model_lower:
-            return self.mock_driver
-        return GeminiDriver(self.page)
-
-    async def query(self, prompt: str, model_id: str) -> str:
-        """Executes query through selected driver with automatic fallback."""
-        async with self.lock:
-            driver = await self._get_driver_async(model_id)
+            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
+            driver = self.get_driver(target_acc)
             if driver != self.mock_driver:
                 try:
                     if await driver.is_authenticated():
-                        raw_result = await driver.send_prompt(prompt)
-                        return raw_result
+                        self._last_used[target_acc] = time.time()
+                        try:
+                            from core.mesh import mesh
+                            mesh.record_web_success(prov, target_acc)
+                        except Exception:
+                            pass
+                        return await driver.send_prompt(prompt)
                     else:
-                        print(f"[ENGINE-INFO] Session not authenticated for {model_id}. Serving Standby response.")
+                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Serving Standby response.")
                 except Exception as e:
-                    print(f"[ENGINE-ERR] Driver execution failed ({e}). Falling back to Mock.")
+                    logger.error(f"[ENGINE-ERR] Driver execution failed on '{target_acc}' ({e}). Falling back to Mock.")
+                    try:
+                        from core.mesh import mesh
+                        mesh.record_web_failure(prov, target_acc)
+                    except Exception:
+                        pass
 
             return await self.mock_driver.send_prompt(prompt)
 
-    async def query_stream(self, prompt: str, model_id: str) -> AsyncGenerator[str, None]:
+    async def query_stream(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams response tokens from web session."""
-        async with self.lock:
-            driver = await self._get_driver_async(model_id)
+        target_acc = self.resolve_target_account(model_id, account_id)
+        if not target_acc:
+            async for token in self.mock_driver.send_prompt_stream(prompt):
+                yield token
+            return
+
+        lock = self._get_lock(target_acc)
+        async with lock:
+            ready = await self.ensure_account_ready(target_acc)
+            if not ready:
+                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready. Serving Mock stream.")
+                async for token in self.mock_driver.send_prompt_stream(prompt):
+                    yield token
+                return
+
+            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
+            driver = self.get_driver(target_acc)
             if driver != self.mock_driver:
                 try:
                     if await driver.is_authenticated():
+                        self._last_used[target_acc] = time.time()
+                        try:
+                            from core.mesh import mesh
+                            mesh.record_web_success(prov, target_acc)
+                        except Exception:
+                            pass
                         async for token in driver.send_prompt_stream(prompt):
                             yield token
                         return
                     else:
-                        print(f"[ENGINE-INFO] Session not authenticated for {model_id}. Serving Standby stream.")
+                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Serving Standby stream.")
                 except Exception as e:
-                    print(f"[ENGINE-ERR] Stream execution failed ({e}). Falling back to Mock stream.")
+                    logger.error(f"[ENGINE-ERR] Stream execution failed on '{target_acc}' ({e}). Falling back to Mock stream.")
+                    try:
+                        from core.mesh import mesh
+                        mesh.record_web_failure(prov, target_acc)
+                    except Exception:
+                        pass
 
             async for token in self.mock_driver.send_prompt_stream(prompt):
                 yield token

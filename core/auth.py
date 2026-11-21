@@ -35,13 +35,30 @@ def detect_proxy():
             pass
     return None
 
-def authenticate(provider: str):
+def authenticate(provider: str, account_id: str = None):
     url = PROVIDER_URLS.get(provider.lower())
     if not url:
         print(f"[ERROR] Unsupported provider: {provider}. Options: {list(PROVIDER_URLS.keys())}")
         sys.exit(1)
 
-    profile_dir = Path(config.browser.user_data_dir).resolve()
+    from core.config import get_runtime_cwd
+    from core.healer import config_healer
+
+    prov = provider.lower()
+    if not account_id:
+        cfg, _ = config_healer.load_or_create()
+        primary_id = f"{prov}-web-primary"
+        primary_acc = next((a for a in cfg.accounts if a.id == primary_id and a.auth_type == "browser_session"), None)
+        if primary_acc and primary_acc.status == "active":
+            existing_ids = {a.id for a in cfg.accounts}
+            idx = 2
+            while f"{prov}-web-{idx}" in existing_ids:
+                idx += 1
+            account_id = f"{prov}-web-{idx}"
+        else:
+            account_id = primary_id
+
+    profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     proxy_server = detect_proxy()
@@ -131,17 +148,28 @@ def kill_zombie_browser_processes(profile_path: Path):
         logging.debug(f"[Auth Assistant] Zombie cleanup warning: {e}")
 
 
-def authenticate_desktop(provider: str):
+def authenticate_desktop(provider: str, account_id: str = None):
     """Окно авторизации для десктопной версии (поддерживает Chrome/Edge, проверку блокировок и авто-сохранение сессии)."""
     prov = provider.strip().lower()
     url = PROVIDER_URLS.get(prov, "https://gemini.google.com/app")
 
-    raw_user_data = Path(config.browser.user_data_dir)
-    if not raw_user_data.is_absolute():
-        from core.config import get_runtime_cwd
-        profile_dir = (get_runtime_cwd() / raw_user_data).resolve()
-    else:
-        profile_dir = raw_user_data.resolve()
+    from core.config import get_runtime_cwd
+    from core.healer import config_healer
+
+    if not account_id:
+        cfg, _ = config_healer.load_or_create()
+        primary_id = f"{prov}-web-primary"
+        primary_acc = next((a for a in cfg.accounts if a.id == primary_id and a.auth_type == "browser_session"), None)
+        if primary_acc and primary_acc.status == "active":
+            existing_ids = {a.id for a in cfg.accounts}
+            idx = 2
+            while f"{prov}-web-{idx}" in existing_ids:
+                idx += 1
+            account_id = f"{prov}-web-{idx}"
+        else:
+            account_id = primary_id
+
+    profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     # Release any lingering zombie Chrome/Edge processes holding this profile
@@ -150,7 +178,7 @@ def authenticate_desktop(provider: str):
     proxy_server = detect_proxy()
     proxy_cfg = {"server": proxy_server} if proxy_server else None
 
-    logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} по адресу {url} (profile: {profile_dir})...")
+    logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} (account: {account_id}) по адресу {url} (profile: {profile_dir})...")
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -257,9 +285,14 @@ def authenticate_desktop(provider: str):
 
             try:
                 from core.healer import config_healer
-                alias_name = "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt" else f"{prov.upper()} (Веб-сессия)"
-                acc, mods = config_healer.register_web_session(provider=prov, alias=alias_name)
-                logging.info(f"[Auth Assistant] Веб-сессия {prov} добавлена в subscriptions.yaml (id={acc.id}, mods={mods})")
+                alias_name = "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt" else f"{prov.upper()} Web Session ({account_id})"
+                acc, mods = config_healer.register_web_session(
+                    provider=prov,
+                    account_id=account_id,
+                    alias=alias_name,
+                    profile_dir=f"browser_profiles/{account_id}"
+                )
+                logging.info(f"[Auth Assistant] Веб-сессия {prov} добавлена в subscriptions.yaml (id={acc.id}, profile={acc.profile_dir}, mods={mods})")
             except Exception as e:
                 logging.exception(f"[Auth Assistant] Ошибка добавления в subscriptions: {e}")
 
@@ -276,5 +309,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Authenticate web subscriptions for zero-copy-agent")
     parser.add_argument("--provider", type=str, default="gemini", choices=["gemini", "chatgpt", "claude"],
                         help="Provider to authenticate (gemini, chatgpt, claude)")
+    parser.add_argument("--account-id", type=str, default=None,
+                        help="Optional specific account ID (e.g. gemini-web-primary or gemini-web-2)")
     args = parser.parse_args()
-    authenticate(args.provider)
+    authenticate(args.provider, account_id=args.account_id)

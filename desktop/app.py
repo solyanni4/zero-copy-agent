@@ -229,14 +229,17 @@ class ZeroCopyUnifiedApp:
         if self.window:
             self.window.hide()
 
-    def open_browser_auth(self, provider: str):
+    def open_browser_auth(self, provider: str, account_id: str = None):
         """Launches interactive browser authentication in separate isolated subprocess."""
         try:
             prov = provider.strip().lower()
             # If local API server is running, delegate to api_web_auth to release background engine safely
             try:
                 import urllib.request
-                req = urllib.request.Request(f"http://{self.client_host}:{self.port}/v1/providers/web-auth/{prov}", data=b"", method="POST")
+                target_url = f"http://{self.client_host}:{self.port}/v1/providers/web-auth/{prov}"
+                if account_id:
+                    target_url += f"?account_id={account_id}"
+                req = urllib.request.Request(target_url, data=b"", method="POST")
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     if resp.status == 200:
                         self.notify_tray(f"Открывается окно входа для {prov.upper()}...", title="zero-copy-agent Auth")
@@ -248,6 +251,8 @@ class ZeroCopyUnifiedApp:
                 cmd = [sys.executable, "--auth", prov]
             else:
                 cmd = [sys.executable, str(Path(__file__).resolve()), "--auth", prov]
+            if account_id:
+                cmd.extend(["--account-id", account_id])
             cwd_path = get_runtime_cwd()
             logging.info(f"Spawning browser auth subprocess: {cmd} (cwd={cwd_path})")
             subprocess.Popen(cmd, cwd=str(cwd_path))
@@ -432,13 +437,18 @@ class ZeroCopyUnifiedApp:
 def main():
     if "--auth" in sys.argv:
         provider = "gemini"
+        account_id = None
         try:
             idx = sys.argv.index("--auth")
             if len(sys.argv) > idx + 1:
                 provider = sys.argv[idx + 1]
-            logging.info(f"Main entrypoint executing desktop auth for '{provider}'")
+            if "--account-id" in sys.argv:
+                acc_idx = sys.argv.index("--account-id")
+                if len(sys.argv) > acc_idx + 1:
+                    account_id = sys.argv[acc_idx + 1]
+            logging.info(f"Main entrypoint executing desktop auth for '{provider}' (account_id={account_id})")
             from core.auth import authenticate_desktop
-            authenticate_desktop(provider)
+            authenticate_desktop(provider, account_id=account_id)
             sys.exit(0)
         except Exception as e:
             logging.exception(f"Fatal error during desktop authentication for {provider}: {e}")

@@ -56,9 +56,10 @@ class ServerConfig(BaseModel):
 
 class BrowserConfig(BaseModel):
     headless: bool = True
-    user_data_dir: str = "./browser_profile"
+    user_data_dir: str = "./browser_profiles"
     provider: str = "gemini"
     timeout_seconds: int = 60
+    max_active_contexts: int = 3
 
 class ModelsGroupConfig(BaseModel):
     default: str = "gemini-advanced"

@@ -836,9 +836,11 @@ async function startRealOrSimulatedExecution(promptText) {
 // ------------------------------------------------------------------------
 let _webAuthPollTimer = null;
 
-async function startWebAuth(provider) {
+async function startWebAuth(provider, accountId) {
   const prov = (provider || 'gemini').toLowerCase();
-  showModelsLog(`[AUTH] Запуск окна авторизации для ${prov.toUpperCase()}... Пожалуйста, выполните вход в браузере.`, 'text-cobalt');
+  const accParam = accountId ? `?account_id=${encodeURIComponent(accountId)}` : '';
+  const label = accountId ? `${prov.toUpperCase()} (${accountId})` : prov.toUpperCase();
+  showModelsLog(`[AUTH] Запуск окна авторизации для ${label}... Пожалуйста, выполните вход в браузере.`, 'text-cobalt');
 
   if (_webAuthPollTimer) {
     clearInterval(_webAuthPollTimer);
@@ -846,7 +848,7 @@ async function startWebAuth(provider) {
   }
 
   try {
-    const res = await fetch(`/v1/providers/web-auth/${encodeURIComponent(prov)}`, { method: 'POST' });
+    const res = await fetch(`/v1/providers/web-auth/${encodeURIComponent(prov)}${accParam}`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       showModelsLog(`[AUTH] ${data.message || 'Окно авторизации открыто. Завершите вход в браузере и нажмите OK.'}`, 'text-emerald');
@@ -860,8 +862,9 @@ async function startWebAuth(provider) {
           if (subRes.ok) {
             const subData = await subRes.json();
             const accounts = subData.subscriptions?.accounts || [];
+            const targetId = data.account_id || accountId;
             const activeAcc = accounts.find(a => 
-              a.provider === prov && 
+              (targetId ? a.id === targetId : a.provider === prov) && 
               a.auth_type === 'browser_session' && 
               a.status === 'active'
             );
@@ -869,7 +872,7 @@ async function startWebAuth(provider) {
             if (activeAcc) {
               clearInterval(_webAuthPollTimer);
               _webAuthPollTimer = null;
-              showModelsLog(`[AUTH] Подписка ${prov.toUpperCase()} успешно подключена!`, 'text-emerald');
+              showModelsLog(`[AUTH] Подписка ${activeAcc.id} успешно подключена!`, 'text-emerald');
               await fetchAccountsAndModels();
               await syncConnectedModels();
               return;
@@ -883,7 +886,7 @@ async function startWebAuth(provider) {
         if (attempts >= maxAttempts) {
           clearInterval(_webAuthPollTimer);
           _webAuthPollTimer = null;
-          showModelsLog(`[AUTH] Ожидание авторизации ${prov.toUpperCase()} завершено. Обновите список вручную при необходимости.`, 'text-muted');
+          showModelsLog(`[AUTH] Ожидание авторизации ${label} завершено. Обновите список вручную при необходимости.`, 'text-muted');
         }
       }, 3000);
     } else {
@@ -892,6 +895,17 @@ async function startWebAuth(provider) {
   } catch (err) {
     showModelsLog(`[ERROR] Ошибка запроса авторизации: ${err.message}`, 'text-crimson');
   }
+}
+
+function promptAddWebAccount() {
+  const prov = prompt('Для какого провайдера добавить дополнительный веб-аккаунт? (gemini, chatgpt, claude):', 'gemini');
+  if (!prov) return;
+  const cleanProv = prov.trim().toLowerCase();
+  if (!['gemini', 'chatgpt', 'claude'].includes(cleanProv)) {
+    alert('Поддерживаются только: gemini, chatgpt, claude');
+    return;
+  }
+  startWebAuth(cleanProv);
 }
 
 async function fetchAccountsAndModels() {
@@ -1000,7 +1014,7 @@ function renderAccountsTable() {
       : '—';
 
     const webAuthBtn = isWeb
-      ? `<button onclick="startWebAuth('${escapeHtml(acc.rawProvider || 'gemini')}')" class="icon-btn tip tip-left hover:text-cobalt" data-tip="Переавторизоваться" title="Переавторизоваться в веб-сессии" aria-label="Авторизация веб-сессии">
+      ? `<button onclick="startWebAuth('${escapeHtml(acc.rawProvider || 'gemini')}', '${escapeHtml(acc.id)}')" class="icon-btn tip tip-left hover:text-cobalt" data-tip="Переавторизоваться" title="Переавторизоваться в веб-сессии" aria-label="Авторизация веб-сессии">
            <i data-lucide="key" class="w-3.5 h-3.5 text-cobalt"></i>
          </button>`
       : '';
@@ -1037,7 +1051,7 @@ function renderAccountsTable() {
 async function deleteAccount(id) {
   if (!confirm(`Удалить аккаунт "${id}" из каталога?`)) return;
   try {
-    const res = await fetch(`/v1/providers/keys/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const res = await fetch(`/v1/providers/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok) {
       showModelsLog(`[POOL] Аккаунт ${id} успешно удален`, 'text-emerald');
       await fetchAccountsAndModels();
