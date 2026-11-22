@@ -84,6 +84,8 @@ function switchView(viewId) {
   if (viewId === 'models') fetchAccountsAndModels();
   if (viewId === 'dlp') fetchDlpLogs();
   if (viewId === 'ide') fetchIdeIntegrations();
+  if (viewId === 'solutions') fetchSolutions();
+  if (viewId === 'presets') fetchPresets();
 
   toggleMobileSidebar(false);
 }
@@ -1849,6 +1851,599 @@ async function executeUninstall() {
 }
 
 // ------------------------------------------------------------------------
+// 11. Solutions Database (v1.3.0)
+// ------------------------------------------------------------------------
+let cachedSolutions = [];
+
+async function fetchSolutions(q = '', tag = '') {
+  const container = document.getElementById('solutions-list-container');
+  if (!container) return;
+  try {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (tag) params.set('tag', tag);
+    const res = await fetch(`/api/solutions?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    cachedSolutions = data.items || [];
+    renderSolutionsList(cachedSolutions);
+  } catch (e) {
+    if (container) {
+      container.innerHTML = `<div class="p-6 text-center text-crimson text-[13px]">Ошибка загрузки базы решений: ${escapeHtml(String(e))}</div>`;
+    }
+  }
+}
+
+function handleSolutionsSearch(e) {
+  if (e.key === 'Enter') {
+    const val = document.getElementById('solutions-search-input')?.value?.trim() || '';
+    fetchSolutions(val);
+  }
+}
+
+function renderSolutionsList(items) {
+  const container = document.getElementById('solutions-list-container');
+  if (!container) return;
+  if (!items || items.length === 0) {
+    container.innerHTML = `
+      <div class="p-8 text-center text-muted text-[13px] bg-panel border border-hairline rounded">
+        Паттернов решений пока нет. Они сохраняются автоматически после успешных проверок Архитектора или добавляются кнопкой «Добавить паттерн».
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = items.map(item => {
+    const tagsHtml = (item.tags || []).map(t => `<span class="px-1.5 py-0.5 rounded bg-surface border border-hairline text-[10px] font-mono text-muted">#${escapeHtml(t)}</span>`).join(' ');
+    const usageStr = item.usage_count ? `Использовано: ${item.usage_count}` : 'Новый паттерн';
+    const lang = item.language || 'text';
+    const codeEsc = escapeHtml(item.solution_code || '');
+    const desc = escapeHtml(item.problem_description || '');
+    const title = escapeHtml(item.title || 'Без названия');
+    const id = item.id;
+
+    return `
+      <div class="p-4 bg-panel border border-hairline rounded space-y-2.5 hover:border-cobalt/40 transition-colors">
+        <div class="flex items-start justify-between gap-3">
+          <div class="space-y-0.5 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h3 class="text-[13px] font-semibold text-ink">${title}</h3>
+              <span class="px-1.5 py-0.5 rounded bg-cobalt/10 text-cobalt text-[10px] font-mono font-medium">${escapeHtml(lang)}</span>
+              <span class="text-[11px] font-mono text-muted">${usageStr}</span>
+            </div>
+            ${desc ? `<p class="text-[12px] text-muted line-clamp-2">${desc}</p>` : ''}
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button onclick="copySolutionCode(this, '${escapeHtml(encodeURIComponent(item.solution_code || ''))}')" class="h-6 px-2 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:bg-surface/70" title="Копировать код">
+              Копировать
+            </button>
+            <button onclick="editSolution('${id}')" class="h-6 px-2 rounded bg-surface border border-hairline text-[11px] font-medium text-muted hover:text-ink" title="Править">
+              Править
+            </button>
+            <button onclick="deleteSolution('${id}')" class="h-6 px-1.5 rounded bg-surface border border-crimson/30 text-crimson text-[11px] hover:bg-crimson/10" title="Удалить">
+              ✕
+            </button>
+          </div>
+        </div>
+        <div class="relative">
+          <pre class="p-2.5 rounded bg-surface border border-hairline text-[11px] font-mono text-ink overflow-x-auto max-h-40 leading-relaxed"><code>${codeEsc}</code></pre>
+        </div>
+        ${tagsHtml ? `<div class="flex items-center gap-1.5 pt-1">${tagsHtml}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  if (window.lucide) lucide.createIcons();
+}
+
+function copySolutionCode(btn, encodedCode) {
+  const code = decodeURIComponent(encodedCode);
+  navigator.clipboard.writeText(code).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = 'Скопировано!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+function openSolutionModal(id = null) {
+  const modal = document.getElementById('modal-solution-edit');
+  if (!modal) return;
+  document.getElementById('solution-edit-id').value = id || '';
+  if (id) {
+    const item = cachedSolutions.find(s => s.id === id);
+    if (item) {
+      document.getElementById('solution-modal-title').textContent = 'Редактирование паттерна';
+      document.getElementById('solution-form-title').value = item.title || '';
+      document.getElementById('solution-form-desc').value = item.problem_description || '';
+      document.getElementById('solution-form-code').value = item.solution_code || '';
+      document.getElementById('solution-form-lang').value = item.language || 'python';
+      document.getElementById('solution-form-tags').value = (item.tags || []).join(', ');
+    }
+  } else {
+    document.getElementById('solution-modal-title').textContent = 'Новый паттерн решения';
+    document.getElementById('solution-form-title').value = '';
+    document.getElementById('solution-form-desc').value = '';
+    document.getElementById('solution-form-code').value = '';
+    document.getElementById('solution-form-lang').value = 'python';
+    document.getElementById('solution-form-tags').value = '';
+  }
+  modal.classList.remove('hidden');
+}
+
+function closeSolutionModal() {
+  const modal = document.getElementById('modal-solution-edit');
+  if (modal) modal.classList.add('hidden');
+}
+
+function editSolution(id) {
+  openSolutionModal(id);
+}
+
+async function submitSolutionForm(e) {
+  e.preventDefault();
+  const id = document.getElementById('solution-edit-id').value;
+  const title = document.getElementById('solution-form-title').value.trim();
+  const desc = document.getElementById('solution-form-desc').value.trim();
+  const code = document.getElementById('solution-form-code').value.trim();
+  const lang = document.getElementById('solution-form-lang').value.trim() || 'python';
+  const tagsStr = document.getElementById('solution-form-tags').value.trim();
+  const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  try {
+    let res;
+    if (id) {
+      res = await fetch(`/api/solutions/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, problem_description: desc, solution_code: code, language: lang, tags })
+      });
+    } else {
+      res = await fetch('/api/solutions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, problem_description: desc, solution_code: code, language: lang, tags })
+      });
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    closeSolutionModal();
+    fetchSolutions();
+  } catch (err) {
+    alert('Ошибка сохранения решения: ' + err);
+  }
+}
+
+async function deleteSolution(id) {
+  if (!confirm('Удалить этот паттерн из базы решений?')) return;
+  try {
+    const res = await fetch(`/api/solutions/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fetchSolutions();
+  } catch (e) {
+    alert('Ошибка удаления: ' + e);
+  }
+}
+
+// ------------------------------------------------------------------------
+// 12. Presets Engine (v1.3.0)
+// ------------------------------------------------------------------------
+let cachedPresets = [];
+let activePresetId = 'auto';
+
+async function fetchPresets() {
+  try {
+    const res = await fetch('/api/presets');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    cachedPresets = data.presets || [];
+    activePresetId = data.active_preset_id || 'auto';
+    renderPresetsUI(cachedPresets, activePresetId);
+    updateGlobalPresetDropdown(cachedPresets, activePresetId);
+  } catch (e) {
+    console.debug('Error fetching presets:', e);
+  }
+}
+
+function updateGlobalPresetDropdown(presets, activeId) {
+  const select = document.getElementById('global-preset-select');
+  if (!select) return;
+  select.innerHTML = presets.map(p => `
+    <option value="${p.id}" ${p.id === activeId ? 'selected' : ''}>
+      Сетап: ${escapeHtml(p.name)}
+    </option>
+  `).join('');
+}
+
+async function onGlobalPresetChange(presetId) {
+  try {
+    const res = await fetch(`/api/presets/active/${presetId}`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    activePresetId = presetId;
+    fetchPresets();
+  } catch (e) {
+    alert('Ошибка переключения пресета: ' + e);
+  }
+}
+
+function renderPresetsUI(presets, activeId) {
+  const container = document.getElementById('presets-cards-grid');
+  if (!container) return;
+
+  container.innerHTML = presets.map(p => {
+    const isActive = (p.id === activeId);
+    const badgeClass = isActive ? 'bg-emerald/15 text-emerald font-semibold border-emerald/30' : 'bg-surface text-muted border-hairline';
+    const borderClass = isActive ? 'border-cobalt shadow-sm ring-1 ring-cobalt/20' : 'border-hairline hover:border-hairline/80';
+
+    return `
+      <div class="p-5 bg-panel border ${borderClass} rounded flex flex-col justify-between space-y-4">
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-[14px] font-semibold text-ink">${escapeHtml(p.name)}</span>
+              ${p.is_builtin ? '<span class="px-1.5 py-0.5 rounded bg-surface border border-hairline text-[10px] font-mono text-muted">Встроенный</span>' : ''}
+            </div>
+            <span class="px-2 py-0.5 rounded border text-[11px] font-mono ${badgeClass}">
+              ${isActive ? 'АКТИВЕН' : 'НЕАКТИВЕН'}
+            </span>
+          </div>
+          <p class="text-[12px] text-muted leading-relaxed">${escapeHtml(p.description || '')}</p>
+          
+          <div class="pt-2 border-t border-hairline/60 space-y-1 text-[11px] font-mono text-muted">
+            <div>Архитектор: <span class="text-ink">${escapeHtml(p.planner_model || '—')}</span></div>
+            <div>Исполнитель: <span class="text-ink">${escapeHtml(p.coder_model || '—')}</span></div>
+            <div class="flex items-center gap-2 pt-1 text-[10px]">
+              <span class="${p.use_solutions_db ? 'text-emerald' : 'text-muted'}">● RAG решений</span>
+              <span class="${p.use_dag_planner ? 'text-emerald' : 'text-muted'}">● DAG</span>
+              <span class="${p.strict_ast_test_gates ? 'text-emerald' : 'text-muted'}">● AST-гейты</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between gap-2 pt-2 border-t border-hairline">
+          ${isActive ? `
+            <span class="text-[11px] text-emerald font-medium flex items-center gap-1">
+              ✓ Текущий сетап
+            </span>
+          ` : `
+            <button onclick="onGlobalPresetChange('${p.id}')" class="h-7 px-3 rounded bg-cobalt text-white text-[11px] font-medium hover:bg-[#1D4ED8]">
+              Сделать активным
+            </button>
+          `}
+          ${!p.is_builtin ? `
+            <button onclick="deletePreset('${p.id}')" class="h-7 px-2 rounded bg-surface border border-crimson/30 text-crimson text-[11px] hover:bg-crimson/10">
+              Удалить
+            </button>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  if (window.lucide) lucide.createIcons();
+}
+
+function openPresetModal() {
+  const modal = document.getElementById('modal-preset-edit');
+  if (!modal) return;
+  const plannerSelect = document.getElementById('preset-form-planner');
+  const coderSelect = document.getElementById('preset-form-coder');
+  const connectedModels = (state.connectedAccounts || []).flatMap(a => (a.models || []).map(m => m.id));
+  const optionsHtml = connectedModels.map(m => `<option value="${m}">${m}</option>`).join('') || '<option value="gemini-4-neon">gemini-4-neon</option><option value="qwen2.5-coder:14b">qwen2.5-coder:14b</option>';
+  if (plannerSelect) plannerSelect.innerHTML = optionsHtml;
+  if (coderSelect) coderSelect.innerHTML = optionsHtml;
+  modal.classList.remove('hidden');
+}
+
+function closePresetModal() {
+  const modal = document.getElementById('modal-preset-edit');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function submitPresetForm(e) {
+  e.preventDefault();
+  const name = document.getElementById('preset-form-name').value.trim();
+  const desc = document.getElementById('preset-form-desc').value.trim();
+  const planner = document.getElementById('preset-form-planner').value;
+  const coder = document.getElementById('preset-form-coder').value;
+  const rag = document.getElementById('preset-form-rag').checked;
+  const dag = document.getElementById('preset-form-dag').checked;
+  const comp = document.getElementById('preset-form-compression').checked;
+  const gates = document.getElementById('preset-form-gates').checked;
+
+  try {
+    const res = await fetch('/api/presets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        description: desc,
+        planner_model: planner,
+        coder_model: coder,
+        reviewer_models: [planner],
+        use_solutions_db: rag,
+        use_dag_planner: dag,
+        use_prompt_compression: comp,
+        strict_ast_test_gates: gates
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    closePresetModal();
+    fetchPresets();
+  } catch (err) {
+    alert('Ошибка создания пресета: ' + err);
+  }
+}
+
+async function resetPresetsDefaults() {
+  if (!confirm('Сбросить все пресеты к заводским шаблонам (Авто, Базовый, МЫСЛИТЕЛЬ)?')) return;
+  try {
+    const res = await fetch('/api/presets/reset-defaults', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fetchPresets();
+  } catch (e) {
+    alert('Ошибка сброса: ' + e);
+  }
+}
+
+async function deletePreset(id) {
+  if (!confirm('Удалить этот пользовательский сетап?')) return;
+  try {
+    const res = await fetch(`/api/presets/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fetchPresets();
+  } catch (e) {
+    alert('Ошибка удаления: ' + e);
+  }
+}
+
+// ------------------------------------------------------------------------
+// 13. Hardware Advisor & Wizard (v1.3.0)
+// ------------------------------------------------------------------------
+async function openHardwareModal() {
+  const modal = document.getElementById('modal-hardware-advisor');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  loadHardwareRecommendations();
+}
+
+function closeHardwareModal() {
+  const modal = document.getElementById('modal-hardware-advisor');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function loadHardwareRecommendations() {
+  try {
+    const res = await fetch('/api/hardware/recommend');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const hw = data.hardware || {};
+    
+    const gpuEl = document.getElementById('hw-gpu-name');
+    if (gpuEl) gpuEl.textContent = hw.gpu_name || 'Интегрированная';
+    const vramEl = document.getElementById('hw-vram-gb');
+    if (vramEl) vramEl.textContent = (hw.vram_gb ? `${hw.vram_gb} ГБ` : '0 ГБ (CPU)');
+    const ramEl = document.getElementById('hw-ram-gb');
+    if (ramEl) ramEl.textContent = `${hw.ram_gb || 0} ГБ`;
+    const cpuEl = document.getElementById('hw-cpu-info');
+    if (cpuEl) cpuEl.textContent = `${hw.cpu_name || 'CPU'} (${hw.cpu_cores || 0} ядер)`;
+
+    const tierBadge = document.getElementById('hw-tier-badge');
+    if (tierBadge) tierBadge.textContent = data.recommended_tier || 'Стандарт';
+
+    const footerStatus = document.getElementById('footer-ollama-status');
+    if (footerStatus && hw.gpu_name) {
+      footerStatus.textContent = `${hw.gpu_name} (${hw.vram_gb} GB)`;
+    }
+
+    renderCuratedModels(data.recommendations || [], data.embedding_recommendation);
+  } catch (e) {
+    console.debug('Error loading hardware recommendations:', e);
+  }
+}
+
+function renderCuratedModels(models, embeddingModel) {
+  const container = document.getElementById('hw-models-catalog');
+  if (!container) return;
+
+  const allModels = [];
+  if (embeddingModel) allModels.push(embeddingModel);
+  allModels.push(...models);
+
+  container.innerHTML = allModels.map(m => {
+    let actionBtn = '';
+    let statusBadge = '';
+
+    if (m.status === 'active') {
+      statusBadge = '<span class="px-2 py-0.5 rounded bg-emerald/15 text-emerald font-semibold text-[10px]">АКТИВНА</span>';
+      actionBtn = '<span class="text-[11px] text-emerald font-medium">✓ Используется</span>';
+    } else if (m.status === 'installed') {
+      statusBadge = '<span class="px-2 py-0.5 rounded bg-cobalt/15 text-cobalt font-semibold text-[10px]">УСТАНОВЛЕНА</span>';
+      actionBtn = `<button onclick="activateOllamaModel('${m.name}')" class="h-7 px-3 rounded bg-cobalt text-white text-[11px] font-medium hover:bg-[#1D4ED8]">Активировать</button>`;
+    } else {
+      statusBadge = '<span class="px-2 py-0.5 rounded bg-surface border border-hairline text-muted text-[10px]">НЕ УСТАНОВЛЕНА</span>';
+      actionBtn = `<button onclick="startOllamaPull('${m.name}')" class="h-7 px-3 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:bg-surface/70 flex items-center gap-1">Скачать (${m.size_str || 'Ollama'})</button>`;
+    }
+
+    return `
+      <div class="p-3 bg-panel border border-hairline rounded flex items-center justify-between gap-3">
+        <div class="space-y-0.5 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-medium text-[12px] text-ink">${escapeHtml(m.display_name || m.name)}</span>
+            <span class="font-mono text-[11px] text-muted">${escapeHtml(m.name)}</span>
+            ${statusBadge}
+          </div>
+          <p class="text-[11px] text-muted leading-tight">${escapeHtml(m.description || '')}</p>
+        </div>
+        <div class="shrink-0">
+          ${actionBtn}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function startOllamaPull(modelName) {
+  const wrap = document.getElementById('hw-pull-progress-wrap');
+  const label = document.getElementById('hw-pull-status-label');
+  const percentLabel = document.getElementById('hw-pull-percent-label');
+  const bar = document.getElementById('hw-pull-progress-bar');
+
+  if (wrap) wrap.classList.remove('hidden');
+  if (label) label.textContent = `Подготовка к загрузке ${modelName}...`;
+
+  try {
+    const response = await fetch('/api/ollama/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelName })
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') {
+          if (label) label.textContent = `Модель ${modelName} успешно загружена!`;
+          if (bar) bar.style.width = '100%';
+          setTimeout(() => {
+            if (wrap) wrap.classList.add('hidden');
+            loadHardwareRecommendations();
+          }, 1500);
+          return;
+        }
+        try {
+          const payload = JSON.parse(raw);
+          if (payload.status) {
+            if (label) label.textContent = payload.status;
+          }
+          if (payload.percent !== undefined) {
+            if (percentLabel) percentLabel.textContent = `${payload.percent}%`;
+            if (bar) bar.style.width = `${payload.percent}%`;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (e) {
+    if (label) label.textContent = `Ошибка загрузки: ${e}`;
+  }
+}
+
+async function activateOllamaModel(modelName) {
+  try {
+    const res = await fetch('/api/ollama/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelName })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    loadHardwareRecommendations();
+    fetchAccountsAndModels();
+  } catch (e) {
+    alert('Ошибка активации модели: ' + e);
+  }
+}
+
+// ------------------------------------------------------------------------
+// 14. Human-in-the-Loop Compression Review (v1.3.0)
+// ------------------------------------------------------------------------
+let activeHitlDraft = null;
+
+async function checkPendingCompressionDrafts() {
+  try {
+    const res = await fetch('/api/compression/pending');
+    if (!res.ok) return;
+    const data = await res.json();
+    const drafts = data.drafts || [];
+    if (drafts.length > 0 && (!activeHitlDraft || activeHitlDraft.id !== drafts[0].id)) {
+      showCompressionApproval(drafts[0]);
+    }
+  } catch (_) {}
+}
+
+function showCompressionApproval(draft) {
+  activeHitlDraft = draft;
+  const modal = document.getElementById('modal-compression-approval');
+  if (!modal) return;
+
+  document.getElementById('hitl-draft-id').value = draft.id;
+  document.getElementById('hitl-orig-tokens').textContent = `${draft.original_tokens || 0} токенов`;
+  document.getElementById('hitl-comp-tokens').textContent = `${draft.compressed_tokens || 0} токенов`;
+  document.getElementById('hitl-savings-badge').textContent = `-${draft.savings_pct || 0}%`;
+  document.getElementById('hitl-prompt-text').value = draft.compressed_prompt || '';
+  document.getElementById('hitl-feedback-input').value = '';
+
+  modal.classList.remove('hidden');
+}
+
+function closeCompressionApproval() {
+  const modal = document.getElementById('modal-compression-approval');
+  if (modal) modal.classList.add('hidden');
+  activeHitlDraft = null;
+}
+
+async function executeHitlApprove() {
+  if (!activeHitlDraft) return;
+  const id = activeHitlDraft.id;
+  const edited = document.getElementById('hitl-prompt-text').value;
+
+  try {
+    const res = await fetch(`/api/compression/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edited_prompt: edited })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    closeCompressionApproval();
+  } catch (e) {
+    alert('Ошибка одобрения: ' + e);
+  }
+}
+
+async function executeHitlRework() {
+  if (!activeHitlDraft) return;
+  const id = activeHitlDraft.id;
+  const feedback = document.getElementById('hitl-feedback-input').value.trim();
+  if (!feedback) {
+    alert('Укажите пожелание (например: "мягче" или "жестче")');
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/compression/${id}/rework`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedback })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.draft) {
+      showCompressionApproval(data.draft);
+    }
+  } catch (e) {
+    alert('Ошибка доработки: ' + e);
+  }
+}
+
+async function executeHitlCancel() {
+  if (!activeHitlDraft) return;
+  const id = activeHitlDraft.id;
+  try {
+    await fetch(`/api/compression/${id}/cancel`, { method: 'POST' });
+    closeCompressionApproval();
+  } catch (e) {
+    closeCompressionApproval();
+  }
+}
+
+// ------------------------------------------------------------------------
 // 10. Bootstrap on Load
 // ------------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
@@ -1867,9 +2462,13 @@ window.addEventListener('DOMContentLoaded', () => {
   runDlpBench();
   fetchRealHistoryIntoTraces();
   loadOrchestrationConfig();
+  fetchPresets();
 
   // Periodic polling every 4s
-  setInterval(fetchSystemStatus, 4000);
+  setInterval(() => {
+    fetchSystemStatus();
+    checkPendingCompressionDrafts();
+  }, 4000);
 
   // Auto-check for updates after 2 seconds
   setTimeout(() => {

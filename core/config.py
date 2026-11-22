@@ -83,6 +83,8 @@ class CascadeConfig(BaseModel):
     max_rework_iterations: int = 2
     enable_local_gate: bool = True
     enable_architect_audit: bool = True
+    require_compression_approval: bool = True
+    active_preset: str = "auto"
     architect_model: str = "gemini-4-neon"
     coder_model: str = "qwen2.5-coder:14b"
     auditor_model: str = "gemini-4-neon"

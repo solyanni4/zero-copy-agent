@@ -111,6 +111,15 @@ class ContextCompressor:
         return res, applied
 
     @classmethod
+    def estimate_tokens(cls, text: str) -> int:
+        """Estimates token count taking into account Cyrillic BPE expansion."""
+        if not text:
+            return 0
+        cyr_ratio = cls.detect_cyrillic_ratio(text)
+        char_per_token = 2.2 if cyr_ratio > 0.4 else 4.0
+        return max(1, int(len(text) / char_per_token))
+
+    @classmethod
     def compress_text(cls, text: str) -> Tuple[str, int, int]:
         """
         Runs complete L1 + L2 compression pipeline.

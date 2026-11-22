@@ -1,0 +1,50 @@
+version: 1.3.0
+active_preset: auto
+presets:
+- id: auto
+  name: Авто
+  description: 'Умный балансировщик: оценивает сложность задачи и распределяет нагрузку
+    между локальным GPU и пулом облачных квот.'
+  is_builtin: true
+  planner_model: gemini-4-neon
+  coder_model: qwen2.5-coder:14b
+  reviewer_models:
+  - gemini-4-neon
+  use_solutions_db: true
+  use_dag_planner: false
+  use_prompt_compression: true
+  cross_review_depth: 1
+  strict_ast_test_gates: true
+  parallel_review: false
+- id: basic
+  name: Базовый
+  description: 'Быстрый универсальный режим для ответов на вопросы и точечных правок
+    кода: короткая цепочка без глубокой декомпозиции и ревью.'
+  is_builtin: true
+  planner_model: gemini-4-neon
+  coder_model: qwen2.5-coder:14b
+  reviewer_models:
+  - gemini-4-neon
+  use_solutions_db: false
+  use_dag_planner: false
+  use_prompt_compression: true
+  cross_review_depth: 0
+  strict_ast_test_gates: false
+  parallel_review: false
+- id: thinker
+  name: МЫСЛИТЕЛЬ
+  description: 'Режим максимальной мощности: подключает Базу решений Архитектора,
+    полную DAG-декомпозицию, кросс-ревью всеми облачными моделями и строгие AST-гейты.'
+  is_builtin: true
+  planner_model: deepseek-reasoner
+  coder_model: qwen2.5-coder:14b
+  reviewer_models:
+  - gemini-4-neon
+  - claude-3-7-sonnet
+  - grok-3
+  use_solutions_db: true
+  use_dag_planner: true
+  use_prompt_compression: true
+  cross_review_depth: 2
+  strict_ast_test_gates: true
+  parallel_review: true

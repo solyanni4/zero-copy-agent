@@ -14,5 +14,7 @@ dist/
 *.spec
 *.bak
 *.db
+data/*.db
 *.exe
 .zca/
+subscriptions.yaml

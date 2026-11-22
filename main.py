@@ -81,6 +81,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger("zca.main").debug(f"[IDE Auto-Sync] Warning: {e}")
 
+    # Load and apply active orchestration preset
+    try:
+        from core.orchestration_presets import presets_manager
+        active_preset = presets_manager.get_active_preset()
+        if active_preset:
+            orchestrator.apply_preset(active_preset)
+            print(f"  [Presets] Активный сетап оркестрации: {active_preset.name} ({active_preset.id})")
+    except Exception as e:
+        logging.getLogger("zca.main").debug(f"[Presets] Init warning: {e}")
+
     client_host = "127.0.0.1" if config.server.host in ("0.0.0.0", "::", "") else config.server.host
     
     print(f"\n=======================================================")
@@ -1131,6 +1141,216 @@ async def api_get_onboarding_status():
         "all_completed": completed_count == len(steps),
         "steps": steps
     }
+
+
+# ==========================================
+# Release v1.3.0: Solutions Database API
+# ==========================================
+from core.solutions_db import solutions_db
+
+@app.get("/api/solutions")
+async def api_list_solutions(q: str = "", tag: str = "", limit: int = 50):
+    if q and q.strip():
+        items = solutions_db.search_solutions(q.strip(), top_k=limit)
+    else:
+        tag_filter = tag.strip() if tag and tag.strip() else None
+        items = solutions_db.list_solutions(tag=tag_filter, limit=limit)
+    return {"status": "ok", "count": len(items), "items": items}
+
+@app.get("/api/solutions/{solution_id}")
+async def api_get_solution(solution_id: str):
+    sol = solutions_db.get_solution(solution_id)
+    if not sol:
+        raise HTTPException(status_code=404, detail="Решение не найдено")
+    return {"status": "ok", "solution": sol}
+
+@app.post("/api/solutions")
+async def api_create_solution(payload: Dict[str, Any] = Body(...)):
+    title = payload.get("title", "").strip()
+    solution_code = payload.get("solution_code", payload.get("code", "")).strip()
+    if not title or not solution_code:
+        raise HTTPException(status_code=400, detail="Title and code are required")
+    
+    desc = payload.get("problem_description", payload.get("description", "")).strip()
+    tags = payload.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    language = payload.get("language", "python")
+    
+    sol_id = solutions_db.add_solution(
+        title=title,
+        problem_description=desc,
+        solution_code=solution_code,
+        tags=tags,
+        language=language
+    )
+    created = solutions_db.get_solution(sol_id)
+    return {"status": "ok", "id": sol_id, "solution": created}
+
+@app.put("/api/solutions/{solution_id}")
+async def api_update_solution(solution_id: str, payload: Dict[str, Any] = Body(...)):
+    tags = payload.get("tags")
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+        
+    ok = solutions_db.update_solution(
+        solution_id=solution_id,
+        title=payload.get("title"),
+        problem_description=payload.get("problem_description", payload.get("description")),
+        solution_code=payload.get("solution_code", payload.get("code")),
+        tags=tags,
+        language=payload.get("language")
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Решение не найдено")
+    updated = solutions_db.get_solution(solution_id)
+    return {"status": "ok", "solution": updated}
+
+@app.delete("/api/solutions/{solution_id}")
+async def api_delete_solution(solution_id: str):
+    ok = solutions_db.delete_solution(solution_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Решение не найдено")
+    return {"status": "ok", "deleted_id": solution_id}
+
+
+# ==========================================
+# Release v1.3.0: HITL Compression Approval API
+# ==========================================
+from core.prompt_compressor import compressor_manager
+
+@app.get("/api/compression/pending")
+async def api_get_pending_compression_drafts():
+    drafts = compressor_manager.get_pending_drafts()
+    return {"status": "ok", "count": len(drafts), "drafts": drafts}
+
+@app.get("/api/compression/drafts/{draft_id}")
+async def api_get_compression_draft(draft_id: str):
+    draft = compressor_manager.get_draft(draft_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Черновик сжатия не найден")
+    return {"status": "ok", "draft": draft.to_dict()}
+
+@app.post("/api/compression/{draft_id}/approve")
+async def api_approve_compression(draft_id: str, payload: Dict[str, Any] = Body(default={})):
+    edited_prompt = payload.get("edited_prompt") or payload.get("modified_prompt")
+    ok = compressor_manager.approve(draft_id, edited_prompt=edited_prompt)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Черновик не найден или уже закрыт")
+    return {"status": "ok", "draft_id": draft_id, "action": "approved"}
+
+@app.post("/api/compression/{draft_id}/rework")
+async def api_rework_compression(draft_id: str, payload: Dict[str, Any] = Body(...)):
+    feedback = payload.get("feedback", "").strip()
+    if not feedback:
+        raise HTTPException(status_code=400, detail="Требуется комментарий (например, 'мягче' или 'жестче')")
+    draft = compressor_manager.rework(draft_id, user_feedback=feedback)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Черновик не найден или уже закрыт")
+    return {"status": "ok", "draft": draft.to_dict(), "action": "reworked"}
+
+@app.post("/api/compression/{draft_id}/cancel")
+async def api_cancel_compression(draft_id: str):
+    ok = compressor_manager.cancel(draft_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Черновик не найден или уже закрыт")
+    return {"status": "ok", "draft_id": draft_id, "action": "cancelled"}
+
+
+# ==========================================
+# Release v1.3.0: Presets Engine API
+# ==========================================
+from core.orchestration_presets import presets_manager, OrchestrationPreset
+
+@app.get("/api/presets")
+async def api_list_presets():
+    presets = presets_manager.list_presets()
+    active = presets_manager.get_active_preset()
+    return {
+        "status": "ok",
+        "active_preset_id": active.id,
+        "active_preset": active.model_dump() if hasattr(active, "model_dump") else active.dict(),
+        "presets": presets
+    }
+
+@app.get("/api/presets/active")
+async def api_get_active_preset():
+    active = presets_manager.get_active_preset()
+    return {"status": "ok", "active_preset": active.model_dump() if hasattr(active, "model_dump") else active.dict()}
+
+@app.post("/api/presets/active/{preset_id}")
+async def api_set_active_preset(preset_id: str):
+    ok = presets_manager.set_active_preset(preset_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Пресет не найден")
+    active = presets_manager.get_active_preset()
+    orchestrator.apply_preset(active)
+    return {"status": "ok", "active_preset": active.model_dump() if hasattr(active, "model_dump") else active.dict()}
+
+@app.post("/api/presets")
+async def api_create_preset(payload: Dict[str, Any] = Body(...)):
+    preset, created = presets_manager.create_or_update_preset(payload)
+    return {"status": "ok", "created": created, "preset": preset.model_dump() if hasattr(preset, "model_dump") else preset.dict()}
+
+@app.put("/api/presets/{preset_id}")
+async def api_update_preset(preset_id: str, payload: Dict[str, Any] = Body(...)):
+    payload["id"] = preset_id
+    preset, created = presets_manager.create_or_update_preset(payload)
+    if presets_manager.get_active_preset().id == preset_id:
+        orchestrator.apply_preset(preset)
+    return {"status": "ok", "preset": preset.model_dump() if hasattr(preset, "model_dump") else preset.dict()}
+
+@app.delete("/api/presets/{preset_id}")
+async def api_delete_preset(preset_id: str):
+    ok = presets_manager.delete_preset(preset_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Невозможно удалить встроенный пресет или пресет не существует")
+    return {"status": "ok", "deleted_id": preset_id}
+
+@app.post("/api/presets/reset-defaults")
+async def api_reset_preset_defaults():
+    presets_manager.reset_defaults()
+    active = presets_manager.get_active_preset()
+    orchestrator.apply_preset(active)
+    return {"status": "ok", "presets": presets_manager.list_presets(), "active_preset": active.model_dump() if hasattr(active, "model_dump") else active.dict()}
+
+
+# ==========================================
+# Release v1.3.0: Hardware Advisor & Wizard API
+# ==========================================
+from core.hardware_advisor import hardware_advisor
+
+@app.get("/api/hardware/recommend")
+async def api_hardware_recommend():
+    return hardware_advisor.get_model_recommendations()
+
+@app.post("/api/ollama/pull")
+async def api_ollama_pull(payload: Dict[str, Any] = Body(...)):
+    model_name = payload.get("model", "").strip()
+    if not model_name:
+        raise HTTPException(status_code=400, detail="Не указано имя модели")
+    
+    async def event_generator():
+        async for chunk in hardware_advisor.stream_pull_model(model_name):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+@app.post("/api/ollama/activate")
+async def api_ollama_activate(payload: Dict[str, Any] = Body(...)):
+    model_name = payload.get("model", "").strip()
+    role = payload.get("role", "coder")
+    if not model_name:
+        raise HTTPException(status_code=400, detail="Не указано имя модели")
+    res = hardware_advisor.activate_model(model_name, role=role)
+    sync_mesh_from_subscriptions()
+    return res
+
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):

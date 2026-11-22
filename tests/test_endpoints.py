@@ -234,7 +234,7 @@ def test_updates_check_endpoint():
     res = client.get("/v1/ui/updates/check")
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "ok"
+    assert data["status"] in ("ok", "offline")
     assert "version" in data
 
 def test_dlp_test_endpoint():

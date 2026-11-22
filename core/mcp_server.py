@@ -40,6 +40,10 @@ TOOLS_MANIFEST = [
                 "task": {
                     "type": "string",
                     "description": "Описание архитектурной задачи, сервиса, функции или рефакторинга."
+                },
+                "preset": {
+                    "type": "string",
+                    "description": "Оркестрационный пресет: 'auto', 'basic', 'thinker' или пользовательский ID."
                 }
             },
             "required": ["task"]
@@ -118,6 +122,10 @@ TOOLS_MANIFEST = [
                     "type": "boolean",
                     "description": "Возобновить выполнение с первого незавершенного шага из сохраненного чекпоинта .zca/task_plan.json (по умолчанию true).",
                     "default": True
+                },
+                "preset": {
+                    "type": "string",
+                    "description": "Оркестрационный пресет: 'auto', 'basic', 'thinker' или пользовательский ID."
                 }
             },
             "required": ["goal"]
@@ -133,8 +141,17 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
 
     if name == "cascade_architect":
         task = arguments.get("task", "")
+        preset = arguments.get("preset")
         if not task:
             return "Ошибка: параметр 'task' обязателен."
+        if preset and _orchestrator:
+            try:
+                from core.orchestration_presets import presets_manager
+                p_obj = presets_manager.get_preset(preset)
+                if p_obj:
+                    _orchestrator.apply_preset(p_obj)
+            except Exception as e:
+                logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
         try:
             return await asyncio.wait_for(
                 _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
@@ -155,9 +172,20 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
         prompt = arguments.get("prompt", "")
         if not prompt:
             return "Ошибка: параметр 'prompt' обязателен."
+        rag_prompt = prompt
+        try:
+            from core.solutions_db import solutions_db
+            rels = solutions_db.search_solutions(prompt, top_k=3)
+            if rels:
+                ctx = solutions_db.format_context_prompt(rels)
+                rag_prompt = f"{ctx}\n\nЗапрос:\n{prompt}"
+                for r in rels:
+                    solutions_db.increment_usage(r["id"])
+        except Exception as e:
+            logger.debug(f"[MCP] Solutions RAG lookup warning: {e}")
         try:
             return await asyncio.wait_for(
-                _orchestrator.query(prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
+                _orchestrator.query(rag_prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
                 timeout=180.0
             )
         except asyncio.TimeoutError:
@@ -200,8 +228,17 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
         goal = arguments.get("goal", "")
         workspace_dir = arguments.get("workspace_dir")
         resume = arguments.get("resume", True)
+        preset = arguments.get("preset")
         if not goal:
             return "Ошибка: параметр 'goal' обязателен."
+        if preset and _orchestrator:
+            try:
+                from core.orchestration_presets import presets_manager
+                p_obj = presets_manager.get_preset(preset)
+                if p_obj:
+                    _orchestrator.apply_preset(p_obj)
+            except Exception as e:
+                logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
         try:
             return await asyncio.wait_for(
                 _orchestrator.plan_and_execute_task(goal, workspace_dir=workspace_dir, resume=resume),

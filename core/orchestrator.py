@@ -57,7 +57,32 @@ class HybridOrchestrator:
         cascade_cfg = getattr(config, "cascade", None)
         self.architect_model: str = getattr(cascade_cfg, "architect_model", "gemini-advanced") or "gemini-advanced"
         self.executor_model: str = getattr(cascade_cfg, "executor_model", None) or getattr(cascade_cfg, "coder_model", "tier:local-fast") or "tier:local-fast"
-        self.reviewer_model: str = getattr(cascade_cfg, "reviewer_model", None) or getattr(cascade_cfg, "auditor_model", "gemini-advanced") or "gemini-advanced"
+        self.reviewer_model: str = getattr(cascade_cfg, "reviewer_model", None) or getattr(cascade_cfg, "auditor_model", "gemini-4-neon") or "gemini-4-neon"
+
+    def apply_preset(self, preset):
+        """Applies parameters from an OrchestrationPreset."""
+        if not preset:
+            return
+        if hasattr(preset, "planner_model") and preset.planner_model:
+            self.architect_model = preset.planner_model
+        if hasattr(preset, "coder_model") and preset.coder_model:
+            self.executor_model = preset.coder_model
+        if hasattr(preset, "reviewer_models") and preset.reviewer_models:
+            self.reviewer_model = preset.reviewer_models[0]
+        if hasattr(preset, "strict_ast_test_gates"):
+            self.enable_local_gate = preset.strict_ast_test_gates
+        if hasattr(preset, "cross_review_depth"):
+            self.enable_architect_audit = (preset.cross_review_depth > 0)
+        if hasattr(preset, "use_prompt_compression"):
+            self.compression_enabled = preset.use_prompt_compression
+
+        pid = getattr(preset, "id", "auto")
+        if pid == "thinker":
+            self.mode = "cascade"
+        elif pid == "basic":
+            self.mode = "manual"
+        else:
+            self.mode = "auto"
 
     def resolve_model_id(self, requested_id: str) -> str:
         """Resolves dynamic aliases like 'tier:local-fast' to target model IDs."""
@@ -340,6 +365,19 @@ class HybridOrchestrator:
             compressed_prompt, orig_p_tokens, p_tokens = compressor.compress_text(sanitized_prompt)
             if req_id and orig_p_tokens > p_tokens:
                 analytics.record_event(req_id, "bpe_compressed", model_id, f"Compressed tokens: {orig_p_tokens} -> {p_tokens} (saved {orig_p_tokens - p_tokens})")
+
+            # Human-in-the-Loop Compression Approval
+            require_approval = getattr(getattr(self, "config", None) or config.cascade, "require_compression_approval", False)
+            if require_approval and orig_p_tokens > p_tokens and orig_p_tokens >= 30:
+                try:
+                    from core.prompt_compressor import compressor_manager
+                    draft = compressor_manager.create_draft(sanitized_prompt, compressed_prompt)
+                    logger.info(f"[Orchestrator] Waiting for human approval on draft '{draft.draft_id}'...")
+                    approved_text, status = await compressor_manager.wait_for_decision(draft.draft_id, timeout=120.0)
+                    compressed_prompt = approved_text
+                    p_tokens = len(approved_text) // 4
+                except Exception as e:
+                    logger.debug(f"[Orchestrator] Human approval bypass/error: {e}")
         else:
             compressed_prompt = sanitized_prompt
             orig_p_tokens = len(prompt) // 4
@@ -458,6 +496,19 @@ class HybridOrchestrator:
             compressed_prompt, orig_p_tokens, p_tokens = compressor.compress_text(sanitized_prompt)
             if req_id and orig_p_tokens > p_tokens:
                 analytics.record_event(req_id, "bpe_compressed", model_id, f"Compressed tokens: {orig_p_tokens} -> {p_tokens} (saved {orig_p_tokens - p_tokens})")
+
+            # Human-in-the-Loop Compression Approval
+            require_approval = getattr(getattr(self, "config", None) or config.cascade, "require_compression_approval", False)
+            if require_approval and orig_p_tokens > p_tokens and orig_p_tokens >= 30:
+                try:
+                    from core.prompt_compressor import compressor_manager
+                    draft = compressor_manager.create_draft(sanitized_prompt, compressed_prompt)
+                    logger.info(f"[Orchestrator] Waiting for human approval on draft '{draft.draft_id}'...")
+                    approved_text, status = await compressor_manager.wait_for_decision(draft.draft_id, timeout=120.0)
+                    compressed_prompt = approved_text
+                    p_tokens = len(approved_text) // 4
+                except Exception as e:
+                    logger.debug(f"[Orchestrator] Human approval bypass/error: {e}")
         else:
             compressed_prompt = sanitized_prompt
             orig_p_tokens = len(prompt) // 4
@@ -751,10 +802,29 @@ class HybridOrchestrator:
             logger.info(f"[Cascade] Step 1: Architectural Blueprint...")
             if req_id:
                 analytics.record_event(req_id, "cascade_step1", arch_model, "Generating Architectural Blueprint")
-            plan_prompt = (
-                f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
-                f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
-            )
+
+            # RAG retrieval from SolutionsDB
+            solutions_ctx = ""
+            try:
+                from core.solutions_db import solutions_db
+                rels = solutions_db.search_solutions(user_prompt, top_k=3)
+                if rels:
+                    solutions_ctx = solutions_db.format_context_prompt(rels)
+                    for r in rels:
+                        solutions_db.increment_usage(r["id"])
+            except Exception as e:
+                logger.debug(f"[Cascade] Solutions RAG lookup warning: {e}")
+
+            if solutions_ctx:
+                plan_prompt = (
+                    f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
+                    f"и архитектурный чертёж для задачи:\n\n{solutions_ctx}\n\nЗадача пользователя:\n{user_prompt}"
+                )
+            else:
+                plan_prompt = (
+                    f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
+                    f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
+                )
             plan, used_arch = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
 
         # Breakpoint verification
@@ -878,6 +948,23 @@ class HybridOrchestrator:
                     if req_id:
                         analytics.record_event(req_id, "cascade_pass", "cascade:architect", f"Cascade successfully completed in {iteration_num} iteration(s)")
                     final_status = "PASS"
+
+                    # Auto-extract and save solution pattern to SolutionsDB
+                    try:
+                        from core.solutions_db import solutions_db
+                        title_clean = user_prompt.strip().split("\n")[0][:80]
+                        prob_summary = user_prompt.strip()[:300]
+                        sol_summary = plan.strip()[:400]
+                        solutions_db.add_solution(
+                            title=title_clean,
+                            problem_pattern=prob_summary,
+                            solution_summary=sol_summary,
+                            code_snippet=current_code[:1000] if current_code else "",
+                            source_model=used_reviewer or "architect",
+                            tags=["cascade_verified", "architect_audit"]
+                        )
+                    except Exception as e:
+                        logger.debug(f"[Cascade] Auto-save solution to DB warning: {e}")
                     break
                 else:
                     logger.warning(f"[Cascade] Architect Audit REJECTED on iteration {iteration_num}: {len(audit_issues)} issues")
@@ -927,10 +1014,28 @@ class HybridOrchestrator:
             analytics.record_event(req_id, "cascade_step1", arch_model, "Streaming Architectural Blueprint")
         if inject_signature:
             yield "**[ZCAO Cascade: Архитектор (Шаг 1: Проектирование)]**\n\n"
-        plan_prompt = (
-            f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
-            f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
-        )
+
+        solutions_ctx = ""
+        try:
+            from core.solutions_db import solutions_db
+            rels = solutions_db.search_solutions(user_prompt, top_k=3)
+            if rels:
+                solutions_ctx = solutions_db.format_context_prompt(rels)
+                for r in rels:
+                    solutions_db.increment_usage(r["id"])
+        except Exception as e:
+            logger.debug(f"[Cascade] Solutions RAG lookup warning: {e}")
+
+        if solutions_ctx:
+            plan_prompt = (
+                f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
+                f"и архитектурный чертёж для задачи:\n\n{solutions_ctx}\n\nЗадача пользователя:\n{user_prompt}"
+            )
+        else:
+            plan_prompt = (
+                f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
+                f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
+            )
         plan_tokens = []
         try:
             async for token in self._query_model_stream(arch_model, plan_prompt):

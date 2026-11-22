@@ -214,9 +214,22 @@ class TaskPlanner:
         project_tree = build_compact_project_tree(workspace_dir)
         tree_str = "\n".join(project_tree[:80])
 
+        # RAG enrichment from SolutionsDB
+        solutions_ctx = ""
+        try:
+            from core.solutions_db import solutions_db
+            rels = solutions_db.search_solutions(goal, top_k=3)
+            if rels:
+                solutions_ctx = solutions_db.format_context_prompt(rels)
+                for r in rels:
+                    solutions_db.increment_usage(r["id"])
+        except Exception as e:
+            logger.debug(f"[TaskPlanner] Solutions RAG lookup warning: {e}")
+
         prompt = (
             f"You are a Senior Software Architect and DAG Task Planner.\n"
             f"GOAL: {goal}\n\n"
+            f"{solutions_ctx}\n\n" if solutions_ctx else ""
             f"PROJECT TREE:\n{tree_str}\n\n"
             f"Task: Decompose this goal into 3 to 7 atomic, sequential, test-driven steps.\n"
             f"Requirements:\n"
@@ -581,6 +594,21 @@ class TaskIntegrator:
         plan.final_audit = audit_report
         plan.status = "completed" if (plan.is_all_completed() and test_ok) else "in_progress"
         PlanStorage.save_plan(plan, workspace_dir)
+
+        # Auto-save completed pattern to SolutionsDB
+        if plan.status == "completed":
+            try:
+                from core.solutions_db import solutions_db
+                solutions_db.add_solution(
+                    title=plan.goal[:80],
+                    problem_pattern=plan.goal[:300],
+                    solution_summary=f"DAG план из {len(plan.steps)} шагов успешно выполнен. {audit_report[:300]}",
+                    code_snippet="",
+                    tags=["dag_planner", "completed_task"],
+                    source_model=reviewer_model or "architect"
+                )
+            except Exception as e:
+                logger.debug(f"[TaskIntegrator] Failed to save solution pattern: {e}")
 
         return {
             "task_id": plan.task_id,

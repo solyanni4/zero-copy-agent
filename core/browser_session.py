@@ -195,6 +195,9 @@ class BrowserSessionEngine:
             proxy_server = detect_proxy()
             proxy_cfg = {"server": proxy_server} if proxy_server else None
 
+            from core.auth import kill_zombie_browser_processes
+            kill_zombie_browser_processes(profile_path)
+
             launch_args = [
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
@@ -202,7 +205,7 @@ class BrowserSessionEngine:
                 "--disable-infobars"
             ]
             is_frozen = getattr(sys, "frozen", False)
-            channels = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+            channels = ["chrome", "msedge"] if (is_frozen or sys.platform == "win32") else ["chrome", "msedge", None]
 
             context = None
             last_err = None
@@ -226,7 +229,11 @@ class BrowserSessionEngine:
                     continue
 
             if not context:
-                logger.error(f"[ENGINE] Failed to launch context for '{acc_id}': {last_err}")
+                err_str = str(last_err or "")
+                if any(k in err_str.lower() for k in ["target page, context or browser has been closed", "exitcode=21", "singletonlock", "user data directory is already in use"]):
+                    logger.error(f"[ENGINE] Profile for '{acc_id}' ({profile_path}) is locked by another process.")
+                else:
+                    logger.error(f"[ENGINE] Failed to launch context for '{acc_id}': {last_err}")
                 return False
 
             try:

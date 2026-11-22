@@ -95,7 +95,8 @@ def authenticate(provider: str, account_id: str = None):
     with sync_playwright() as p:
         context = None
         is_frozen = getattr(sys, "frozen", False)
-        channels = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+        channels = ["chrome", "msedge"] if (is_frozen or sys.platform == "win32") else ["chrome", "msedge", None]
+        last_err = None
         for channel in channels:
             try:
                 kwargs = {
@@ -113,10 +114,12 @@ def authenticate(provider: str, account_id: str = None):
                 context = p.chromium.launch_persistent_context(**kwargs)
                 break
             except Exception as e:
-                if channel:
-                    continue
-                print(f"[ERROR] Failed to start browser: {e}")
-                sys.exit(1)
+                last_err = e
+                continue
+
+        if not context:
+            print(f"[ERROR] Failed to start browser: {last_err}")
+            sys.exit(1)
 
         # Stealth: mask navigator.webdriver
         context.add_init_script("""
@@ -144,9 +147,8 @@ def kill_zombie_browser_processes(profile_path: Path):
     try:
         import subprocess
         prof_norm = str(profile_path).replace("/", "\\").lower()
-        # Escape backslashes for PowerShell string literal
-        prof_escaped = prof_norm.replace("\\", "\\\\")
-        cmd = f'Get-CimInstance Win32_Process -Filter "name = \'chrome.exe\' or name = \'msedge.exe\'" | Where-Object {{ $_.CommandLine -and $_.CommandLine.ToLower().Contains(\'{prof_escaped}\') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}'
+        prof_single = prof_norm.replace("'", "''")
+        cmd = f'Get-CimInstance Win32_Process | Where-Object {{ ($_.Name -eq \'chrome.exe\' -or $_.Name -eq \'msedge.exe\') -and $_.CommandLine -and $_.CommandLine.ToLower().Contains(\'{prof_single}\') }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}'
         subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, timeout=5)
     except Exception as e:
         logging.debug(f"[Auth Assistant] Zombie cleanup warning: {e}")
@@ -200,8 +202,9 @@ def authenticate_desktop(provider: str, account_id: str = None):
         with sync_playwright() as p:
             context = None
             last_err = None
+            channel_errors = {}
             is_frozen = getattr(sys, "frozen", False)
-            channels_to_try = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+            channels_to_try = ["chrome", "msedge"] if (is_frozen or sys.platform == "win32") else ["chrome", "msedge", None]
 
             for channel in channels_to_try:
                 try:
@@ -225,12 +228,13 @@ def authenticate_desktop(provider: str, account_id: str = None):
                     break
                 except Exception as e:
                     last_err = e
+                    channel_errors[channel] = e
                     logging.warning(f"[Auth Assistant] Канал '{channel}' не подошел: {e}")
                     continue
 
             if not context:
-                err_detail = str(last_err or "Не удалось запустить контекст браузера")
-                is_locked = any(kw in err_detail.lower() for kw in [
+                all_err_str = " ".join(str(e) for e in channel_errors.values())
+                is_locked = any(kw in all_err_str.lower() for kw in [
                     "user data directory is already in use",
                     "singletonlock",
                     "ebusy",
@@ -243,6 +247,7 @@ def authenticate_desktop(provider: str, account_id: str = None):
                         f"Закройте открытые окна браузера или фоновые процессы zero-copy-agent и повторите попытку."
                     )
                 else:
+                    err_detail = str(last_err or "Не удалось запустить контекст браузера")
                     msg = (
                         f"Не удалось запустить браузер для {prov.upper()}.\n\n"
                         f"Убедитесь, что в системе установлен Google Chrome или Microsoft Edge.\n\n"
