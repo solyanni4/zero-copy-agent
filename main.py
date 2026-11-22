@@ -974,10 +974,12 @@ async def api_ping_account(account_id: str):
 
     if acc.provider == "ollama" or acc.auth_type in ("local", "local_ollama"):
         try:
-            base_url = os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434"
-            if not base_url.startswith("http"):
-                base_url = f"http://{base_url}"
-            async with httpx.AsyncClient(timeout=2.5) as client:
+            raw_url = getattr(acc, "base_url", None) or os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434"
+            if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+                raw_url = f"http://{raw_url}"
+            base_url = raw_url.replace("://0.0.0.0", "://127.0.0.1").rstrip("/")
+            is_local = any(h in base_url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+            async with httpx.AsyncClient(timeout=2.5, trust_env=not is_local) as client:
                 r = await client.get(f"{base_url}/api/tags")
                 if r.status_code == 200:
                     is_ok = True

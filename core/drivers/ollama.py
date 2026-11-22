@@ -12,13 +12,18 @@ from core.drivers.base import BaseDriver
 class OllamaDriver(BaseDriver):
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         super().__init__(page=None)
-        self.base_url = base_url.rstrip("/")
+        clean = (base_url or "http://127.0.0.1:11434").rstrip("/")
+        if not clean.startswith("http://") and not clean.startswith("https://"):
+            clean = f"http://{clean}"
+        clean = clean.replace("://0.0.0.0", "://127.0.0.1")
+        self.base_url = clean
         self.default_model = "qwen2.5:0.5b"
+        self.is_local = any(h in self.base_url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
 
     async def is_authenticated(self) -> bool:
         """Returns True if local Ollama daemon is active and responsive."""
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=2.0, trust_env=not self.is_local) as client:
                 r = await client.get(f"{self.base_url}/api/tags")
                 return r.status_code == 200
         except Exception:
@@ -27,7 +32,7 @@ class OllamaDriver(BaseDriver):
     async def list_models(self) -> List[str]:
         """Returns list of models installed locally in Ollama."""
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=3.0, trust_env=not self.is_local) as client:
                 r = await client.get(f"{self.base_url}/api/tags")
                 if r.status_code == 200:
                     data = r.json()
@@ -49,7 +54,7 @@ class OllamaDriver(BaseDriver):
             "prompt": prompt,
             "stream": False
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=not self.is_local) as client:
             r = await client.post(f"{self.base_url}/api/generate", json=payload)
             r.raise_for_status()
             data = r.json()
@@ -66,7 +71,7 @@ class OllamaDriver(BaseDriver):
             "prompt": prompt,
             "stream": True
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=not self.is_local) as client:
             async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():

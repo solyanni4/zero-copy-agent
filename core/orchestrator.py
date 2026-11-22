@@ -170,7 +170,10 @@ class HybridOrchestrator:
                 break
             try:
                 api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False)
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                if "://0.0.0.0" in url:
+                    url = url.replace("://0.0.0.0", "://127.0.0.1")
+                is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
+                async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
                     resp = await client.post(url, headers=headers, json=payload)
 
                     if resp.status_code == 200:
@@ -212,7 +215,10 @@ class HybridOrchestrator:
                 break
             try:
                 api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=True)
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                if "://0.0.0.0" in url:
+                    url = url.replace("://0.0.0.0", "://127.0.0.1")
+                is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
+                async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
                     async with client.stream("POST", url, headers=headers, json=payload) as response:
                         if response.status_code in (429, 500, 502, 503, 504):
                             mesh.record_failure(provider, key, response.status_code)

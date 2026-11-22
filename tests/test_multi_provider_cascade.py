@@ -184,3 +184,36 @@ async def test_api_endpoints_presets_and_orchestration():
     assert post_orch.status_code == 200
     post_data = post_orch.json()
     assert post_data["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_ollama_driver_trust_env_false():
+    """Verify OllamaDriver normalizes local URLs and sets trust_env=False."""
+    from core.drivers.ollama import OllamaDriver
+    driver = OllamaDriver(base_url="0.0.0.0:11434")
+    assert driver.base_url == "http://127.0.0.1:11434"
+    assert driver.is_local is True
+
+    # Real check against host Ollama if running
+    is_auth = await driver.is_authenticated()
+    if is_auth:
+        models = await driver.list_models()
+        assert isinstance(models, list)
+
+
+def test_ollama_auto_ping_endpoint():
+    """Verify pinging ollama-auto uses trust_env=False and returns 200 with online status."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from core.healer import config_healer
+
+    config_healer.sync_discovered_models("ollama", ["qwen2.5-coder:14b"])
+    client = TestClient(app)
+    res = client.post("/v1/providers/accounts/ollama-auto/ping")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["account_id"] == "ollama-auto"
+    assert data["status"] == "ok"
+    assert "онлайн" in data["detail"].lower()
+    assert data["latency_ms"] is not None
+

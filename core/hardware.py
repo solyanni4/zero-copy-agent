@@ -173,8 +173,10 @@ def check_ollama_status() -> tuple[bool, List[str]]:
     try:
         import urllib.request
         import json
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler)
         req = urllib.request.Request("http://127.0.0.1:11434/api/tags", headers={"User-Agent": "zero-copy-agent"})
-        with urllib.request.urlopen(req, timeout=1.2) as response:
+        with opener.open(req, timeout=1.5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 models = [m.get("name") for m in data.get("models", []) if m.get("name")]

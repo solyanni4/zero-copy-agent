@@ -113,11 +113,15 @@ async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: f
         return []
 
     clean_base = base_url.rstrip("/")
+    if not clean_base.startswith("http://") and not clean_base.startswith("https://"):
+        clean_base = f"http://{clean_base}"
+    clean_base = clean_base.replace("://0.0.0.0", "://127.0.0.1")
     models_url = f"{clean_base}/models"
     headers = {"Authorization": f"Bearer {api_key}"}
+    is_local = any(h in clean_base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
 
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=not is_local) as client:
             resp = await client.get(models_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()

@@ -897,7 +897,7 @@ async def test_connection_async(target: str, port: int = 8000) -> Tuple[bool, st
     import httpx
     url = f"http://127.0.0.1:{port}/health"
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
             resp = await client.get(url)
             if resp.status_code == 200:
                 body = resp.json()
@@ -913,7 +913,7 @@ def test_connection(target: str, port: int = 8000) -> Tuple[bool, str]:
     import httpx
     url = f"http://127.0.0.1:{port}/health"
     try:
-        with httpx.Client(timeout=3.0) as client:
+        with httpx.Client(timeout=3.0, trust_env=False) as client:
             resp = client.get(url)
             if resp.status_code == 200:
                 body = resp.json()
