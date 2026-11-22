@@ -112,7 +112,14 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
         task = arguments.get("task", "")
         if not task:
             return "Ошибка: параметр 'task' обязателен."
-        return await _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}")
+        try:
+            return await asyncio.wait_for(
+                _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
+                timeout=180.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
+            return "[TIMEOUT] Превышено время ожидания ответа инструмента 'cascade_architect' (таймаут 180 секунд). Попробуйте разбить задачу на части или уменьшить число итераций каскада."
 
     elif name == "local_gpu_code":
         prompt = arguments.get("prompt", "")
@@ -125,7 +132,14 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
         prompt = arguments.get("prompt", "")
         if not prompt:
             return "Ошибка: параметр 'prompt' обязателен."
-        return await _orchestrator.query(prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}")
+        try:
+            return await asyncio.wait_for(
+                _orchestrator.query(prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
+                timeout=180.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
+            return "[TIMEOUT] Превышено время ожидания ответа инструмента 'gemini_deep_analysis' (таймаут 180 секунд). Попробуйте повторить запрос с более компактным промптом."
 
     elif name == "get_token_savings":
         summary = analytics.get_summary()
@@ -268,7 +282,7 @@ async def mcp_sse_endpoint(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    data = await asyncio.wait_for(queue.get(), timeout=25.0)
+                    data = await asyncio.wait_for(queue.get(), timeout=10.0)
                     yield f"event: message\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
                     # Keep-alive comment ping

@@ -54,9 +54,10 @@ class HybridOrchestrator:
         self.mode: str = "auto"  # "auto" | "cascade" | "manual"
         self.breakpoint_enabled: bool = False
         self.active_model: str = "cascade:architect"
-        self.architect_model: str = "gemini-advanced"
-        self.executor_model: str = "tier:local-fast"
-        self.reviewer_model: str = "gemini-advanced"
+        cascade_cfg = getattr(config, "cascade", None)
+        self.architect_model: str = getattr(cascade_cfg, "architect_model", "gemini-advanced") or "gemini-advanced"
+        self.executor_model: str = getattr(cascade_cfg, "executor_model", None) or getattr(cascade_cfg, "coder_model", "tier:local-fast") or "tier:local-fast"
+        self.reviewer_model: str = getattr(cascade_cfg, "reviewer_model", None) or getattr(cascade_cfg, "auditor_model", "gemini-advanced") or "gemini-advanced"
 
     def resolve_model_id(self, requested_id: str) -> str:
         """Resolves dynamic aliases like 'tier:local-fast' to target model IDs."""
@@ -585,20 +586,40 @@ class HybridOrchestrator:
             )
 
         async def _call_executor(prompt_text: str) -> Tuple[str, str]:
-            ollama_models = await self.ollama.list_models()
-            chosen_coder = coder_target if (coder_target and coder_target in ollama_models) else next((m for m in ollama_models if "qwen2.5-coder" in m), None)
+            ollama_ok = False
+            try:
+                ollama_ok = await self.ollama.is_authenticated()
+            except Exception:
+                ollama_ok = False
 
-            if chosen_coder and await self.ollama.is_authenticated():
-                resp = await self.ollama.send_prompt(prompt_text, model=chosen_coder)
-                return resp, chosen_coder
-            elif await self.ollama.is_authenticated():
-                resp = await self.ollama.send_prompt(prompt_text)
-                return resp, "ollama/default"
-            else:
-                resp = await self._query_model(arch_model, prompt_text)
-                return resp, arch_model
+            if ollama_ok:
+                try:
+                    ollama_models = await self.ollama.list_models()
+                    chosen_coder = coder_target if (coder_target and coder_target in ollama_models) else next((m for m in ollama_models if "qwen2.5-coder" in m), None)
 
-        max_rework = getattr(self, "max_rework_iterations", 2)
+                    if chosen_coder:
+                        resp = await self.ollama.send_prompt(prompt_text, model=chosen_coder)
+                        return resp, chosen_coder
+                    elif ollama_models:
+                        resp = await self.ollama.send_prompt(prompt_text, model=ollama_models[0])
+                        return resp, f"ollama/{ollama_models[0]}"
+                    else:
+                        resp = await self.ollama.send_prompt(prompt_text)
+                        return resp, "ollama/default"
+                except Exception as e:
+                    logger.warning(f"[Cascade] Local Ollama execution failed ({e}). Falling back to cloud/web channel.")
+
+            # Fallback to available cloud or web channel
+            fallback_target = arch_model
+            if coder_target and not coder_target.startswith("ollama/") and coder_target != "tier:local-fast":
+                fallback_target = coder_target
+
+            logger.info(f"[Cascade] Local Ollama unavailable. Executing Step 2 via cloud/web channel ({fallback_target})...")
+            resp = await self._query_model(fallback_target, prompt_text)
+            return resp, fallback_target
+
+        base_max_rework = getattr(self, "max_rework_iterations", 2)
+        max_rework = base_max_rework
         current_code = ""
         executor_id = arch_model
         iteration = 0
@@ -633,6 +654,10 @@ class HybridOrchestrator:
                 )
 
             current_code, executor_id = await _call_executor(code_prompt)
+
+            # Если executor_id совпадает с arch_model, сокращаем повторный аудит до 1 прохода во избежание таймаутов
+            if executor_id == arch_model:
+                max_rework = min(base_max_rework, 1)
 
             # --- 1. LOCAL HARD GATE (0 tokens) ---
             if self.enable_local_gate:

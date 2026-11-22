@@ -14,31 +14,29 @@ class GeminiDriver(BaseDriver):
         try:
             if "gemini.google.com" not in self.page.url:
                 await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(2)
-
-            # Check if redirected to login
-            if "accounts.google.com" in self.page.url:
-                return False
-
-            # 1. If chat input element is already rendered, session is 100% authenticated!
-            for sel in ['rich-textarea', 'div.ql-editor[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea']:
-                el = await self.page.query_selector(sel)
-                if el:
-                    return True
-
-            # 2. Check explicit sign-in prompts (ServiceLogin, InteractiveLogin)
-            signin_btn = await self.page.query_selector(
-                'a[href*="ServiceLogin"], a[href*="InteractiveLogin"], button:has-text("Sign in"), button:has-text("Войти")'
-            )
-            if signin_btn:
-                return False
-
-            # 3. Wait up to 3 more seconds for SPA hydration
-            for _ in range(3):
                 await asyncio.sleep(1)
-                el = await self.page.query_selector('rich-textarea, div[contenteditable="true"]')
-                if el:
+
+            # Ожидаем загрузку SPA в цикле до 8 секунд с шагом 1 сек
+            for _ in range(8):
+                # Проверяем редирект на форму авторизации Google
+                if "accounts.google.com" in self.page.url:
+                    return False
+
+                # Проверяем явные кнопки входа
+                signin_btn = await self.page.query_selector(
+                    'a[href*="ServiceLogin"], a[href*="InteractiveLogin"], button:has-text("Sign in"), button:has-text("Войти")'
+                )
+                if signin_btn:
+                    return False
+
+                # Проверяем наличие поля ввода чата (признак авторизованной сессии)
+                input_elem = await self.page.query_selector(
+                    'rich-textarea, div.ql-editor[contenteditable="true"], div[contenteditable="true"], textarea'
+                )
+                if input_elem:
                     return True
+
+                await asyncio.sleep(1)
 
             return False
         except Exception:

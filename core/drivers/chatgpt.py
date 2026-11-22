@@ -14,23 +14,29 @@ class ChatGPTDriver(BaseDriver):
         try:
             if "chatgpt.com" not in self.page.url:
                 await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
-            # 1. Проверяем наличие поля ввода промпта (100% признак авторизованного чата)
-            input_elem = await self.page.query_selector(
-                '#prompt-textarea, textarea[data-id="root"], div[contenteditable="true"], textarea'
-            )
-            if input_elem:
-                return True
+            # Ожидаем гидратацию SPA в цикле до 8 секунд с шагом 1 сек
+            for _ in range(8):
+                # 1. Проверяем явную кнопку входа или регистрации
+                login_btn = await self.page.query_selector(
+                    'button[data-testid="login-button"], a[href*="/login"], button:has-text("Log in"), '
+                    'button:has-text("Войти"), button:has-text("Sign up"), a[href*="/signup"]'
+                )
+                if login_btn:
+                    return False
 
-            # 2. Проверяем явную кнопку входа
-            login_btn = await self.page.query_selector(
-                'button[data-testid="login-button"], a[href*="/login"], button:has-text("Log in"), button:has-text("Войти")'
-            )
-            if login_btn:
-                return False
+                # 2. Проверяем наличие поля ввода промпта (признак авторизованного чата)
+                input_elem = await self.page.query_selector(
+                    '#prompt-textarea, div#prompt-textarea[contenteditable="true"], textarea[data-id="root"], '
+                    'div[contenteditable="true"], textarea'
+                )
+                if input_elem:
+                    return True
 
-            return "chatgpt.com" in self.page.url
+                await asyncio.sleep(1)
+
+            return False
         except Exception:
             return False
 
@@ -42,8 +48,29 @@ class ChatGPTDriver(BaseDriver):
             await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(2)
 
+        # Закрываем всплывающие оверлеи/cookie-модалки, если они перекрывают экран
+        try:
+            await self.page.evaluate('''() => {
+                const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+                for (const b of buttons) {
+                    const txt = (b.innerText || '').toLowerCase().trim();
+                    if (txt === 'accept all' || txt === 'принять все' || txt === 'accept cookies' || 
+                        txt === 'i agree' || txt === 'stay logged out' || txt === 'close' || 
+                        txt === 'dismiss' || txt === 'not now' || txt === 'позже' || txt === 'закрыть') {
+                        b.click();
+                    }
+                }
+                const closeBtns = document.querySelectorAll('button[aria-label="Close"], button[aria-label="Закрыть"], button.close, [data-testid="close-button"]');
+                for (const cb of closeBtns) {
+                    cb.click();
+                }
+            }''')
+        except Exception:
+            pass
+
         input_selectors = [
             '#prompt-textarea',
+            'div#prompt-textarea[contenteditable="true"]',
             'textarea[data-id="root"]',
             'div[contenteditable="true"]',
             'textarea'
@@ -60,7 +87,10 @@ class ChatGPTDriver(BaseDriver):
         if not input_elem:
             raise RuntimeError("Could not locate ChatGPT prompt area. Please ensure you are logged in.")
 
-        await input_elem.click()
+        try:
+            await input_elem.click(force=True, timeout=2000)
+        except Exception:
+            pass
         await self.page.evaluate(
             '''([el, text]) => {
                 el.focus();

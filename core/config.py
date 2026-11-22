@@ -82,6 +82,8 @@ class CascadeConfig(BaseModel):
     architect_model: str = "gemini-4-neon"
     coder_model: str = "qwen2.5-coder:14b"
     auditor_model: str = "gemini-4-neon"
+    executor_model: Optional[str] = None
+    reviewer_model: Optional[str] = None
     hard_gate_cmd: str = "python -m py_compile"
     mode: str = "auto"
 
