@@ -261,7 +261,7 @@ class HardwareAdvisor:
             config.cascade.architect_model = clean_name
             if hasattr(config.cascade, "planner") and config.cascade.planner:
                 config.cascade.planner.primary = clean_name
-        save_config()
+        save_config(config)
 
         # 2. Register in Subscriptions via healer
         try:

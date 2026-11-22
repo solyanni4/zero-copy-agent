@@ -1302,10 +1302,13 @@ async def api_update_preset(preset_id: str, payload: Dict[str, Any] = Body(...))
 
 @app.delete("/api/presets/{preset_id}")
 async def api_delete_preset(preset_id: str):
-    ok = presets_manager.delete_preset(preset_id)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Невозможно удалить встроенный пресет или пресет не существует")
-    return {"status": "ok", "deleted_id": preset_id}
+    try:
+        ok = presets_manager.delete_preset(preset_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Пресет не найден")
+        return {"status": "ok", "deleted_id": preset_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/presets/reset-defaults")
 async def api_reset_preset_defaults():
@@ -1343,7 +1346,7 @@ async def api_ollama_pull(payload: Dict[str, Any] = Body(...)):
 
 @app.post("/api/ollama/activate")
 async def api_ollama_activate(payload: Dict[str, Any] = Body(...)):
-    model_name = payload.get("model", "").strip()
+    model_name = (payload.get("model") or payload.get("model_name") or "").strip()
     role = payload.get("role", "coder")
     if not model_name:
         raise HTTPException(status_code=400, detail="Не указано имя модели")

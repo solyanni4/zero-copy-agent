@@ -134,7 +134,9 @@ def load_config() -> AppConfig:
             print(f"[WARN] Error loading {cfg_path}: {e}. Falling back to default settings.")
     return AppConfig()
 
-def save_config(cfg: AppConfig) -> bool:
+def save_config(cfg: Optional[AppConfig] = None) -> bool:
+    if cfg is None:
+        cfg = config
     cfg_path = get_config_path()
     try:
         data = cfg.model_dump() if hasattr(cfg, "model_dump") else cfg.dict()

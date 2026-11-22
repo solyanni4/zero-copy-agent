@@ -44,16 +44,17 @@ release_body = """## zero-copy-agent v1.3.0
 - **Отказоустойчивость Playwright**: Полная изоляция профилей браузеров, автоматическое снятие зомби-блокировок и исключение ложных ошибок скачивания Chromium.
 """
 
+client = httpx.Client(timeout=60.0, headers=headers)
+
 for repo in repos:
     print(f'Processing {repo}...')
-    rel_res = httpx.get(f'https://api.github.com/repos/{repo}/releases/tags/{tag}', headers=headers)
+    rel_res = client.get(f'https://api.github.com/repos/{repo}/releases/tags/{tag}')
     if rel_res.status_code == 200:
         release = rel_res.json()
         print(f"  Release exists (id={release['id']})")
     else:
-        create_res = httpx.post(
+        create_res = client.post(
             f'https://api.github.com/repos/{repo}/releases',
-            headers=headers,
             json={
                 'tag_name': tag,
                 'name': f'zero-copy-agent {tag}',
@@ -68,15 +69,15 @@ for repo in repos:
     release_id = release['id']
     upload_url = release['upload_url'].split('{')[0]
 
-    assets_res = httpx.get(f'https://api.github.com/repos/{repo}/releases/{release_id}/assets', headers=headers)
+    assets_res = client.get(f'https://api.github.com/repos/{repo}/releases/{release_id}/assets')
     for asset in assets_res.json():
         if asset['name'] == 'zero-copy-agent.exe':
             asset_id = asset['id']
             print(f'  Deleting old asset {asset_id}...')
-            httpx.delete(f'https://api.github.com/repos/{repo}/releases/assets/{asset_id}', headers=headers)
+            client.delete(f'https://api.github.com/repos/{repo}/releases/assets/{asset_id}')
 
     print(f"  Uploading zero-copy-agent.exe ({len(exe_bytes)/(1024*1024):.1f} MB)...")
-    upload_res = httpx.post(
+    upload_res = client.post(
         f'{upload_url}?name=zero-copy-agent.exe',
         headers={
             'Authorization': f'token {token}',
