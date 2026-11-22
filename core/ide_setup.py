@@ -610,6 +610,285 @@ def configure_claude(dry_run: bool = False, port: int = 8000) -> Tuple[bool, str
 
 
 # ==============================================================================
+# JetBrains IDEs Integration (PhpStorm, PyCharm, IntelliJ IDEA, WebStorm, etc.)
+# ==============================================================================
+
+def detect_jetbrains() -> Dict[str, Any]:
+    """
+    Detects JetBrains IDEs (PhpStorm, PyCharm, IntelliJ IDEA, WebStorm, GoLand, Rider, CLion, etc.)
+    across Windows (%LOCALAPPDATA%\\JetBrains, %ProgramFiles%\\JetBrains, PATH via shutil.which),
+    Linux/macOS (~/.local/share/JetBrains, ~/Library/Application Support/JetBrains, /opt, /Applications),
+    and checks configuration directories (%APPDATA%\\JetBrains, ~/.config/JetBrains).
+    """
+    home = Path.home()
+    detected_ides = []
+    config_dirs: List[Path] = []
+    install_paths: List[Path] = []
+
+    # Known JetBrains IDE binary names
+    bin_names = [
+        "idea", "idea64", "pycharm", "pycharm64", "phpstorm", "phpstorm64",
+        "webstorm", "webstorm64", "goland", "goland64", "rider", "rider64",
+        "clion", "clion64", "rubymine", "rubymine64", "datagrip", "datagrip64",
+        "rustrover", "rustrover64", "fleet"
+    ]
+
+    for b in bin_names:
+        p = shutil.which(b)
+        if p:
+            install_paths.append(Path(p))
+            detected_ides.append(b.replace("64", "").capitalize())
+
+    # Platform-specific search
+    if sys.platform == "win32":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+        app_data = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        prog_files = Path(os.environ.get("ProgramFiles", "C:\\Program Files"))
+        prog_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
+
+        # Check config root: %APPDATA%\JetBrains
+        jb_config_root = app_data / "JetBrains"
+        if jb_config_root.exists() and jb_config_root.is_dir():
+            try:
+                for entry in jb_config_root.iterdir():
+                    if entry.is_dir() and not entry.name.startswith(".") and entry.name not in ("consentOptions", "bl", "crl", "PermanentDeviceId", "PermanentUserId"):
+                        config_dirs.append(entry)
+                        detected_ides.append(entry.name)
+            except Exception:
+                pass
+
+        # Check installation roots
+        candidate_roots = [
+            local_app_data / "JetBrains",
+            local_app_data / "JetBrains" / "Toolbox" / "apps",
+            prog_files / "JetBrains",
+            prog_files_x86 / "JetBrains",
+            local_app_data / "Programs"
+        ]
+        for c_root in candidate_roots:
+            if c_root.exists() and c_root.is_dir():
+                try:
+                    for entry in c_root.iterdir():
+                        if entry.is_dir() and any(k in entry.name.lower() for k in ["idea", "pycharm", "phpstorm", "webstorm", "goland", "rider", "clion", "datagrip", "rustrover", "fleet"]):
+                            install_paths.append(entry)
+                            detected_ides.append(entry.name)
+                except Exception:
+                    pass
+    elif sys.platform == "darwin":
+        # macOS
+        jb_support = home / "Library" / "Application Support" / "JetBrains"
+        if jb_support.exists() and jb_support.is_dir():
+            try:
+                for entry in jb_support.iterdir():
+                    if entry.is_dir() and not entry.name.startswith("."):
+                        config_dirs.append(entry)
+                        detected_ides.append(entry.name)
+            except Exception:
+                pass
+
+        apps_dir = Path("/Applications")
+        if apps_dir.exists():
+            try:
+                for entry in apps_dir.iterdir():
+                    if entry.suffix == ".app" and any(k in entry.name.lower() for k in ["idea", "pycharm", "phpstorm", "webstorm", "goland", "rider", "clion", "datagrip", "rustrover"]):
+                        install_paths.append(entry)
+                        detected_ides.append(entry.stem)
+            except Exception:
+                pass
+    else:
+        # Linux / Unix
+        jb_config = home / ".config" / "JetBrains"
+        if jb_config.exists() and jb_config.is_dir():
+            try:
+                for entry in jb_config.iterdir():
+                    if entry.is_dir() and not entry.name.startswith("."):
+                        config_dirs.append(entry)
+                        detected_ides.append(entry.name)
+            except Exception:
+                pass
+
+        jb_share = home / ".local" / "share" / "JetBrains"
+        if jb_share.exists() and jb_share.is_dir():
+            install_paths.append(jb_share)
+
+        for opt_dir in [Path("/opt"), Path("/opt/JetBrains")]:
+            if opt_dir.exists() and opt_dir.is_dir():
+                try:
+                    for entry in opt_dir.iterdir():
+                        if entry.is_dir() and any(k in entry.name.lower() for k in ["idea", "pycharm", "phpstorm", "webstorm", "goland", "rider", "clion"]):
+                            install_paths.append(entry)
+                            detected_ides.append(entry.name)
+                except Exception:
+                    pass
+
+    installed = len(detected_ides) > 0 or len(config_dirs) > 0 or len(install_paths) > 0
+
+    # Clean duplicates in detected_ides
+    unique_ides = []
+    seen = set()
+    for ide in detected_ides:
+        base = ide.split("202")[0].split(" ")[0].strip()
+        if base and base.lower() not in seen:
+            seen.add(base.lower())
+            unique_ides.append(ide)
+
+    snippet_file = home / ".zero-copy-agent" / "jetbrains-setup.json"
+    configured = False
+
+    # Check snippet file
+    if snippet_file.exists():
+        try:
+            with open(snippet_file, "r", encoding="utf-8") as f:
+                s_data = json.load(f)
+                if "zero-copy-agent" in str(s_data) or "127.0.0.1" in str(s_data):
+                    configured = True
+        except Exception:
+            pass
+
+    # Check if any config dir has MCP / Junie configured
+    for c_dir in config_dirs:
+        mcp_candidates = [
+            c_dir / "mcp.json",
+            c_dir / "options" / "mcp.xml",
+            c_dir / "junie" / "config.json"
+        ]
+        for cand in mcp_candidates:
+            if cand.exists():
+                try:
+                    txt = cand.read_text(encoding="utf-8", errors="ignore")
+                    if "zero-copy-agent" in txt or "127.0.0.1:8000" in txt:
+                        configured = True
+                        break
+                except Exception:
+                    pass
+
+    details_parts = []
+    if unique_ides:
+        details_parts.append(f"Обнаружены: {', '.join(unique_ides[:4])}")
+    if configured:
+        details_parts.append("Конфигурация настроена (~/.zero-copy-agent/jetbrains-setup.json)")
+    elif installed:
+        details_parts.append("Среда установлена, требует генерации конфигурации")
+    else:
+        details_parts.append("Среды JetBrains не обнаружены")
+
+    return {
+        "name": "JetBrains IDEs (PhpStorm, PyCharm, IDEA...)",
+        "installed": installed,
+        "configured": configured,
+        "path": str(snippet_file),
+        "config_dirs": [str(d) for d in config_dirs],
+        "detected_ides": unique_ides,
+        "details": " | ".join(details_parts)
+    }
+
+
+def configure_jetbrains(dry_run: bool = False, port: int = 8000) -> Tuple[bool, str]:
+    """
+    Safely configures JetBrains AI / Junie / compatible MCP plugins.
+    Generates ~/.zero-copy-agent/jetbrains-setup.json with OpenAI and MCP URLs,
+    and updates any existing MCP configs in JetBrains config directories with backup.
+    """
+    home = Path.home()
+    snippet_file = home / ".zero-copy-agent" / "jetbrains-setup.json"
+    snippet_file.parent.mkdir(parents=True, exist_ok=True)
+
+    snippet_data = {
+        "name": "zero-copy-agent",
+        "version": "1.0.7",
+        "description": "JetBrains AI Assistant / Junie / Custom Models & MCP Configuration",
+        "openai_endpoint": {
+            "name": "zero-copy-agent OpenAI Gateway",
+            "url": f"http://127.0.0.1:{port}/v1",
+            "api_base": f"http://127.0.0.1:{port}/v1",
+            "api_key": "sk-zero-copy",
+            "recommended_models": [
+                {
+                    "id": "tier:coding-top",
+                    "name": "Coding Top (Claude / GPT-4o / Qwen 14B)",
+                    "type": "chat"
+                },
+                {
+                    "id": "cascade:architect",
+                    "name": "Cascade Architect (Multi-Agent)",
+                    "type": "chat"
+                },
+                {
+                    "id": "gemini-4-neon",
+                    "name": "Gemini 4 Neon (Fast Cloud)",
+                    "type": "chat"
+                },
+                {
+                    "id": "gpt-4o",
+                    "name": "ChatGPT Plus (GPT-4o)",
+                    "type": "chat"
+                },
+                {
+                    "id": "tier:local-fast",
+                    "name": "Local Fast (Ollama GPU)",
+                    "type": "chat"
+                }
+            ]
+        },
+        "mcp_server": {
+            "name": "zero-copy-agent",
+            "transport": "sse",
+            "url": f"http://127.0.0.1:{port}/mcp",
+            "sse_url": f"http://127.0.0.1:{port}/sse",
+            "tools": [
+                "cascade_architect",
+                "local_gpu_code",
+                "gemini_deep_analysis",
+                "get_token_savings",
+                "compress_code_context"
+            ]
+        }
+    }
+
+    if dry_run:
+        return True, f"[DRY-RUN] Сгенерировал бы {snippet_file} и проверил каталоги JetBrains"
+
+    # Backup and write snippet
+    history_manager.record_backup("jetbrains", snippet_file)
+    tmp_path = snippet_file.with_suffix(".tmp_" + datetime.now().strftime("%H%M%S"))
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(snippet_data, f, indent=2, ensure_ascii=False)
+        shutil.move(str(tmp_path), str(snippet_file))
+    except Exception as e:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        return False, f"Ошибка записи {snippet_file}: {e}"
+
+    # Safely update existing MCP configs in detected JetBrains directories without clobbering
+    jb_info = detect_jetbrains()
+    config_dirs = [Path(p) for p in jb_info.get("config_dirs", [])]
+    updated_files = [str(snippet_file)]
+
+    for c_dir in config_dirs:
+        for mcp_candidate in [c_dir / "mcp.json", c_dir / "junie" / "config.json"]:
+            if mcp_candidate.exists():
+                try:
+                    def updater(data: Dict[str, Any]) -> Dict[str, Any]:
+                        if "mcpServers" not in data:
+                            data["mcpServers"] = {}
+                        data["mcpServers"]["zero-copy-agent"] = {
+                            "url": f"http://127.0.0.1:{port}/sse"
+                        }
+                        return data
+                    ok, _ = safe_update_json(mcp_candidate, updater, target="jetbrains", dry_run=dry_run)
+                    if ok:
+                        updated_files.append(str(mcp_candidate))
+                except Exception as e:
+                    logger.debug(f"[JetBrains] Не удалось обновить {mcp_candidate}: {e}")
+
+    return True, f"Конфигурация JetBrains готова ({len(updated_files)} файлов: {snippet_file.name})"
+
+
+# ==============================================================================
 # Verification & Snippet Generator
 # ==============================================================================
 
@@ -677,6 +956,21 @@ def print_config_snippet(target: str, port: int = 8000) -> str:
             ]
         }, indent=2, ensure_ascii=False)
 
+    if t in ("jetbrains", "idea", "pycharm", "phpstorm", "webstorm", "goland", "rider", "clion"):
+        return json.dumps({
+            "openai_endpoint": {
+                "name": "zero-copy-agent",
+                "url": f"http://127.0.0.1:{port}/v1",
+                "api_key": "sk-zero-copy",
+                "recommended_model": "tier:coding-top"
+            },
+            "mcp_server": {
+                "name": "zero-copy-agent",
+                "url": f"http://127.0.0.1:{port}/mcp",
+                "sse_url": f"http://127.0.0.1:{port}/sse"
+            }
+        }, indent=2, ensure_ascii=False)
+
     if t == "aider":
         return (
             f"export OPENAI_API_BASE=http://127.0.0.1:{port}/v1\n"
@@ -700,6 +994,7 @@ def scan_all() -> Dict[str, Any]:
         "windsurf": detect_windsurf(),
         "claude": detect_claude(),
         "aider": detect_aider(),
+        "jetbrains": detect_jetbrains(),
     }
 
 
@@ -762,6 +1057,13 @@ def configure_targets(targets: List[str], dry_run: bool = False) -> List[Tuple[s
             results.append(("Aider CLI", ok, msg))
         else:
             results.append(("Aider CLI", False, "Пропущено: Aider CLI не установлен"))
+
+    if "jetbrains" in target_set:
+        if scanned.get("jetbrains", {}).get("installed") or "jetbrains" in targets:
+            ok, msg = configure_jetbrains(dry_run=dry_run)
+            results.append(("JetBrains IDEs", ok, msg))
+        else:
+            results.append(("JetBrains IDEs", False, "Пропущено: JetBrains IDE не установлены"))
 
     return results
 
@@ -914,19 +1216,148 @@ def rollback_target_clean(target: str) -> Tuple[bool, str]:
         except Exception as e:
             return False, f"Ошибка отката Aider: {e}"
 
+    elif target_l in ("jetbrains", "idea", "pycharm", "phpstorm", "webstorm", "goland", "rider", "clion"):
+        snippet_file = home / ".zero-copy-agent" / "jetbrains-setup.json"
+        if snippet_file.exists():
+            snippet_file.unlink(missing_ok=True)
+
+        restored_files = []
+        history = history_manager.load_history()
+        for item in reversed(history):
+            if item.get("target") == "jetbrains":
+                orig_path = Path(item.get("original_path", ""))
+                bak_path = Path(item.get("backup_path", ""))
+                if bak_path.exists() and orig_path != snippet_file:
+                    try:
+                        content = bak_path.read_text(encoding="utf-8", errors="ignore")
+                        if content == "__FILE_DID_NOT_EXIST__":
+                            orig_path.unlink(missing_ok=True)
+                        else:
+                            shutil.copy2(bak_path, orig_path)
+                        restored_files.append(orig_path.name)
+                    except Exception:
+                        pass
+        return True, f"Откат JetBrains выполнен (удален jetbrains-setup.json, восстановлено файлов: {len(restored_files)})"
+
     return False, f"Неизвестная среда: {target}"
+
+
+# ==============================================================================
+# Smart Auto-Sync Engine
+# ==============================================================================
+
+def get_sync_state_file() -> Path:
+    return Path.home() / ".zero-copy-agent" / "ide_sync_state.json"
+
+def sync_ide_if_needed(current_version: str, port: int = 8000, state_file: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Performs smart auto-synchronization of IDE configurations.
+    Syncs ONLY when:
+    1. zero-copy-agent version changes (current_version != stored version), OR
+    2. A newly detected installed IDE path appears that was not previously configured.
+    Does NOT overwrite user edits on ordinary restarts.
+    """
+    actual_state_file = state_file or get_sync_state_file()
+    actual_state_file.parent.mkdir(parents=True, exist_ok=True)
+    state = {}
+    if actual_state_file.exists():
+        try:
+            with open(actual_state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception as e:
+            logger.debug(f"[IDE Sync] Не удалось прочитать {actual_state_file}: {e}")
+            state = {}
+
+    last_version = state.get("version")
+    known_configured_paths = state.get("configured_paths", {})
+
+    scanned = scan_all()
+    version_changed = (last_version != current_version)
+    targets_to_sync = []
+    reasons = []
+
+    if version_changed:
+        reasons.append(f"Обновление версии {last_version or 'unknown'} -> {current_version}")
+        for target_key, info in scanned.items():
+            if info.get("installed", False):
+                targets_to_sync.append(target_key)
+    else:
+        for target_key, info in scanned.items():
+            if not info.get("installed", False):
+                continue
+
+            target_path = str(info.get("mcp_config") or info.get("path") or "")
+            known_paths_for_target = known_configured_paths.get(target_key, [])
+
+            if not info.get("configured", False) or (target_path and target_path not in known_paths_for_target):
+                targets_to_sync.append(target_key)
+                reasons.append(f"Новая или ненастроенная среда: {info.get('name', target_key)}")
+
+    targets_to_sync = list(dict.fromkeys(targets_to_sync))
+
+    if not targets_to_sync:
+        return {
+            "status": "skipped",
+            "version": current_version,
+            "reason": "Конфигурации актуальны, пути IDE не изменялись",
+            "synced_targets": []
+        }
+
+    results = configure_targets(targets_to_sync, dry_run=False)
+    synced_targets = [name for name, ok, _ in results if ok]
+
+    updated_configured_paths = dict(known_configured_paths)
+    for target_key in targets_to_sync:
+        info = scanned.get(target_key, {})
+        target_path = str(info.get("mcp_config") or info.get("path") or "")
+        paths_list = list(updated_configured_paths.get(target_key, []))
+        if target_path and target_path not in paths_list:
+            paths_list.append(target_path)
+        updated_configured_paths[target_key] = paths_list
+
+    new_state = {
+        "version": current_version,
+        "last_sync": datetime.now().isoformat(),
+        "configured_paths": updated_configured_paths,
+        "last_reasons": reasons
+    }
+
+    try:
+        tmp_state = actual_state_file.with_suffix(".tmp_" + datetime.now().strftime("%H%M%S"))
+        with open(tmp_state, "w", encoding="utf-8") as f:
+            json.dump(new_state, f, indent=2, ensure_ascii=False)
+        shutil.move(str(tmp_state), str(actual_state_file))
+    except Exception as e:
+        logger.warning(f"[IDE Sync] Ошибка сохранения состояния {actual_state_file}: {e}")
+
+    return {
+        "status": "synced",
+        "version": current_version,
+        "reason": "; ".join(reasons),
+        "synced_targets": synced_targets,
+        "results": [{"target": r[0], "success": r[1], "message": r[2]} for r in results]
+    }
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Zero-Copy Agent IDE & Agent Auto-Configuration Manager")
     parser.add_argument("--scan", action="store_true", help="Сканировать и показать статус сред")
-    parser.add_argument("--configure", nargs="+", choices=["all", "antigravity", "vscode", "cursor", "windsurf"], help="Цели для настройки")
-    parser.add_argument("--rollback", nargs="?", const="all", choices=["all", "antigravity", "vscode", "cursor", "windsurf"], help="Откатить изменения к предыдущему бэкапу")
+    parser.add_argument("--configure", nargs="+", choices=["all", "antigravity", "vscode", "cursor", "windsurf", "claude", "aider", "jetbrains"], help="Цели для настройки")
+    parser.add_argument("--rollback", nargs="?", const="all", choices=["all", "antigravity", "vscode", "cursor", "windsurf", "claude", "aider", "jetbrains"], help="Откатить изменения к предыдущему бэкапу")
+    parser.add_argument("--sync-if-needed", action="store_true", help="Автосинхронизация при обновлении версии или новых IDE")
     parser.add_argument("--history", action="store_true", help="Показать историю изменений и бэкапов")
     parser.add_argument("--dry-run", action="store_true", help="Симуляция без записи на диск")
 
     args = parser.parse_args()
+
+    if args.sync_if_needed:
+        from core.version import __version__
+        res = sync_ide_if_needed(__version__)
+        print(f"[Sync-If-Needed] {res['status'].upper()}: {res['reason']}")
+        if res.get("synced_targets"):
+            print(f"  Синхронизированы: {', '.join(res['synced_targets'])}")
+        return
 
     if args.history:
         history = history_manager.load_history()

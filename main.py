@@ -44,7 +44,7 @@ from core.storage import analytics
 from core.mcp_server import mcp_router, init_mcp
 from core.attribution import should_inject_signature, get_response_headers, get_display_name
 from core.healer import config_healer
-from core.ide_setup import scan_all, configure_targets, history_manager, test_connection, test_connection_async, print_config_snippet
+from core.ide_setup import scan_all, configure_targets, history_manager, test_connection, test_connection_async, print_config_snippet, sync_ide_if_needed
 from core.registry import model_registry
 
 if sys.platform == "win32":
@@ -71,6 +71,16 @@ async def lifespan(app: FastAPI):
     # Auto-heal configuration on startup
     sub_cfg, heal_mods = config_healer.load_or_create()
     sync_mesh_from_subscriptions(sub_cfg)
+
+    # Smart auto-sync IDEs on startup if version changed or new IDE detected
+    try:
+        sync_res = sync_ide_if_needed(current_version=__version__, port=config.server.port)
+        if sync_res.get("status") == "synced":
+            targets_str = ", ".join(sync_res.get("synced_targets", []))
+            print(f"  [IDE Auto-Sync] Синхронизированы конфигурации: {targets_str}")
+    except Exception as e:
+        logging.getLogger("zca.main").debug(f"[IDE Auto-Sync] Warning: {e}")
+
     client_host = "127.0.0.1" if config.server.host in ("0.0.0.0", "::", "") else config.server.host
     
     print(f"\n=======================================================")

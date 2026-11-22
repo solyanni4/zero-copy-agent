@@ -85,16 +85,16 @@ def main():
 
     # apply
     parser_apply = subparsers.add_parser("apply", help="Подключить целевую IDE или агента")
-    parser_apply.add_argument("target", help="Цель: all, antigravity, vscode, cursor, windsurf, claude, aider")
+    parser_apply.add_argument("target", help="Цель: all, antigravity, vscode, cursor, windsurf, claude, aider, jetbrains")
     parser_apply.add_argument("--dry-run", action="store_true", help="Симуляция без записи на диск")
 
     # revert
     parser_revert = subparsers.add_parser("revert", help="Откатить конфигурацию целевой IDE из бэкапа")
-    parser_revert.add_argument("target", nargs="?", default="all", help="Цель: all, antigravity, vscode, cursor, windsurf, claude, aider")
+    parser_revert.add_argument("target", nargs="?", default="all", help="Цель: all, antigravity, vscode, cursor, windsurf, claude, aider, jetbrains")
 
     # print-config
     parser_print = subparsers.add_parser("print-config", help="Вывести готовый сниппет конфигурации")
-    parser_print.add_argument("target", help="Цель: antigravity, vscode, cursor, windsurf, claude, aider")
+    parser_print.add_argument("target", help="Цель: antigravity, vscode, cursor, windsurf, claude, aider, jetbrains")
     parser_print.add_argument("--port", type=int, default=8000, help="Порт локального шлюза")
 
     # test
