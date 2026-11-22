@@ -99,6 +99,29 @@ TOOLS_MANIFEST = [
             },
             "required": ["code"]
         }
+    },
+    {
+        "name": "plan_and_execute_task",
+        "description": "Автоматическая декомпозиция и пошаговое выполнение крупных многофайловых задач по модели DAG-Planner + Local Worker с AST/Test-гейтами и Final Integrator. Поддерживает контрольные точки (.zca/task_plan.json) и возобновление (resume).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "Цель крупной задачи (например: 'Добавить систему аутентификации JWT и тесты к ней')."
+                },
+                "workspace_dir": {
+                    "type": "string",
+                    "description": "Абсолютный или относительный путь к рабочей директории проекта (по умолчанию текущая)."
+                },
+                "resume": {
+                    "type": "boolean",
+                    "description": "Возобновить выполнение с первого незавершенного шага из сохраненного чекпоинта .zca/task_plan.json (по умолчанию true).",
+                    "default": True
+                }
+            },
+            "required": ["goal"]
+        }
     }
 ]
 
@@ -172,6 +195,21 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
             f"- До: ~{orig_t} токенов | После: ~{comp_t} токенов | Сэкономлено: {saved} токенов ({pct:.1f}%)\n\n"
             f"```\n{compressed}\n```"
         )
+
+    elif name == "plan_and_execute_task":
+        goal = arguments.get("goal", "")
+        workspace_dir = arguments.get("workspace_dir")
+        resume = arguments.get("resume", True)
+        if not goal:
+            return "Ошибка: параметр 'goal' обязателен."
+        try:
+            return await asyncio.wait_for(
+                _orchestrator.plan_and_execute_task(goal, workspace_dir=workspace_dir, resume=resume),
+                timeout=300.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[MCP] Timeout executing tool '{name}' after 300s")
+            return "[TIMEOUT] Выполнение крупной задачи превысило лимит 300 секунд. Прогресс сохранен в .zca/task_plan.json. Вы можете продолжить вызовом с resume=True."
 
     return f"Неизвестный инструмент: '{name}'"
 

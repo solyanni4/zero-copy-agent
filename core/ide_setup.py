@@ -795,7 +795,7 @@ def configure_jetbrains(dry_run: bool = False, port: int = 8000) -> Tuple[bool, 
 
     snippet_data = {
         "name": "zero-copy-agent",
-        "version": "1.0.7",
+        "version": "1.1.0",
         "description": "JetBrains AI Assistant / Junie / Custom Models & MCP Configuration",
         "openai_endpoint": {
             "name": "zero-copy-agent OpenAI Gateway",

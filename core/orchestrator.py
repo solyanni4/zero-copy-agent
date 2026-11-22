@@ -778,3 +778,41 @@ class HybridOrchestrator:
             yield f"\n\n{result_full}"
         else:
             yield f"\n\n{result_full}"
+
+    async def plan_and_execute_task(
+        self,
+        goal: str,
+        workspace_dir: Optional[str] = None,
+        resume: bool = True
+    ) -> str:
+        """
+        Decomposes and executes large complex goals using DAG-Planner,
+        Local Worker with AST/Test-gates, and Final Integrator.
+        """
+        from core.task_planner import run_dag_pipeline
+        ws_path = Path(workspace_dir).resolve() if workspace_dir else Path.cwd()
+
+        res = await run_dag_pipeline(
+            goal=goal,
+            workspace_dir=ws_path,
+            orchestrator=self,
+            resume=resume,
+            architect_model=getattr(self, "cascade_architect_model", "gemini-4-neon"),
+            executor_model=getattr(self, "cascade_executor_model", "ollama/qwen2.5-coder:14b"),
+            reviewer_model=getattr(self, "cascade_reviewer_model", "gemini-4-neon")
+        )
+
+        status_icon = "[OK]" if res["status"] == "completed" else "[FAILED]"
+        summary_lines = [
+            f"{status_icon} План исполнения задачи: '{goal}'",
+            f"ID задачи: {res.get('task_id')}",
+            f"Статус: {res.get('status', '').upper()}",
+            f"Шагов выполнено: {res.get('steps_count', 0)}"
+        ]
+        if res.get("final_audit"):
+            summary_lines.append(f"\n### Архитектурный аудит:\n{res['final_audit']}")
+        if res.get("error"):
+            summary_lines.append(f"\n[ОШИБКА]: {res['error']}")
+            summary_lines.append("План сохранен в .zca/task_plan.json. Вы можете возобновить выполнение вызовом с resume=True.")
+
+        return "\n".join(summary_lines)

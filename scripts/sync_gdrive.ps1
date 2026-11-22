@@ -18,7 +18,7 @@ $versionMatch = (Get-Content "$SourceDir/core/version.py" -Raw -ErrorAction Sile
 if (-not $versionMatch) {
     $versionMatch = (Get-Content "$SourceDir/core/__init__.py" -Raw -ErrorAction SilentlyContinue | Select-String '__version__\s*=\s*"([^"]+)"')
 }
-$CurrentVersion = if ($versionMatch) { $versionMatch.Matches.Groups[1].Value } else { "1.0.7" }
+$CurrentVersion = if ($versionMatch) { $versionMatch.Matches.Groups[1].Value } else { "1.1.0" }
 $CloudDestination = "gdrive:zero-copy-agent/zero-copy-agent-$CurrentVersion"
 
 # Папки и файлы для исключения из синхронизации
