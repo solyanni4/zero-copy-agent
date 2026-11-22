@@ -14,8 +14,11 @@ param (
 $ErrorActionPreference = "Stop"
 $SourceDir = (Resolve-Path "$PSScriptRoot/..").Path
 
-$versionMatch = (Get-Content "$SourceDir/core/__init__.py" -Raw -ErrorAction SilentlyContinue | Select-String '__version__\s*=\s*"([^"]+)"')
-$CurrentVersion = if ($versionMatch) { $versionMatch.Matches.Groups[1].Value } else { "1.0.6" }
+$versionMatch = (Get-Content "$SourceDir/core/version.py" -Raw -ErrorAction SilentlyContinue | Select-String '__version__\s*=\s*"([^"]+)"')
+if (-not $versionMatch) {
+    $versionMatch = (Get-Content "$SourceDir/core/__init__.py" -Raw -ErrorAction SilentlyContinue | Select-String '__version__\s*=\s*"([^"]+)"')
+}
+$CurrentVersion = if ($versionMatch) { $versionMatch.Matches.Groups[1].Value } else { "1.0.7" }
 $CloudDestination = "gdrive:zero-copy-agent/zero-copy-agent-$CurrentVersion"
 
 # Папки и файлы для исключения из синхронизации
@@ -28,6 +31,8 @@ $ExcludeRules = @(
     "*.pyo",
     "*.pyd",
     ".pytest_cache/**",
+    "browser_profile*/**",
+    "browser_profiles/**",
     "browser_profile/**",
     "dist/**",
     "build/**",
@@ -48,7 +53,7 @@ function Invoke-LocalSync([string]$DestDir) {
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
     }
 
-    $ExcludeDirs = @(".git", "venv", ".venv", "__pycache__", ".pytest_cache", "browser_profile", "dist", "build")
+    $ExcludeDirs = @(".git", "venv", ".venv", "__pycache__", ".pytest_cache", "browser_profile", "browser_profiles", "dist", "build")
     $ExcludeFiles = @(".env", "*.db*", "*.log", "zero-copy-agent.exe", "*.bak", "*.pyc")
 
     $RoboArgs = @(
