@@ -78,10 +78,13 @@ def authenticate(provider: str, account_id: str = None):
     print("      Once you see your chats, press ENTER here in the terminal to save session.\n")
 
     try:
-        from playwright.sync_api import sync_playwright
+        from patchright.sync_api import sync_playwright
     except ImportError:
-        print("[ERROR] Playwright is not installed.")
-        sys.exit(1)
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            print("[ERROR] Neither patchright nor playwright is installed.")
+            sys.exit(1)
 
     launch_args = [
         "--disable-blink-features=AutomationControlled",
@@ -186,17 +189,20 @@ def authenticate_desktop(provider: str, account_id: str = None):
 
     logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} (account: {account_id}) по адресу {url} (profile: {profile_dir})...")
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:
-        err_msg = "Playwright не установлен или не найдены зависимости браузера."
-        logging.error(f"[Auth Assistant] {err_msg} ({e})")
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.user32.MessageBoxW(0, f"{err_msg}\n\nДетали: {e}", "zero-copy-agent | Ошибка Playwright", 0x10)
-            except Exception:
-                pass
-        return
+        from patchright.sync_api import sync_playwright
+    except ImportError:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as e:
+            err_msg = "Движок браузера (patchright / playwright) не установлен."
+            logging.error(f"[Auth Assistant] {err_msg} ({e})")
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(0, f"{err_msg}\n\nДетали: {e}", "zero-copy-agent | Ошибка браузера", 0x10)
+                except Exception:
+                    pass
+            return
 
     try:
         with sync_playwright() as p:

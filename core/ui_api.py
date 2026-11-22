@@ -231,3 +231,65 @@ async def check_for_updates():
     import asyncio
     from core.updater import check_github_updates
     return await asyncio.to_thread(check_github_updates)
+
+@ui_router.get("/system-logs")
+async def get_system_logs(limit: int = 300, level: str = "all", search: str = ""):
+    """
+    Returns recent lines from the application log file (zero-copy-agent.log).
+    Supports filtering by log level (all, error, warning, info) and keyword search.
+    """
+    from pathlib import Path
+    log_path = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "zero-copy-agent" / "zero-copy-agent.log"
+    if not log_path.exists():
+        return {"status": "ok", "lines": [], "total_lines": 0, "path": str(log_path)}
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+
+        lvl = level.lower().strip()
+        kw = search.lower().strip()
+        filtered = []
+
+        for line in reversed(all_lines):
+            l_strip = line.strip()
+            if not l_strip:
+                continue
+
+            if lvl == "error" and "[ERROR]" not in l_strip and "error" not in l_strip.lower():
+                continue
+            if lvl in ("warning", "warn") and "[WARN" not in l_strip and "warning" not in l_strip.lower() and "[ERROR]" not in l_strip:
+                continue
+            if lvl == "info" and "[INFO]" not in l_strip:
+                continue
+
+            if kw and kw not in l_strip.lower():
+                continue
+
+            filtered.append(l_strip)
+            if len(filtered) >= limit:
+                break
+
+        return {
+            "status": "ok",
+            "lines": list(reversed(filtered)),
+            "total_lines": len(all_lines),
+            "path": str(log_path)
+        }
+    except Exception as e:
+        logger.error(f"[Logs API] Failed reading {log_path}: {e}")
+        return {"status": "error", "message": str(e), "lines": []}
+
+@ui_router.post("/system-logs/clear")
+async def clear_system_logs():
+    """Clears the zero-copy-agent.log file."""
+    from pathlib import Path
+    log_path = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "zero-copy-agent" / "zero-copy-agent.log"
+    if log_path.exists():
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [INFO] Log cleared by user.\n")
+            return {"status": "ok", "message": "Лог-файл очищен"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "ok", "message": "Лог-файл уже пуст"}

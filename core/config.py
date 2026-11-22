@@ -115,7 +115,7 @@ class CascadeConfig(BaseModel):
     )
 
 class AppConfig(BaseModel):
-    version: str = "1.0.0"
+    version: str = "1.4.0"
     server: ServerConfig = Field(default_factory=ServerConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     models: ModelsGroupConfig = Field(default_factory=ModelsGroupConfig)

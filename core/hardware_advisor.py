@@ -149,16 +149,29 @@ class HardwareAdvisor:
         hw = self.get_hardware_summary()
         vram = hw["vram_gb"]
         ram = hw["ram_gb"]
-        installed_set = {m.lower().split(":")[0]: m for m in hw["installed_models"]}
-        installed_full_set = {m.lower() for m in hw["installed_models"]}
+
+        def get_variants(name: str) -> set:
+            if not name:
+                return set()
+            n = name.strip().lower()
+            variants = {n}
+            if ":" not in n:
+                variants.add(f"{n}:latest")
+            elif n.endswith(":latest"):
+                variants.add(n[:-7])
+            return variants
+
+        installed_variants = set()
+        for m in hw["installed_models"]:
+            installed_variants.update(get_variants(m))
 
         def check_status(model_id: str) -> str:
-            m_clean = model_id.lower()
-            m_base = m_clean.split(":")[0]
-            if m_clean in installed_full_set or m_base in installed_set:
-                # Check if set in config as active
+            m_variants = get_variants(model_id)
+            if m_variants & installed_variants:
+                # Check if set in config as active coder or planner
                 current_coder = getattr(config.cascade, "coder_model", "")
-                if m_clean in current_coder.lower() or m_base in current_coder.lower():
+                current_variants = get_variants(current_coder)
+                if m_variants & current_variants:
                     return "active"
                 return "installed"
             return "not_installed"

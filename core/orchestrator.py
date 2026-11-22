@@ -19,6 +19,7 @@ from core.healer import config_healer
 from core.audit import LocalHardGate, ArchitectAudit
 import json
 import httpx
+from pathlib import Path
 from core.mesh import mesh
 from core.config import config
 

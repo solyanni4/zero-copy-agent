@@ -131,14 +131,17 @@ class BrowserSessionEngine:
     async def initialize(self):
         """Initializes the background browser runtime in lazy standby mode without pre-locking profiles."""
         try:
-            from playwright.async_api import async_playwright
+            try:
+                from patchright.async_api import async_playwright, BrowserContext, Page
+            except ImportError:
+                from playwright.async_api import async_playwright, BrowserContext, Page
             if not self.playwright:
                 self.playwright = await async_playwright().start()
             self.is_ready = True
-            logger.info("[ENGINE] Playwright browser runtime ready in lazy multi-account standby mode.")
+            logger.info("[ENGINE] Browser runtime (patchright/playwright) ready in lazy multi-account standby mode.")
             self.keepalive_task = asyncio.create_task(self._keepalive_loop())
         except Exception as e:
-            logger.warning(f"[ENGINE-WARN] Could not initialize Playwright runtime ({e}). Running in Standby mode.")
+            logger.warning(f"[ENGINE-WARN] Could not initialize Browser runtime ({e}). Running in Standby mode.")
             self.is_ready = False
 
     async def close_account(self, account_id: str):
@@ -186,10 +189,13 @@ class BrowserSessionEngine:
 
             if not self.playwright:
                 try:
-                    from playwright.async_api import async_playwright
+                    try:
+                        from patchright.async_api import async_playwright
+                    except ImportError:
+                        from playwright.async_api import async_playwright
                     self.playwright = await async_playwright().start()
                 except Exception as pw_err:
-                    logger.error(f"[ENGINE] Could not start playwright: {pw_err}")
+                    logger.error(f"[ENGINE] Could not start browser runtime: {pw_err}")
                     return False
 
             proxy_server = detect_proxy()

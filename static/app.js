@@ -86,6 +86,7 @@ function switchView(viewId) {
   if (viewId === 'ide') fetchIdeIntegrations();
   if (viewId === 'solutions') fetchSolutions();
   if (viewId === 'presets') fetchPresets();
+  if (viewId === 'logs') loadSystemLogs();
 
   toggleMobileSidebar(false);
 }
@@ -2445,6 +2446,111 @@ async function executeHitlCancel() {
 
 // ------------------------------------------------------------------------
 // 10. Bootstrap on Load
+// ========================================================================
+// Release v1.4.0: System Logs Tab & Viewer
+// ========================================================================
+let cachedLogLines = [];
+
+async function loadSystemLogs() {
+  const container = document.getElementById('logs-console-container');
+  if (!container) return;
+
+  const levelSelect = document.getElementById('logs-level-filter');
+  const level = levelSelect ? levelSelect.value : 'all';
+  const searchInput = document.getElementById('logs-search-input');
+  const search = searchInput ? searchInput.value.trim() : '';
+
+  try {
+    const res = await fetch(`/v1/ui/system-logs?limit=300&level=${encodeURIComponent(level)}&search=${encodeURIComponent(search)}`);
+    const data = await res.json();
+
+    if (data.status === 'ok') {
+      cachedLogLines = data.lines || [];
+      const pathEl = document.getElementById('logs-file-path');
+      if (pathEl && data.path) pathEl.innerText = data.path;
+
+      const badgeEl = document.getElementById('logs-total-badge');
+      if (badgeEl) badgeEl.innerText = `${data.total_lines || 0} строк`;
+
+      renderLogsList(cachedLogLines);
+    } else {
+      container.innerHTML = `<div class="text-coral">Ошибка загрузки логов: ${escapeHtml(data.message || 'неизвестная ошибка')}</div>`;
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="text-coral">Сбой сетевого запроса логов: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderLogsList(lines) {
+  const container = document.getElementById('logs-console-container');
+  if (!container) return;
+
+  const statsEl = document.getElementById('logs-stats');
+  if (statsEl) statsEl.innerText = `Отображается: ${lines.length} строк`;
+
+  if (!lines || lines.length === 0) {
+    container.innerHTML = `<div class="text-slate-400 italic">Журнал пуст или нет записей по заданному фильтру.</div>`;
+    return;
+  }
+
+  const html = lines.map(line => {
+    let colorClass = 'text-slate-300';
+    if (line.includes('[ERROR]') || line.toLowerCase().includes('error:')) {
+      colorClass = 'text-coral font-medium';
+    } else if (line.includes('[WARN') || line.toLowerCase().includes('warning:')) {
+      colorClass = 'text-amber-400';
+    } else if (line.includes('[INFO]')) {
+      colorClass = 'text-sky-300';
+    } else if (line.includes('[SUCCESS]') || line.includes('[OK]')) {
+      colorClass = 'text-emerald-400 font-medium';
+    }
+    return `<div class="${colorClass} hover:bg-white/5 py-0.5 px-1 rounded transition-colors whitespace-pre-wrap break-all">${escapeHtml(line)}</div>`;
+  }).join('');
+
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+function filterLocalLogs() {
+  const searchInput = document.getElementById('logs-search-input');
+  const term = (searchInput ? searchInput.value : '').toLowerCase().trim();
+  if (!term) {
+    renderLogsList(cachedLogLines);
+    return;
+  }
+  const filtered = cachedLogLines.filter(l => l.toLowerCase().includes(term));
+  renderLogsList(filtered);
+}
+
+function copyLogsToClipboard() {
+  if (!cachedLogLines || cachedLogLines.length === 0) {
+    showToast('Нет логов для копирования');
+    return;
+  }
+  const text = cachedLogLines.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('Логи скопированы в буфер обмена');
+  }).catch(() => {
+    showToast('Не удалось скопировать в буфер');
+  });
+}
+
+async function clearSystemLogs() {
+  if (!confirm('Вы действительно хотите очистить системный лог-файл?')) return;
+  try {
+    const res = await fetch('/v1/ui/system-logs/clear', { method: 'POST' });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast('Лог-файл очищен');
+      loadSystemLogs();
+    } else {
+      showToast('Ошибка очистки логов: ' + (data.message || ''));
+    }
+  } catch (err) {
+    showToast('Сбой очистки логов: ' + err.message);
+  }
+}
+
 // ------------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   renderTraces();
@@ -2468,6 +2574,12 @@ window.addEventListener('DOMContentLoaded', () => {
   setInterval(() => {
     fetchSystemStatus();
     checkPendingCompressionDrafts();
+    if (state.activeView === 'logs') {
+      const autoRefresh = document.getElementById('logs-auto-refresh');
+      if (autoRefresh && autoRefresh.checked) {
+        loadSystemLogs();
+      }
+    }
   }, 4000);
 
   // Auto-check for updates after 2 seconds

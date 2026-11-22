@@ -58,7 +58,7 @@
         <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
         <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
       </div>
-      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.3.0</span>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.4.0</span>
     </div>
 
     <!-- Primary Navigation -->
@@ -86,6 +86,10 @@
       <button data-view="ide" onclick="switchView('ide')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
         <i data-lucide="terminal-square" class="w-4 h-4 shrink-0"></i>
         <span class="truncate">Интеграции IDE</span>
+      </button>
+      <button data-view="logs" onclick="switchView('logs')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
+        <i data-lucide="file-text" class="w-4 h-4 shrink-0"></i>
+        <span class="truncate">Логи</span>
       </button>
       <button data-view="manual" onclick="switchView('manual')" class="nav-item w-full h-8 px-2.5 rounded flex items-center gap-2.5 text-[13px] font-medium text-muted hover:text-ink hover:bg-surface/70 border border-transparent">
         <i data-lucide="book-open" class="w-4 h-4 shrink-0"></i>
@@ -760,6 +764,66 @@
       <!-- Presets Cards Grid -->
       <div id="presets-cards-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <!-- Rendered dynamically -->
+      </div>
+    </main>
+
+    <!-- ================================================================== -->
+    <!-- VIEW: Системные логи (v1.4.0)                                      -->
+    <!-- ================================================================== -->
+    <main id="view-logs" class="view-pane hidden flex-1 flex flex-col min-h-0 overflow-hidden bg-surface">
+      <!-- Toolbar Header -->
+      <div class="h-14 px-5 border-b border-hairline flex flex-wrap items-center justify-between gap-3 shrink-0 bg-panel">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded bg-cobalt/10 text-cobalt flex items-center justify-center shrink-0">
+            <i data-lucide="file-text" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-[14px] font-semibold text-ink">Системные логи</h1>
+              <span id="logs-total-badge" class="font-mono text-[10px] bg-surface border border-hairline px-1.5 py-0.5 rounded text-muted">0 строк</span>
+            </div>
+            <p id="logs-file-path" class="text-[11px] font-mono text-muted truncate max-w-md">zero-copy-agent.log</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <select id="logs-level-filter" onchange="loadSystemLogs()" class="h-8 px-2.5 rounded bg-surface border border-hairline text-[12px] text-ink outline-none focus:border-cobalt">
+            <option value="all">Все уровни</option>
+            <option value="error">Только ошибки (ERROR)</option>
+            <option value="warning">Предупреждения и ошибки</option>
+            <option value="info">INFO</option>
+          </select>
+          <div class="relative">
+            <input id="logs-search-input" type="text" placeholder="Поиск по логу..." oninput="filterLocalLogs()" class="h-8 pl-8 pr-2.5 rounded bg-surface border border-hairline text-[12px] text-ink placeholder:text-muted outline-none w-44 focus:border-cobalt focus:w-56 transition-all" />
+            <i data-lucide="search" class="w-3.5 h-3.5 text-muted absolute left-2.5 top-2.5"></i>
+          </div>
+          <button onclick="loadSystemLogs()" class="h-8 px-2.5 rounded bg-surface hover:bg-surface-hover border border-hairline text-[12px] text-ink flex items-center gap-1.5 transition">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>Обновить</span>
+          </button>
+          <button onclick="copyLogsToClipboard()" class="h-8 px-2.5 rounded bg-surface hover:bg-surface-hover border border-hairline text-[12px] text-ink flex items-center gap-1.5 transition">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+            <span>Копировать</span>
+          </button>
+          <button onclick="clearSystemLogs()" class="h-8 px-2.5 rounded bg-surface hover:bg-surface-hover border border-hairline text-[12px] text-crimson flex items-center gap-1.5 transition">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>Очистить</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Logs Console Window -->
+      <div class="flex-1 p-4 overflow-hidden flex flex-col bg-panel">
+        <div id="logs-console-container" class="flex-1 bg-[#0F172A] text-[#F8FAFC] border border-hairline rounded-lg p-3.5 overflow-y-auto font-mono text-[11px] leading-relaxed select-text space-y-0.5 shadow-inner">
+          <div class="text-slate-400 italic">Загрузка системных логов...</div>
+        </div>
+        <div class="pt-2 px-1 flex items-center justify-between text-[11px] text-muted shrink-0">
+          <span id="logs-stats">Отображается: 0 строк</span>
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id="logs-auto-refresh" checked class="accent-cobalt rounded">
+            <span>Автообновление (каждые 4 сек)</span>
+          </label>
+        </div>
       </div>
     </main>
 

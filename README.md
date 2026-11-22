@@ -6,7 +6,7 @@
 
 ### Локальный LLM-шлюз и каскадный оркестратор для редакторов кода. Экономит токены, прячет пароли и подключается к IDE в один клик.
 
-[![Version: 1.3.0](https://img.shields.io/badge/Release-v1.3.0-brightgreen.svg)](https://github.com/solyanni4/zero-copy-agent/releases/latest)
+[![Version: 1.4.0](https://img.shields.io/badge/Release-v1.4.0-brightgreen.svg)](https://github.com/solyanni4/zero-copy-agent/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![API: OpenAI + MCP](https://img.shields.io/badge/API-OpenAI%20%2B%20MCP-orange.svg)](#)
 [![Ollama: Local GPU](https://img.shields.io/badge/Ollama-0%20Token%20Cost-black?logo=ollama)](#)

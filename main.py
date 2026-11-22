@@ -490,6 +490,9 @@ async def get_auth_status():
         "gemini": {"active": False, "alias": None, "type": None},
         "chatgpt": {"active": False, "alias": None, "type": None},
         "claude": {"active": False, "alias": None, "type": None},
+        "deepseek": {"active": False, "alias": None, "type": None},
+        "qwen": {"active": False, "alias": None, "type": None},
+        "grok": {"active": False, "alias": None, "type": None},
     }
     for acc in cfg.accounts:
         p = acc.provider.lower()

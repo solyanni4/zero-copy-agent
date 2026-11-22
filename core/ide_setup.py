@@ -116,7 +116,7 @@ class HistoryManager:
 
         # Also apply surgical cleanup for known IDE targets
         target_name = (target or "all").lower()
-        known_targets = ["vscode", "antigravity", "cursor", "windsurf", "claude", "aider"]
+        known_targets = ["vscode", "antigravity", "cursor", "windsurf", "claude", "aider", "jetbrains"]
         targets_to_clean = known_targets if target_name == "all" else ([target_name] if target_name in known_targets or target_name == "continue" else [])
 
         for t in targets_to_clean:

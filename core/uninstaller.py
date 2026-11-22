@@ -26,7 +26,7 @@ def clean_uninstall_system(keep_backups: bool = False, orchestrator_instance: An
     # 1. Rollback all IDE configurations
     try:
         from core.ide_setup import rollback_target_clean
-        for ide_key in ["vscode", "cursor", "windsurf", "antigravity", "claude", "aider"]:
+        for ide_key in ["vscode", "cursor", "windsurf", "antigravity", "claude", "aider", "jetbrains"]:
             ok, msg = rollback_target_clean(ide_key)
             if ok:
                 steps_executed.append(f"IDE {ide_key.upper()}: {msg}")
