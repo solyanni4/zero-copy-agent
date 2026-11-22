@@ -133,6 +133,12 @@ class ModelRegistry:
                         browser_models = ["gpt-4o", "gpt-4o-mini", "chatgpt-plus"]
                     elif active_prov == "claude":
                         browser_models = ["claude-3-7-sonnet", "claude-pro"]
+                    elif active_prov == "deepseek":
+                        browser_models = ["deepseek-chat", "deepseek-reasoner"]
+                    elif active_prov == "qwen":
+                        browser_models = ["qwen-max", "qwen-coder", "qwq"]
+                    elif active_prov == "grok":
+                        browser_models = ["grok-3", "grok-3-mini"]
                     browser_connected = True
                     browser_status = f"Active ({active_prov})"
                 else:
@@ -166,6 +172,7 @@ class ModelRegistry:
                 if len(active_accs) > 0:
                     mesh_connected = True
                     mesh_status = f"{len(active_accs)} active API accounts"
+                    from core.healer import DEFAULT_PROVIDER_MODELS
                     for a in active_accs:
                         prov = (a.get("provider") if isinstance(a, dict) else getattr(a, "provider", "")).lower()
                         if prov in ("openai", "chatgpt"):
@@ -174,6 +181,8 @@ class ModelRegistry:
                             mesh_models.extend(["claude-3-7-sonnet", "claude-3-5-sonnet", "claude-3-haiku"])
                         elif prov == "gemini":
                             mesh_models.extend(["gemini-2.5-flash", "gemini-2.5-pro"])
+                        elif prov in DEFAULT_PROVIDER_MODELS:
+                            mesh_models.extend(DEFAULT_PROVIDER_MODELS[prov])
                         elif isinstance(a, dict):
                             mesh_models.extend(a.get("models", []))
                         else:

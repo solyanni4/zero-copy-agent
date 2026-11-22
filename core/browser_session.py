@@ -13,14 +13,25 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any
 
 from core.config import config, get_runtime_cwd
-from core.drivers import GeminiDriver, ChatGPTDriver, MockDriver, BaseDriver
+from core.drivers import (
+    GeminiDriver,
+    ChatGPTDriver,
+    DeepSeekDriver,
+    QwenDriver,
+    GrokDriver,
+    MockDriver,
+    BaseDriver
+)
 
 logger = logging.getLogger("zcao.browser")
 
 PROVIDER_URLS = {
     "gemini": "https://gemini.google.com/app",
     "chatgpt": "https://chatgpt.com",
-    "claude": "https://claude.ai/chats"
+    "claude": "https://claude.ai/chats",
+    "deepseek": "https://chat.deepseek.com",
+    "qwen": "https://chat.qwen.ai",
+    "grok": "https://grok.com"
 }
 
 def detect_proxy():
@@ -55,6 +66,12 @@ def get_model_badge(model_id: str) -> str:
         label = "ChatGPT Plus / GPT-4o (Живая веб-подписка)"
     elif "claude" in m:
         label = "Claude Pro (Живая веб-подписка)"
+    elif "deepseek" in m:
+        label = "DeepSeek V3/R1 (Живая веб-подписка)"
+    elif "qwen" in m:
+        label = "Qwen Max/Coder (Живая веб-подписка)"
+    elif "grok" in m:
+        label = "xAI Grok 3 (Живая веб-подписка)"
     else:
         label = f"{model_id} (Живая веб-сессия)"
     return f"**[zero-copy-agent | {label}]**\n\n"
@@ -231,6 +248,12 @@ class BrowserSessionEngine:
 
             if provider == "chatgpt":
                 driver = ChatGPTDriver(page)
+            elif provider == "deepseek":
+                driver = DeepSeekDriver(page)
+            elif provider == "qwen":
+                driver = QwenDriver(page)
+            elif provider == "grok":
+                driver = GrokDriver(page)
             else:
                 driver = GeminiDriver(page)
 
@@ -249,7 +272,13 @@ class BrowserSessionEngine:
         if account_id:
             return account_id
         model_lower = model_id.lower()
-        if "chatgpt" in model_lower or "gpt" in model_lower:
+        if "deepseek" in model_lower:
+            prov = "deepseek"
+        elif "qwen" in model_lower:
+            prov = "qwen"
+        elif "grok" in model_lower:
+            prov = "grok"
+        elif "chatgpt" in model_lower or "gpt" in model_lower:
             prov = "chatgpt"
         elif "claude" in model_lower:
             prov = "claude"
@@ -290,6 +319,12 @@ class BrowserSessionEngine:
                                 await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=20000)
                             elif "chatgpt.com" in page.url:
                                 await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=20000)
+                            elif "deepseek.com" in page.url:
+                                await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=20000)
+                            elif "qwen.ai" in page.url:
+                                await page.goto("https://chat.qwen.ai", wait_until="domcontentloaded", timeout=20000)
+                            elif "grok.com" in page.url:
+                                await page.goto("https://grok.com", wait_until="domcontentloaded", timeout=20000)
             except asyncio.CancelledError:
                 break
             except Exception as e:

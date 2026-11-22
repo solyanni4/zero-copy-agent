@@ -27,6 +27,25 @@ DISPLAY_NAME_REGISTRY: Dict[str, str] = {
     "claude-3-5-sonnet": "Claude 3.5 Sonnet",
     "claude-pro": "Claude Pro",
     "claude-3-haiku": "Claude 3 Haiku",
+
+    # DeepSeek
+    "deepseek-chat": "DeepSeek V3 (Chat)",
+    "deepseek-reasoner": "DeepSeek R1 (DeepThink)",
+    "deepseek-coder": "DeepSeek Coder",
+
+    # Qwen (Cloud & Web)
+    "qwen-max": "Qwen Max (Flagship)",
+    "qwen-plus": "Qwen Plus",
+    "qwen-turbo": "Qwen Turbo",
+    "qwen-coder": "Qwen 2.5 Coder (Cloud)",
+    "qwen-coder-turbo": "Qwen Coder Turbo",
+    "qwq": "Qwen QwQ (Reasoning)",
+
+    # xAI Grok
+    "grok-3": "xAI Grok 3 (Reasoning)",
+    "grok-3-mini": "xAI Grok 3 Mini",
+    "grok-2-1212": "xAI Grok 2",
+    "grok-beta": "xAI Grok Beta",
     
     # Local GPU (Ollama)
     "qwen2.5-coder:14b": "Qwen2.5-Coder 14B (Local GPU)",
@@ -65,8 +84,12 @@ def get_display_name(model_id: str, custom_overrides: Optional[Dict[str, str]] =
         sub_name = model_id.split("/", 1)[1]
         return f"{sub_name} (Local GPU)"
 
+    if "deepseek" in raw:
+        return f"{model_id} (DeepSeek)"
+    if "grok" in raw:
+        return f"{model_id} (xAI)"
     if "qwen" in raw:
-        return f"{model_id} (Local GPU)"
+        return f"{model_id} (Qwen)"
     if "gemini" in raw:
         return f"{model_id} (Google)"
     if "claude" in raw:

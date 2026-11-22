@@ -75,6 +75,10 @@ class UxConfig(BaseModel):
     hide_inactive_models: bool = True
     display_names_override: Dict[str, str] = Field(default_factory=dict)
 
+class RoleConfig(BaseModel):
+    primary: str = "gemini-4-neon"
+    fallback_order: List[str] = Field(default_factory=list)
+
 class CascadeConfig(BaseModel):
     max_rework_iterations: int = 2
     enable_local_gate: bool = True
@@ -86,6 +90,27 @@ class CascadeConfig(BaseModel):
     reviewer_model: Optional[str] = None
     hard_gate_cmd: str = "python -m py_compile"
     mode: str = "auto"
+    planner: Optional[RoleConfig] = Field(
+        default_factory=lambda: RoleConfig(
+            primary="gemini-4-neon",
+            fallback_order=["deepseek-reasoner", "claude-3-7-sonnet", "gemini-advanced"]
+        )
+    )
+    coder: Optional[RoleConfig] = Field(
+        default_factory=lambda: RoleConfig(
+            primary="qwen2.5-coder:14b",
+            fallback_order=["qwen-coder", "deepseek-chat", "gpt-4o"]
+        )
+    )
+    reviewer: Optional[RoleConfig] = Field(
+        default_factory=lambda: RoleConfig(
+            primary="gemini-4-neon",
+            fallback_order=["chatgpt-plus", "grok-3", "claude-3-7-sonnet"]
+        )
+    )
+    fallback_order: List[str] = Field(
+        default_factory=lambda: ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "ollama"]
+    )
 
 class AppConfig(BaseModel):
     version: str = "1.0.0"

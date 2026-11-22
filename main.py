@@ -718,6 +718,11 @@ async def api_uninstall_system(payload: dict = Body(...)):
 async def api_get_orchestration_config():
     """Returns custom orchestration pipeline settings."""
     from core.config import config
+    cascade_cfg = getattr(config, "cascade", None)
+    planner_dict = cascade_cfg.planner.model_dump() if (cascade_cfg and cascade_cfg.planner and hasattr(cascade_cfg.planner, "model_dump")) else (cascade_cfg.planner.dict() if cascade_cfg and cascade_cfg.planner else None)
+    coder_dict = cascade_cfg.coder.model_dump() if (cascade_cfg and cascade_cfg.coder and hasattr(cascade_cfg.coder, "model_dump")) else (cascade_cfg.coder.dict() if cascade_cfg and cascade_cfg.coder else None)
+    reviewer_dict = cascade_cfg.reviewer.model_dump() if (cascade_cfg and cascade_cfg.reviewer and hasattr(cascade_cfg.reviewer, "model_dump")) else (cascade_cfg.reviewer.dict() if cascade_cfg and cascade_cfg.reviewer else None)
+
     return {
         "status": "ok",
         "config": {
@@ -728,14 +733,18 @@ async def api_get_orchestration_config():
             "max_rework": getattr(config.cascade, "max_rework_iterations", 2),
             "mode": getattr(config.cascade, "mode", "auto"),
             "enable_local_gate": getattr(config.cascade, "enable_local_gate", True),
-            "enable_architect_audit": getattr(config.cascade, "enable_architect_audit", True)
+            "enable_architect_audit": getattr(config.cascade, "enable_architect_audit", True),
+            "planner": planner_dict,
+            "coder": coder_dict,
+            "reviewer": reviewer_dict,
+            "fallback_order": getattr(config.cascade, "fallback_order", [])
         }
     }
 
 @app.post("/v1/orchestration/config")
 async def api_save_orchestration_config(payload: dict = Body(...)):
     """Saves custom orchestration pipeline settings to config.yaml and applies to live orchestrator."""
-    from core.config import config, save_config
+    from core.config import config, save_config, RoleConfig
     if "architect_model" in payload:
         config.cascade.architect_model = payload["architect_model"]
         orchestrator.architect_model = payload["architect_model"]
@@ -745,6 +754,23 @@ async def api_save_orchestration_config(payload: dict = Body(...)):
     if "auditor_model" in payload:
         config.cascade.auditor_model = payload["auditor_model"]
         orchestrator.reviewer_model = payload["auditor_model"]
+    if "planner" in payload and isinstance(payload["planner"], dict):
+        config.cascade.planner = RoleConfig(**payload["planner"])
+        if "primary" in payload["planner"]:
+            config.cascade.architect_model = payload["planner"]["primary"]
+            orchestrator.architect_model = payload["planner"]["primary"]
+    if "coder" in payload and isinstance(payload["coder"], dict):
+        config.cascade.coder = RoleConfig(**payload["coder"])
+        if "primary" in payload["coder"]:
+            config.cascade.coder_model = payload["coder"]["primary"]
+            orchestrator.executor_model = payload["coder"]["primary"]
+    if "reviewer" in payload and isinstance(payload["reviewer"], dict):
+        config.cascade.reviewer = RoleConfig(**payload["reviewer"])
+        if "primary" in payload["reviewer"]:
+            config.cascade.auditor_model = payload["reviewer"]["primary"]
+            orchestrator.reviewer_model = payload["reviewer"]["primary"]
+    if "fallback_order" in payload and isinstance(payload["fallback_order"], list):
+        config.cascade.fallback_order = payload["fallback_order"]
     if "hard_gate_cmd" in payload:
         config.cascade.hard_gate_cmd = payload["hard_gate_cmd"]
     if "max_rework" in payload:
@@ -810,6 +836,12 @@ async def api_get_subscriptions():
             acc["api_key"] = "***"
     return {"status": "ok", "subscriptions": sub_dict, "healing_modifications": mods}
 
+@app.get("/v1/providers/presets")
+async def api_get_provider_presets():
+    """Returns list of built-in API presets (DeepSeek, Qwen, Grok, OpenRouter, Groq, etc.)."""
+    from core.providers import list_presets
+    return {"status": "ok", "presets": list_presets()}
+
 @app.get("/v1/providers/keys")
 async def api_get_provider_keys():
     """Returns list of configured provider accounts with masked API keys."""
@@ -822,13 +854,15 @@ async def api_get_provider_keys():
 @app.post("/v1/providers/keys")
 async def api_add_provider_key(request: AddKeyRequest):
     """Adds or updates an API key for a provider, validating and registering it dynamically."""
-    if not request.api_key or len(request.api_key.strip()) < 8:
+    if request.provider != "ollama" and (not request.api_key or len(request.api_key.strip()) < 8):
         raise HTTPException(status_code=400, detail="API ключ не может быть короче 8 символов")
 
     acc, mods = config_healer.add_account_key(
         provider=request.provider,
         api_key=request.api_key,
-        alias=request.alias
+        alias=request.alias,
+        base_url=request.base_url,
+        models=request.models
     )
     sync_mesh_from_subscriptions()
     await model_registry.get_models(force_refresh=True, mesh=mesh)
@@ -880,10 +914,11 @@ async def api_toggle_account(account_id: str):
 async def api_web_auth(provider: str, account_id: Optional[str] = None):
     """Launches interactive browser authentication in isolated subprocess for specific profile."""
     prov = provider.strip().lower()
-    if prov not in {"gemini", "chatgpt", "claude"}:
+    allowed_providers = {"gemini", "chatgpt", "claude", "deepseek", "qwen", "grok"}
+    if prov not in allowed_providers:
         raise HTTPException(
             status_code=400,
-            detail=f"Недопустимый провайдер: '{provider}'. Поддерживаются: gemini, chatgpt, claude"
+            detail=f"Недопустимый провайдер: '{provider}'. Поддерживаются: {', '.join(sorted(allowed_providers))}"
         )
 
     try:

@@ -27,6 +27,8 @@ class AddKeyRequest(BaseModel):
     provider: str
     api_key: str
     alias: Optional[str] = None
+    base_url: Optional[str] = None
+    models: Optional[List[str]] = None
 
 class PlaygroundRequest(BaseModel):
     prompt: str

@@ -69,15 +69,93 @@ class HybridOrchestrator:
         return requested_id
 
     def _detect_provider(self, target: str) -> Optional[str]:
-        """Infers provider name (openai/anthropic/gemini) from model identifier."""
+        """Infers provider name from model identifier or registered accounts."""
+        if not target:
+            return None
         low = target.lower()
-        if low.startswith(("gpt-", "o1", "o3", "chatgpt")):
+        if low.startswith(("deepseek", "deep-seek")):
+            return "deepseek"
+        elif low.startswith(("qwen", "qwq")):
+            return "qwen"
+        elif low.startswith("grok"):
+            return "grok"
+        elif low.startswith(("gpt-", "o1", "o3", "chatgpt")):
             return "openai"
         elif low.startswith("claude-"):
             return "anthropic"
         elif low.startswith("gemini-"):
             return "gemini"
+        elif "/" in low and any(p in low for p in ("deepseek/", "anthropic/", "openai/", "meta-llama/")):
+            return "openrouter"
+        elif any(g in low for g in ("llama-3", "mixtral")):
+            return "groq"
+
+        try:
+            from core.healer import config_healer
+            cfg, _ = config_healer.load_or_create()
+            for acc in cfg.accounts:
+                for m in acc.models:
+                    if m.id.lower() == low:
+                        return acc.provider.lower()
+        except Exception:
+            pass
         return None
+
+    def _resolve_api_endpoint(self, provider: str, key: str, model_id: str, prompt: str, stream: bool = False):
+        from core.providers import get_preset
+        from core.healer import config_healer
+        prov = provider.lower()
+
+        base_url = None
+        try:
+            cfg, _ = config_healer.load_or_create()
+            acc = next((a for a in cfg.accounts if a.provider == prov and a.api_key == key), None)
+            if acc and acc.base_url:
+                base_url = acc.base_url
+        except Exception:
+            pass
+
+        preset = get_preset(prov)
+        if not base_url and preset:
+            base_url = preset.get("base_url")
+
+        if prov == "anthropic":
+            url = "https://api.anthropic.com/v1/messages" if not base_url else f"{base_url.rstrip('/')}/messages"
+            headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+            payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
+            if stream:
+                payload["stream"] = True
+            return "anthropic", url, headers, payload
+
+        if not base_url:
+            if prov == "gemini":
+                base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+            elif prov in ("chatgpt", "openai"):
+                base_url = "https://api.openai.com/v1"
+            elif prov == "deepseek":
+                base_url = "https://api.deepseek.com/v1"
+            elif prov == "qwen":
+                base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+            elif prov == "grok":
+                base_url = "https://api.x.ai/v1"
+            elif prov == "openrouter":
+                base_url = "https://openrouter.ai/api/v1"
+            elif prov == "groq":
+                base_url = "https://api.groq.com/openai/v1"
+            else:
+                base_url = "https://api.openai.com/v1"
+
+        clean_base = base_url.rstrip("/")
+        if clean_base.endswith("/chat/completions"):
+            url = clean_base
+        else:
+            url = f"{clean_base}/chat/completions"
+
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
+        if stream:
+            payload["stream"] = True
+        return "openai_compatible", url, headers, payload
 
     async def _query_api_provider(self, provider: str, model_id: str, prompt: str) -> str:
         """Routes prompt to official cloud API via QuotaMesh with automatic failover on 429/5xx."""
@@ -91,31 +169,18 @@ class HybridOrchestrator:
             if not key:
                 break
             try:
+                api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False)
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    if provider == "openai":
-                        url = "https://api.openai.com/v1/chat/completions"
-                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
-                        resp = await client.post(url, headers=headers, json=payload)
-                    elif provider == "anthropic":
-                        url = "https://api.anthropic.com/v1/messages"
-                        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
-                        resp = await client.post(url, headers=headers, json=payload)
-                    elif provider == "gemini":
-                        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
-                        resp = await client.post(url, headers=headers, json=payload)
-                    else:
-                        raise ValueError(f"Unknown provider: {provider}")
+                    resp = await client.post(url, headers=headers, json=payload)
 
                     if resp.status_code == 200:
                         mesh.record_success(provider, key)
                         data = resp.json()
-                        if provider in ("openai", "gemini"):
-                            return data["choices"][0]["message"]["content"]
-                        elif provider == "anthropic":
+                        if api_type == "openai_compatible":
+                            msg = data["choices"][0]["message"]
+                            content = msg.get("content") or msg.get("reasoning_content") or ""
+                            return content
+                        elif api_type == "anthropic":
                             blocks = data.get("content", [])
                             return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
                     elif resp.status_code in (429, 500, 502, 503, 504):
@@ -146,22 +211,8 @@ class HybridOrchestrator:
             if not key:
                 break
             try:
+                api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=True)
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    if provider == "openai":
-                        url = "https://api.openai.com/v1/chat/completions"
-                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "stream": True}
-                    elif provider == "anthropic":
-                        url = "https://api.anthropic.com/v1/messages"
-                        headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}], "stream": True}
-                    elif provider == "gemini":
-                        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-                        payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "stream": True}
-                    else:
-                        raise ValueError(f"Unknown provider: {provider}")
-
                     async with client.stream("POST", url, headers=headers, json=payload) as response:
                         if response.status_code in (429, 500, 502, 503, 504):
                             mesh.record_failure(provider, key, response.status_code)
@@ -173,7 +224,7 @@ class HybridOrchestrator:
                             raise RuntimeError(f"Provider API stream error ({response.status_code}): {body.decode('utf-8', errors='ignore')[:300]}")
 
                         mesh.record_success(provider, key)
-                        if provider in ("openai", "gemini"):
+                        if api_type == "openai_compatible":
                             async for line in response.aiter_lines():
                                 line = line.strip()
                                 if line.startswith("data: ") and line != "data: [DONE]":
@@ -182,12 +233,12 @@ class HybridOrchestrator:
                                         choices = chunk_data.get("choices", [])
                                         if choices:
                                             delta = choices[0].get("delta", {})
-                                            content = delta.get("content")
+                                            content = delta.get("content") or delta.get("reasoning_content")
                                             if content:
                                                 yield content
                                     except Exception:
                                         pass
-                        elif provider == "anthropic":
+                        elif api_type == "anthropic":
                             async for line in response.aiter_lines():
                                 line = line.strip()
                                 if line.startswith("data: "):
@@ -227,6 +278,24 @@ class HybridOrchestrator:
                 config_healer.sync_discovered_models("ollama", ollama_models)
         except Exception as e:
             logger.debug(f"[Orchestrator] Ollama discovery error: {e}")
+
+        # Check remote models discovery for active OpenAI-compatible providers
+        try:
+            from core.providers import discover_remote_models, get_preset
+            cfg, _ = config_healer.load_or_create()
+            for acc in cfg.accounts:
+                if acc.auth_type == "api_key" and acc.status == "active" and acc.api_key:
+                    b_url = acc.base_url
+                    if not b_url:
+                        preset = get_preset(acc.provider)
+                        if preset:
+                            b_url = preset.get("base_url")
+                    if b_url:
+                        discovered = await discover_remote_models(b_url, acc.api_key)
+                        if discovered:
+                            config_healer.sync_discovered_models(acc.provider, discovered)
+        except Exception as disc_err:
+            logger.debug(f"[Orchestrator] Remote API model discovery warning: {disc_err}")
 
         # Fetch models filtered by live provider connectivity
         cards = await model_registry.get_models(
@@ -479,68 +548,176 @@ class HybridOrchestrator:
         If browser session is NOT ready but API key is available in QuotaMesh, routes via API.
         In test mock environments (where is_ready is not defined on browser_engine), defers to browser_engine.
         """
-        provider = self._detect_provider(model_id)
+        from core.healer import DEFAULT_PROVIDER_MODELS
+        resolved_id = model_id
+        if model_id in DEFAULT_PROVIDER_MODELS:
+            resolved_id = DEFAULT_PROVIDER_MODELS[model_id][0]
+
+        provider = self._detect_provider(resolved_id)
         browser_is_ready = getattr(self.browser_engine, "is_ready", None)
 
         if browser_is_ready is None and hasattr(self.browser_engine, "query"):
-            return await self.browser_engine.query(prompt, model_id)
+            return await self.browser_engine.query(prompt, resolved_id)
 
-        if browser_is_ready is True:
-            return await self.browser_engine.query(prompt, model_id)
+        # 1. Active Web Session in browser engine
+        if browser_is_ready is True and provider:
+            active_web = mesh.get_active_web_account(provider)
+            if active_web:
+                return await self.browser_engine.query(prompt, resolved_id)
 
+        # 2. Active Cloud API key in QuotaMesh
         if provider and mesh.get_active_key(provider):
-            return await self._query_api_provider(provider, model_id, prompt)
+            return await self._query_api_provider(provider, resolved_id, prompt)
 
+        # 3. Local GPU via Ollama
         try:
             ollama_models = await self.ollama.list_models()
-            if model_id.startswith("ollama/") or model_id in ollama_models:
-                return await self.ollama.send_prompt(prompt, model=model_id)
+            if resolved_id.startswith("ollama/") or resolved_id in ollama_models or "qwen2.5-coder" in resolved_id:
+                return await self.ollama.send_prompt(prompt, model=resolved_id)
         except Exception:
             pass
 
-        for p in ("gemini", "openai", "anthropic"):
-            if mesh.get_active_key(p):
-                return await self._query_api_provider(p, model_id, prompt)
+        # 4. Fallback to browser session if ready
+        if browser_is_ready is True:
+            return await self.browser_engine.query(prompt, resolved_id)
 
-        return await self.browser_engine.query(prompt, model_id)
+        # 5. Check global fallback order for any active key
+        cascade_cfg = getattr(config, "cascade", None)
+        global_order = getattr(cascade_cfg, "fallback_order", ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "openai"]) or []
+        for p in global_order:
+            if mesh.get_active_key(p):
+                return await self._query_api_provider(p, resolved_id, prompt)
+
+        return await self.browser_engine.query(prompt, resolved_id)
 
     async def _query_model_stream(self, model_id: str, prompt: str) -> AsyncGenerator[str, None]:
         """Streams prompt response via QuotaMesh API, Ollama GPU, or Browser Engine."""
-        provider = self._detect_provider(model_id)
+        from core.healer import DEFAULT_PROVIDER_MODELS
+        resolved_id = model_id
+        if model_id in DEFAULT_PROVIDER_MODELS:
+            resolved_id = DEFAULT_PROVIDER_MODELS[model_id][0]
+
+        provider = self._detect_provider(resolved_id)
         browser_is_ready = getattr(self.browser_engine, "is_ready", None)
 
         if browser_is_ready is None and hasattr(self.browser_engine, "query_stream"):
-            async for chunk in self.browser_engine.query_stream(prompt, model_id):
+            async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
                 yield chunk
             return
 
-        if browser_is_ready is True:
-            async for chunk in self.browser_engine.query_stream(prompt, model_id):
-                yield chunk
-            return
+        if browser_is_ready is True and provider:
+            active_web = mesh.get_active_web_account(provider)
+            if active_web:
+                async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
+                    yield chunk
+                return
 
         if provider and mesh.get_active_key(provider):
-            async for chunk in self._query_api_provider_stream(provider, model_id, prompt):
+            async for chunk in self._query_api_provider_stream(provider, resolved_id, prompt):
                 yield chunk
             return
 
         try:
             ollama_models = await self.ollama.list_models()
-            if model_id.startswith("ollama/") or model_id in ollama_models:
-                async for chunk in self.ollama.send_prompt_stream(prompt, model=model_id):
+            if resolved_id.startswith("ollama/") or resolved_id in ollama_models or "qwen2.5-coder" in resolved_id:
+                async for chunk in self.ollama.send_prompt_stream(prompt, model=resolved_id):
                     yield chunk
                 return
         except Exception:
             pass
 
-        for p in ("gemini", "openai", "anthropic"):
+        if browser_is_ready is True:
+            async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
+                yield chunk
+            return
+
+        cascade_cfg = getattr(config, "cascade", None)
+        global_order = getattr(cascade_cfg, "fallback_order", ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "openai"]) or []
+        for p in global_order:
             if mesh.get_active_key(p):
-                async for chunk in self._query_api_provider_stream(p, model_id, prompt):
+                async for chunk in self._query_api_provider_stream(p, resolved_id, prompt):
                     yield chunk
                 return
 
+        async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
+            yield chunk
+
         async for chunk in self.browser_engine.query_stream(prompt, model_id):
             yield chunk
+
+    async def query_role_with_fallback(
+        self,
+        role: str,
+        prompt: str,
+        req_id: str = ""
+    ) -> Tuple[str, str]:
+        """
+        Executes prompt for a cascade role (planner, coder, reviewer) with automatic
+        seamless failover across candidate models/providers from fallback_order.
+        Recovers from 429 rate limits, timeouts, Standby responses, or web-session losses
+        without interrupting the cascade.
+        """
+        from core.healer import DEFAULT_PROVIDER_MODELS
+        from core.config import config
+        cascade_cfg = getattr(getattr(self, "config", None), "cascade", None) or getattr(config, "cascade", None)
+        role_cfg = getattr(cascade_cfg, role, None) if cascade_cfg else None
+
+        primary = getattr(role_cfg, "primary", None) if role_cfg else None
+        if not primary:
+            if role == "planner":
+                primary = getattr(self, "architect_model", "gemini-4-neon")
+            elif role == "coder":
+                primary = getattr(self, "executor_model", "qwen2.5-coder:14b")
+            elif role == "reviewer":
+                primary = getattr(self, "reviewer_model", "gemini-4-neon")
+
+        candidates: List[str] = []
+        if primary:
+            candidates.append(primary)
+
+        if role_cfg and hasattr(role_cfg, "fallback_order") and role_cfg.fallback_order:
+            for fb in role_cfg.fallback_order:
+                if fb and fb not in candidates:
+                    candidates.append(fb)
+
+        global_fb = getattr(cascade_cfg, "fallback_order", None) if cascade_cfg else None
+        if not global_fb:
+            global_fb = ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "ollama"]
+        for g in global_fb:
+            if g and g not in candidates:
+                candidates.append(g)
+
+        last_error = None
+        for candidate in candidates:
+            resolved_candidate = candidate
+            if candidate in DEFAULT_PROVIDER_MODELS:
+                resolved_candidate = DEFAULT_PROVIDER_MODELS[candidate][0]
+
+            logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}'...")
+            try:
+                res = await self._query_model(resolved_candidate, prompt)
+
+                # Check for Standby response or unauthenticated fallback
+                if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response. Failing over...")
+                    prov = self._detect_provider(resolved_candidate)
+                    if prov:
+                        mesh.record_web_failure(prov, resolved_candidate)
+                    continue
+
+                logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
+                return res, resolved_candidate
+            except Exception as e:
+                last_error = e
+                prov = self._detect_provider(resolved_candidate)
+                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' failed for role '{role}': {e}. Failing over...")
+                if prov:
+                    key = mesh.get_active_key(prov)
+                    if key:
+                        mesh.record_failure(prov, key, 500)
+                continue
+
+        raise RuntimeError(f"Все кандидаты в каскаде для роли '{role}' ({candidates}) исчерпали квоту или недоступны: {last_error}")
 
     async def _run_cascade_architect(
         self,
@@ -563,22 +740,23 @@ class HybridOrchestrator:
 
         if existing_plan:
             plan = existing_plan
+            used_arch = arch_model
         else:
-            logger.info(f"[Cascade] Step 1: Architectural Blueprint via {arch_model}...")
+            logger.info(f"[Cascade] Step 1: Architectural Blueprint...")
             if req_id:
                 analytics.record_event(req_id, "cascade_step1", arch_model, "Generating Architectural Blueprint")
             plan_prompt = (
                 f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
                 f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
             )
-            plan = await self._query_model(arch_model, plan_prompt)
+            plan, used_arch = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
 
         # Breakpoint verification
         if self.breakpoint_enabled:
             logger.info("[Cascade] Breakpoint active. Pausing after architectural plan.")
             if req_id:
-                analytics.record_event(req_id, "cascade_breakpoint", arch_model, "Cascade paused at breakpoint after architectural plan")
-            badge = format_cascade_badge(arch_model, "pending", status="PAUSED", iterations=0) if inject_signature else ""
+                analytics.record_event(req_id, "cascade_breakpoint", used_arch, "Cascade paused at breakpoint after architectural plan")
+            badge = format_cascade_badge(used_arch, "pending", status="PAUSED", iterations=0) if inject_signature else ""
             return (
                 f"{badge}"
                 f"### [Breakpoint] Архитектурный план сформирован (Ожидает подтверждения):\n{plan}\n\n"
@@ -607,21 +785,21 @@ class HybridOrchestrator:
                         resp = await self.ollama.send_prompt(prompt_text)
                         return resp, "ollama/default"
                 except Exception as e:
-                    logger.warning(f"[Cascade] Local Ollama execution failed ({e}). Falling back to cloud/web channel.")
+                    logger.warning(f"[Cascade] Local Ollama execution failed ({e}). Falling back to role coder pool.")
 
-            # Fallback to available cloud or web channel
-            fallback_target = arch_model
-            if coder_target and not coder_target.startswith("ollama/") and coder_target != "tier:local-fast":
-                fallback_target = coder_target
-
-            logger.info(f"[Cascade] Local Ollama unavailable. Executing Step 2 via cloud/web channel ({fallback_target})...")
-            resp = await self._query_model(fallback_target, prompt_text)
-            return resp, fallback_target
+            # Fallback to role-based coder pool
+            try:
+                resp, chosen = await self.query_role_with_fallback("coder", prompt_text, req_id=req_id)
+                return resp, chosen
+            except Exception as fb_err:
+                logger.warning(f"[Cascade] Role coder pool exhausted ({fb_err}). Falling back to planner {used_arch}...")
+                resp = await self._query_model(used_arch, prompt_text)
+                return resp, used_arch
 
         base_max_rework = getattr(self, "max_rework_iterations", 2)
         max_rework = base_max_rework
         current_code = ""
-        executor_id = arch_model
+        executor_id = used_arch
         iteration = 0
         final_status = "PASS"
         last_audit_issues: List[Dict[str, Any]] = []
@@ -655,8 +833,8 @@ class HybridOrchestrator:
 
             current_code, executor_id = await _call_executor(code_prompt)
 
-            # Если executor_id совпадает с arch_model, сокращаем повторный аудит до 1 прохода во избежание таймаутов
-            if executor_id == arch_model:
+            # Если executor_id совпадает с used_arch, сокращаем повторный аудит до 1 прохода во избежание таймаутов
+            if executor_id == used_arch:
                 max_rework = min(base_max_rework, 1)
 
             # --- 1. LOCAL HARD GATE (0 tokens) ---
@@ -678,16 +856,16 @@ class HybridOrchestrator:
 
             # --- 2. ARCHITECT AUDIT (semantic diff-based check) ---
             if self.enable_architect_audit:
-                logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num}) via {rev_model}...")
+                logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num})...")
                 audit_prompt = self.auditor.build_audit_prompt(plan, current_code)
-                raw_audit = await self._query_model(rev_model, audit_prompt)
+                raw_audit, used_reviewer = await self.query_role_with_fallback("reviewer", audit_prompt, req_id=req_id)
                 audit_res = self.auditor.parse_audit_response(raw_audit)
                 verdict = audit_res.get("verdict", "PASS")
                 audit_issues = audit_res.get("issues", [])
                 critical_issues = [i for i in audit_issues if i.get("severity") == "critical"]
 
                 if req_id:
-                    analytics.record_event(req_id, "architect_audit", rev_model, f"Architect Audit verdict: {verdict} ({len(audit_issues)} issues)", audit_res)
+                    analytics.record_event(req_id, "architect_audit", used_reviewer, f"Architect Audit verdict: {verdict} ({len(audit_issues)} issues)", audit_res)
 
                 if verdict == "PASS" and not critical_issues:
                     logger.info(f"[Cascade] Architect Audit PASSED on iteration {iteration_num}.")
@@ -710,7 +888,7 @@ class HybridOrchestrator:
         if final_status == "ESCALATED":
             if req_id:
                 analytics.record_event(req_id, "cascade_escalated", "cascade:architect", f"Cascade exceeded max rework iterations ({max_rework}). Escalated.")
-            badge = format_cascade_badge(arch_model, executor_id, status="ESCALATED", iterations=iteration) if inject_signature else ""
+            badge = format_cascade_badge(used_arch, executor_id, status="ESCALATED", iterations=iteration) if inject_signature else ""
             escalation_report = "\n".join([
                 f"- **{i.get('file', 'General')}** [{i.get('severity', 'warning')}]: {i.get('description', '')} (*Инструкция: {i.get('fix_instruction', '')}*)"
                 for i in last_audit_issues
@@ -724,7 +902,7 @@ class HybridOrchestrator:
                 f"---\n### [Code] Последняя версия реализации:\n{current_code}"
             )
 
-        badge = format_cascade_badge(arch_model, executor_id, status="PASS", iterations=iteration + 1) if inject_signature else ""
+        badge = format_cascade_badge(used_arch, executor_id, status="PASS", iterations=iteration + 1) if inject_signature else ""
         return (
             f"{badge}"
             f"### [Plan] Архитектурный план (Шаг 1):\n{plan}\n\n"
@@ -748,9 +926,15 @@ class HybridOrchestrator:
             f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
         )
         plan_tokens = []
-        async for token in self._query_model_stream(arch_model, plan_prompt):
-            plan_tokens.append(token)
-            yield token
+        try:
+            async for token in self._query_model_stream(arch_model, plan_prompt):
+                plan_tokens.append(token)
+                yield token
+        except Exception as e:
+            logger.warning(f"[Cascade] Stream planning failed on {arch_model} ({e}). Falling back to query_role_with_fallback...")
+            fallback_plan, _ = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
+            plan_tokens.append(fallback_plan)
+            yield fallback_plan
 
         plan = "".join(plan_tokens)
 

@@ -1,4 +1,4 @@
-version: "1.1.0"
+version: "1.2.0"
 
 server:
   host: "0.0.0.0"
@@ -8,7 +8,7 @@ server:
 browser:
   headless: true
   user_data_dir: "./browser_profile"
-  provider: "gemini" # gemini | chatgpt | claude | mock
+  provider: "gemini" # gemini | chatgpt | claude | deepseek | qwen | grok | mock
   timeout_seconds: 60
 
 models:
@@ -35,6 +35,27 @@ models:
     - id: "claude-pro"
       name: "Anthropic Claude Pro"
       provider: "claude"
+    - id: "deepseek-chat"
+      name: "DeepSeek V3 (Chat)"
+      provider: "deepseek"
+    - id: "deepseek-reasoner"
+      name: "DeepSeek R1 (DeepThink)"
+      provider: "deepseek"
+    - id: "qwen-max"
+      name: "Alibaba Qwen Max"
+      provider: "qwen"
+    - id: "qwen-coder"
+      name: "Alibaba Qwen 2.5 Coder"
+      provider: "qwen"
+    - id: "qwq"
+      name: "Alibaba Qwen QwQ"
+      provider: "qwen"
+    - id: "grok-3"
+      name: "xAI Grok 3"
+      provider: "grok"
+    - id: "grok-3-mini"
+      name: "xAI Grok 3 Mini"
+      provider: "grok"
     - id: "mock-test"
       name: "Zero-Copy Mock Engine (Instant Test)"
       provider: "mock"
@@ -53,3 +74,31 @@ cascade:
   max_rework_iterations: 2
   enable_local_gate: true
   enable_architect_audit: true
+  hard_gate_cmd: "python -m py_compile"
+  mode: "auto"
+  planner:
+    primary: "gemini-4-neon"
+    fallback_order:
+      - "deepseek-reasoner"
+      - "claude-3-7-sonnet"
+      - "gemini-advanced"
+  coder:
+    primary: "qwen2.5-coder:14b"
+    fallback_order:
+      - "qwen-coder"
+      - "deepseek-chat"
+      - "gpt-4o"
+  reviewer:
+    primary: "gemini-4-neon"
+    fallback_order:
+      - "chatgpt-plus"
+      - "grok-3"
+      - "claude-3-7-sonnet"
+  fallback_order:
+    - "gemini"
+    - "deepseek"
+    - "qwen"
+    - "chatgpt"
+    - "grok"
+    - "claude"
+    - "ollama"

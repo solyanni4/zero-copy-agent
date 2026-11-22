@@ -1065,10 +1065,32 @@ async function deleteAccount(id) {
   }
 }
 
+const PRESET_URLS = {
+  deepseek: 'https://api.deepseek.com/v1',
+  qwen: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+  grok: 'https://api.x.ai/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+  groq: 'https://api.groq.com/openai/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+  openai: 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  custom: 'https://',
+  ollama: 'http://127.0.0.1:11434/v1'
+};
+
+function onProviderPresetChange() {
+  const provider = document.getElementById('add-key-provider')?.value || 'deepseek';
+  const urlInput = document.getElementById('add-key-base-url');
+  if (urlInput && PRESET_URLS[provider]) {
+    urlInput.value = PRESET_URLS[provider];
+  }
+}
+
 function openAddKeyModal() {
   const m = document.getElementById('modal-add-key');
   if (m) {
     m.classList.remove('hidden');
+    onProviderPresetChange();
     const secret = document.getElementById('add-key-secret');
     if (secret) secret.focus();
   }
@@ -1084,6 +1106,7 @@ async function submitAddKeyForm(e) {
   const provider = document.getElementById('add-key-provider')?.value || 'gemini';
   const apiKey = document.getElementById('add-key-secret')?.value?.trim() || '';
   const alias = document.getElementById('add-key-alias')?.value?.trim() || '';
+  const baseUrl = document.getElementById('add-key-base-url')?.value?.trim() || '';
 
   if (provider !== 'ollama' && (!apiKey || apiKey.length < 8)) {
     alert('API-ключ должен содержать не менее 8 символов.');
@@ -1100,7 +1123,8 @@ async function submitAddKeyForm(e) {
       body: JSON.stringify({
         provider: provider,
         api_key: apiKey || 'local-ollama-key',
-        alias: alias || undefined
+        alias: alias || undefined,
+        base_url: baseUrl || undefined
       })
     });
     if (res.ok) {
@@ -1705,12 +1729,24 @@ async function loadOrchestrationConfig() {
     const cfg = data.config || {};
     const archEl = document.getElementById('orch-architect-model');
     const coderEl = document.getElementById('orch-coder-model');
+    const reviewerEl = document.getElementById('orch-reviewer-model');
+    const fallbackEl = document.getElementById('orch-fallback-order');
     const gateEl = document.getElementById('orch-gate-cmd');
     const rwEl = document.getElementById('orch-max-rework');
     const modeEl = document.getElementById('orch-mode');
 
-    if (archEl && cfg.architect_model) archEl.value = cfg.architect_model;
-    if (coderEl && cfg.coder_model) coderEl.value = cfg.coder_model;
+    if (archEl && (cfg.architect_model || cfg.planner?.primary)) {
+      archEl.value = cfg.planner?.primary || cfg.architect_model;
+    }
+    if (coderEl && (cfg.coder_model || cfg.coder?.primary)) {
+      coderEl.value = cfg.coder?.primary || cfg.coder_model;
+    }
+    if (reviewerEl && (cfg.auditor_model || cfg.reviewer?.primary)) {
+      reviewerEl.value = cfg.reviewer?.primary || cfg.auditor_model;
+    }
+    if (fallbackEl && cfg.fallback_order) {
+      fallbackEl.value = Array.isArray(cfg.fallback_order) ? cfg.fallback_order.join(', ') : cfg.fallback_order;
+    }
     if (gateEl && cfg.hard_gate_cmd) gateEl.value = cfg.hard_gate_cmd;
     if (rwEl && cfg.max_rework !== undefined) rwEl.value = cfg.max_rework;
     if (modeEl && cfg.mode) modeEl.value = cfg.mode;
@@ -1721,9 +1757,13 @@ async function saveOrchestrationForm(e) {
   if (e) e.preventDefault();
   const arch = document.getElementById('orch-architect-model')?.value;
   const coder = document.getElementById('orch-coder-model')?.value;
+  const reviewer = document.getElementById('orch-reviewer-model')?.value;
+  const fallbackRaw = document.getElementById('orch-fallback-order')?.value;
   const gate = document.getElementById('orch-gate-cmd')?.value;
   const rw = document.getElementById('orch-max-rework')?.value;
   const mode = document.getElementById('orch-mode')?.value;
+
+  const fallbackList = fallbackRaw ? fallbackRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   try {
     const res = await fetch('/v1/orchestration/config', {
@@ -1732,6 +1772,11 @@ async function saveOrchestrationForm(e) {
       body: JSON.stringify({
         architect_model: arch,
         coder_model: coder,
+        auditor_model: reviewer,
+        planner: arch ? { primary: arch, fallback: [] } : undefined,
+        coder: coder ? { primary: coder, fallback: [] } : undefined,
+        reviewer: reviewer ? { primary: reviewer, fallback: [] } : undefined,
+        fallback_order: fallbackList,
         hard_gate_cmd: gate,
         max_rework: rw ? parseInt(rw, 10) : 2,
         mode: mode || 'auto'

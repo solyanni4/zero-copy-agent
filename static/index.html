@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>zero-copy-agent · v1.1.0</title>
+  <title>zero-copy-agent · v1.2.0</title>
   <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <!-- Typography: Inter for UI, JetBrains Mono for metrics, IDs, and code -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -58,7 +58,7 @@
         <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
         <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
       </div>
-      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.1.0</span>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.2.0</span>
     </div>
 
     <!-- Primary Navigation -->
@@ -354,6 +354,18 @@
           <button onclick="startWebAuth('claude')" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-amber hover:text-amber inline-flex items-center gap-1.5 transition" title="Войти в Claude">
             <i data-lucide="key" class="w-3 h-3 text-amber"></i>
             <span>Войти в Claude</span>
+          </button>
+          <button onclick="startWebAuth('deepseek')" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-sky-500 hover:text-sky-500 inline-flex items-center gap-1.5 transition" title="Войти в DeepSeek">
+            <i data-lucide="key" class="w-3 h-3 text-sky-500"></i>
+            <span>Войти в DeepSeek</span>
+          </button>
+          <button onclick="startWebAuth('qwen')" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-purple-500 hover:text-purple-500 inline-flex items-center gap-1.5 transition" title="Войти в Qwen">
+            <i data-lucide="key" class="w-3 h-3 text-purple-500"></i>
+            <span>Войти в Qwen</span>
+          </button>
+          <button onclick="startWebAuth('grok')" class="h-7 px-2.5 rounded bg-surface border border-hairline text-[11px] font-medium text-ink hover:border-rose-500 hover:text-rose-500 inline-flex items-center gap-1.5 transition" title="Войти в Grok">
+            <i data-lucide="key" class="w-3 h-3 text-rose-500"></i>
+            <span>Войти в Grok</span>
           </button>
           <button onclick="promptAddWebAccount()" class="h-7 px-2 rounded bg-surface border border-hairline text-[11px] font-medium text-muted hover:border-cobalt hover:text-cobalt inline-flex items-center gap-1 transition" title="Добавить дополнительный веб-аккаунт">
             <i data-lucide="plus" class="w-3 h-3"></i>
@@ -668,13 +680,24 @@
         </div>
         <form onsubmit="submitAddKeyForm(event)" class="p-5 space-y-4">
           <div>
-            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Провайдер</label>
-            <select id="add-key-provider" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
-              <option value="gemini">Google Gemini API</option>
-              <option value="openai">OpenAI API (ChatGPT)</option>
-              <option value="anthropic">Anthropic Claude API</option>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Провайдер / Пресет</label>
+            <select id="add-key-provider" onchange="onProviderPresetChange()" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
+              <option value="deepseek">DeepSeek API (api.deepseek.com)</option>
+              <option value="qwen">Qwen / DashScope Alibaba (compatible-mode)</option>
+              <option value="grok">xAI Grok API (api.x.ai)</option>
+              <option value="openrouter">OpenRouter Gateway (openrouter.ai)</option>
+              <option value="groq">Groq LPU Fast Inference (api.groq.com)</option>
+              <option value="gemini">Google Gemini API (generativelanguage.googleapis.com)</option>
+              <option value="openai">OpenAI API (api.openai.com)</option>
+              <option value="anthropic">Anthropic Claude API (api.anthropic.com)</option>
+              <option value="custom">Пользовательский OpenAI-Compatible (любой URL)</option>
               <option value="ollama">Локальная Ollama (без ключа)</option>
             </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Базовый адрес API (Base URL)</label>
+            <input id="add-key-base-url" type="text" value="https://api.deepseek.com/v1" placeholder="https://api.deepseek.com/v1" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
+            <span class="text-[10px] text-muted block mt-1">Автоматически подставляется из пресета, можно изменить для своего сервера.</span>
           </div>
           <div>
             <label class="block text-[11px] font-semibold uppercase text-muted mb-1">API-ключ или токен</label>
@@ -683,7 +706,7 @@
           </div>
           <div>
             <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Пользовательское имя (алиас)</label>
-            <input id="add-key-alias" type="text" placeholder="Например: Мой Gemini Pro" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] text-ink focus:outline-none focus:border-cobalt" />
+            <input id="add-key-alias" type="text" placeholder="Например: Мой DeepSeek V3/R1" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] text-ink focus:outline-none focus:border-cobalt" />
           </div>
           <div class="pt-2 flex items-center justify-end gap-2 border-t border-hairline">
             <button type="button" onclick="closeAddKeyModal()" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] text-muted hover:text-ink">Отмена</button>
@@ -705,22 +728,42 @@
         </div>
         <form onsubmit="saveOrchestrationForm(event)" class="p-5 space-y-4">
           <div>
-            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Архитектора (Blueprint & спецификация)</label>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Архитектора / Planner (Blueprint & спецификация)</label>
             <select id="orch-architect-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
               <option value="gemini-4-neon">Gemini 4 Neon (Deeper Analysis)</option>
+              <option value="deepseek-reasoner">DeepSeek R1 (DeepThink / Reasoner)</option>
               <option value="gemini-advanced">Gemini Argon (Web)</option>
-              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet (Thinking)</option>
+              <option value="qwen-max">Qwen Max (Flagship)</option>
+              <option value="grok-3">xAI Grok 3 (Reasoning)</option>
               <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local)</option>
             </select>
           </div>
           <div>
-            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Исполнителя (Кодогенерация)</label>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Исполнителя / Coder (Кодогенерация)</label>
             <select id="orch-coder-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
               <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local GPU)</option>
-              <option value="qwen2.5-coder:7b">Qwen2.5-Coder 7B (Local)</option>
-              <option value="deepseek-coder:6.7b">DeepSeek-Coder 6.7B</option>
+              <option value="qwen-coder">Qwen 2.5 Coder (Cloud / Web)</option>
+              <option value="deepseek-chat">DeepSeek V3 (Chat / Coder)</option>
+              <option value="gpt-4o">OpenAI GPT-4o</option>
+              <option value="grok-3-mini">xAI Grok 3 Mini</option>
               <option value="gemini-4-neon">Gemini 4 Neon (Cloud)</option>
             </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Аудитора / Reviewer (Кросс-ревью и семантический аудит)</label>
+            <select id="orch-reviewer-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
+              <option value="gemini-4-neon">Gemini 4 Neon (Deeper Analysis)</option>
+              <option value="chatgpt-plus">ChatGPT Plus / GPT-4o</option>
+              <option value="grok-3">xAI Grok 3</option>
+              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+              <option value="deepseek-reasoner">DeepSeek R1</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Резервный порядок переключения (Fallback Order через запятую)</label>
+            <input id="orch-fallback-order" type="text" value="gemini, deepseek, qwen, chatgpt, grok, claude, ollama" placeholder="например: gemini, deepseek, qwen, chatgpt, grok, claude, ollama" class="w-full h-8 px-2.5 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt" />
+            <span class="text-[10px] text-muted block mt-1">Определяет автоматический переход при 429, таймауте или исчерпании лимитов.</span>
           </div>
           <div>
             <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Команда Hard Gate (Автотест перед выдачей)</label>
@@ -760,8 +803,8 @@
         </div>
         <div class="p-5 space-y-3">
           <div class="flex items-baseline justify-between">
-            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.1.0</span></span>
-            <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.1.0</span></span>
+            <span class="text-[12px] text-muted">Текущая версия: <span id="update-modal-curr-ver" class="font-mono text-ink">v1.2.0</span></span>
+            <span class="text-[12px] font-semibold text-emerald">Новая версия: <span id="update-modal-new-ver" class="font-mono">v1.2.0</span></span>
           </div>
           <p id="update-modal-descr" class="text-[12px] text-ink leading-relaxed">
             На GitHub доступна новая версия zero-copy-agent с обновлениями и исправлениями.

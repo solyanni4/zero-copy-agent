@@ -14,7 +14,10 @@ from core.config import config
 PROVIDER_URLS = {
     "gemini": "https://gemini.google.com/app",
     "chatgpt": "https://chatgpt.com",
-    "claude": "https://claude.ai/chats"
+    "claude": "https://claude.ai/chats",
+    "deepseek": "https://chat.deepseek.com",
+    "qwen": "https://chat.qwen.ai",
+    "grok": "https://grok.com"
 }
 
 def detect_proxy():
@@ -91,8 +94,9 @@ def authenticate(provider: str, account_id: str = None):
 
     with sync_playwright() as p:
         context = None
-        # Try real installed Google Chrome or Edge first for maximum Google trust
-        for channel in ["chrome", "msedge", None]:
+        is_frozen = getattr(sys, "frozen", False)
+        channels = ["chrome", "msedge"] if is_frozen else ["chrome", "msedge", None]
+        for channel in channels:
             try:
                 kwargs = {
                     "user_data_dir": str(profile_dir),
@@ -285,7 +289,16 @@ def authenticate_desktop(provider: str, account_id: str = None):
 
             try:
                 from core.healer import config_healer
-                alias_name = "ChatGPT Free / Plus (Веб-сессия)" if prov == "chatgpt" else f"{prov.upper()} Web Session ({account_id})"
+                if prov == "chatgpt":
+                    alias_name = "ChatGPT Free / Plus (Веб-сессия)"
+                elif prov == "deepseek":
+                    alias_name = "DeepSeek Chat / Reasoner (Веб-сессия)"
+                elif prov == "qwen":
+                    alias_name = "Qwen Max / Coder (Веб-сессия)"
+                elif prov == "grok":
+                    alias_name = "xAI Grok 3 (Веб-сессия)"
+                else:
+                    alias_name = f"{prov.upper()} Web Session ({account_id})"
                 acc, mods = config_healer.register_web_session(
                     provider=prov,
                     account_id=account_id,
@@ -307,8 +320,8 @@ def authenticate_desktop(provider: str, account_id: str = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Authenticate web subscriptions for zero-copy-agent")
-    parser.add_argument("--provider", type=str, default="gemini", choices=["gemini", "chatgpt", "claude"],
-                        help="Provider to authenticate (gemini, chatgpt, claude)")
+    parser.add_argument("--provider", type=str, default="gemini", choices=["gemini", "chatgpt", "claude", "deepseek", "qwen", "grok"],
+                        help="Provider to authenticate (gemini, chatgpt, claude, deepseek, qwen, grok)")
     parser.add_argument("--account-id", type=str, default=None,
                         help="Optional specific account ID (e.g. gemini-web-primary or gemini-web-2)")
     args = parser.parse_args()

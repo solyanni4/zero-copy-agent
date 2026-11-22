@@ -35,6 +35,12 @@ DEFAULT_PROVIDER_MODELS: Dict[str, List[str]] = {
     "gemini": ["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"],
     "chatgpt": ["gpt-4o", "gpt-4o-mini", "chatgpt-plus"],
     "claude": ["claude-3-7-sonnet", "claude-pro"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "qwen": ["qwen-max", "qwen-coder", "qwq"],
+    "grok": ["grok-3", "grok-3-mini"],
+    "openrouter": ["deepseek/deepseek-r1", "anthropic/claude-3.7-sonnet", "openai/gpt-4o"],
+    "groq": ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "mixtral-8x7b-32768"],
+    "custom": ["custom-model"],
     "ollama": ["qwen2.5-coder:14b"],
     "mock": ["mock-test"],
 }
@@ -47,11 +53,12 @@ class SubscriptionModel(BaseModel):
 
 class AccountSubscription(BaseModel):
     id: str
-    provider: str  # "gemini" | "chatgpt" | "claude" | "ollama" | "mock"
+    provider: str  # "gemini" | "chatgpt" | "claude" | "deepseek" | "qwen" | "grok" | "ollama" | "mock"
     auth_type: str = "browser_session"  # "api_key" | "browser_session" | "local"
     status: str = "active"  # "active" | "expired" | "disabled"
     alias: Optional[str] = None
     api_key: Optional[str] = None
+    base_url: Optional[str] = None
     profile_dir: Optional[str] = None
     models: List[SubscriptionModel] = Field(default_factory=list)
 
@@ -383,6 +390,7 @@ class ConfigHealer:
                 "status": acc.status,
                 "alias": acc.alias or acc.id,
                 "api_key_masked": masked,
+                "base_url": acc.base_url,
                 "profile_dir": acc.profile_dir or (f"browser_profiles/{acc.id}" if acc.auth_type == "browser_session" else None),
                 "models_count": len(acc.models),
                 "models": [m.id for m in acc.models]
@@ -393,7 +401,9 @@ class ConfigHealer:
         self,
         provider: str,
         api_key: str,
-        alias: Optional[str] = None
+        alias: Optional[str] = None,
+        base_url: Optional[str] = None,
+        models: Optional[List[str]] = None
     ) -> Tuple[AccountSubscription, List[str]]:
         """Adds or updates an account with an API key and saves atomically."""
         config, modifications = self.load_or_create()
@@ -406,14 +416,21 @@ class ConfigHealer:
             existing.status = "active"
             if alias:
                 existing.alias = alias
+            if base_url:
+                existing.base_url = base_url
+            if models:
+                existing.models = [
+                    SubscriptionModel(id=mid, display_name=get_display_name(mid), status="active")
+                    for mid in models
+                ]
             modifications.append(f"Обновлен существующий аккаунт '{existing.id}'")
             target_acc = existing
         else:
             acc_id = f"{prov}-{len([a for a in config.accounts if a.provider == prov]) + 1}"
-            models = []
-            default_m_list = DEFAULT_PROVIDER_MODELS.get(prov, [f"{prov}-default"])
-            for mid in default_m_list:
-                models.append(
+            m_list = models or DEFAULT_PROVIDER_MODELS.get(prov, [f"{prov}-default"])
+            models_objs = []
+            for mid in m_list:
+                models_objs.append(
                     SubscriptionModel(
                         id=mid,
                         display_name=get_display_name(mid),
@@ -427,7 +444,8 @@ class ConfigHealer:
                 status="active",
                 alias=alias or f"{prov.capitalize()} Key ({acc_id})",
                 api_key=key_clean,
-                models=models
+                base_url=base_url,
+                models=models_objs
             )
             config.accounts.append(target_acc)
             modifications.append(f"Добавлен новый аккаунт '{acc_id}' для провайдера '{prov}'")
