@@ -11,10 +11,11 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger("zcao.mesh")
 
 class KeyState:
-    def __init__(self, key: str, account_id: Optional[str] = None, auth_type: str = "api_key"):
+    def __init__(self, key: str, account_id: Optional[str] = None, auth_type: str = "api_key", models: Optional[List[str]] = None):
         self.key = key
         self.account_id = account_id or key
         self.auth_type = auth_type
+        self.models = models or []
         self.consecutive_failures = 0
         self.tripped_until = 0.0
         self.total_requests = 0
@@ -57,6 +58,12 @@ class QuotaMesh:
                 auth_type = getattr(acc, "auth_type", "api_key")
                 acc_id = getattr(acc, "id", "")
 
+                acc_models = []
+                for m in getattr(acc, "models", []):
+                    m_id = m.id if hasattr(m, "id") else (m.get("id") if isinstance(m, dict) else str(m))
+                    if m_id:
+                        acc_models.append(m_id)
+
                 api_key = getattr(acc, "api_key", None)
                 if api_key and str(api_key).strip():
                     clean_key = str(api_key).strip()
@@ -64,18 +71,21 @@ class QuotaMesh:
                         new_pools[provider] = []
                     existing_state = next((k for k in self._pools.get(provider, []) if k.key == clean_key), None)
                     if existing_state:
+                        existing_state.account_id = acc_id or existing_state.account_id
+                        existing_state.models = acc_models or existing_state.models
                         new_pools[provider].append(existing_state)
                     else:
-                        new_pools[provider].append(KeyState(clean_key, account_id=acc_id, auth_type="api_key"))
+                        new_pools[provider].append(KeyState(clean_key, account_id=acc_id, auth_type="api_key", models=acc_models))
 
                 elif auth_type == "browser_session":
                     if provider not in new_web_pools:
                         new_web_pools[provider] = []
                     existing_state = next((k for k in self._web_pools.get(provider, []) if k.account_id == acc_id), None)
                     if existing_state:
+                        existing_state.models = acc_models or existing_state.models
                         new_web_pools[provider].append(existing_state)
                     else:
-                        new_web_pools[provider].append(KeyState(acc_id, account_id=acc_id, auth_type="browser_session"))
+                        new_web_pools[provider].append(KeyState(acc_id, account_id=acc_id, auth_type="browser_session", models=acc_models))
 
             self._pools = new_pools
             self._web_pools = new_web_pools
@@ -94,9 +104,60 @@ class QuotaMesh:
             self._index[provider_name] = 0
 
         existing = {k.key for k in self._pools[provider_name]}
-        for key in keys:
+        for i, key in enumerate(keys):
             if key and key not in existing:
-                self._pools[provider_name].append(KeyState(key.strip()))
+                clean_key = key.strip()
+                self._pools[provider_name].append(
+                    KeyState(clean_key, account_id=f"{provider_name}-key-{i+1}", auth_type="api_key")
+                )
+
+    def get_candidate_accounts(self, provider: str, model_id: Optional[str] = None) -> List[KeyState]:
+        """
+        Returns all accounts for the given provider strictly ordered:
+        1. API keys first (auth_type == 'api_key'), healthy first, then tripped keys by earliest recovery.
+        2. Web sessions second (auth_type == 'browser_session'), healthy first, then tripped web sessions by recovery.
+        """
+        provider_name = provider.lower()
+        ordered: List[KeyState] = []
+
+        def _supports_model(state: KeyState) -> bool:
+            if not model_id or not state.models:
+                return True
+            clean_m = model_id.lower()
+            return any(
+                clean_m == sm.lower() or sm.lower().endswith(clean_m) or clean_m.endswith(sm.lower())
+                for sm in state.models
+            )
+
+        # 1. API Keys (Strict Priority)
+        api_pool = self._pools.get(provider_name, [])
+        if api_pool:
+            start_idx = self._index.get(provider_name, 0)
+            n = len(api_pool)
+            rotated = [api_pool[(start_idx + i) % n] for i in range(n)]
+
+            matching = [k for k in rotated if _supports_model(k)]
+            candidates = matching if matching else rotated
+
+            healthy = [k for k in candidates if k.is_healthy]
+            cooling = sorted([k for k in candidates if not k.is_healthy], key=lambda k: k.tripped_until)
+            ordered.extend(healthy + cooling)
+
+        # 2. Browser Web Sessions (Strict Secondary Fallback)
+        web_pool = self._web_pools.get(provider_name, [])
+        if web_pool:
+            start_idx = self._web_index.get(provider_name, 0)
+            n = len(web_pool)
+            rotated = [web_pool[(start_idx + i) % n] for i in range(n)]
+
+            matching = [k for k in rotated if _supports_model(k)]
+            candidates = matching if matching else rotated
+
+            healthy = [k for k in candidates if k.is_healthy]
+            cooling = sorted([k for k in candidates if not k.is_healthy], key=lambda k: k.tripped_until)
+            ordered.extend(healthy + cooling)
+
+        return ordered
 
     def get_active_key(self, provider: str) -> Optional[str]:
         """Returns the next healthy API key using round-robin rotation."""

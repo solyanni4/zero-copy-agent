@@ -140,3 +140,21 @@ async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: f
         logger.debug(f"[Providers] Model discovery failed for {clean_base}: {e}")
 
     return []
+
+
+def sort_accounts_by_auth_priority(accounts: List[Any]) -> List[Any]:
+    """
+    Sorts candidate accounts so API keys (auth_type == 'api_key') strictly precede
+    browser web-sessions (auth_type == 'browser_session') and other accounts.
+    """
+    def _rank(acc):
+        auth_type = getattr(acc, "auth_type", "api_key")
+        if auth_type == "api_key":
+            return 0
+        elif auth_type == "local":
+            return 1
+        elif auth_type == "browser_session":
+            return 2
+        return 3
+    return sorted(accounts, key=_rank)
+

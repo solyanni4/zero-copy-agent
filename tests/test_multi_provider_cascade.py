@@ -251,3 +251,101 @@ async def test_cascade_candidate_timeout_failover():
     assert call_history == ["slow-candidate-1", "fast-candidate-2"]
 
 
+def test_sort_accounts_by_auth_priority():
+    """Verify sort_accounts_by_auth_priority puts api_key before browser_session."""
+    from core.providers import sort_accounts_by_auth_priority
+    from core.healer import AccountSubscription
+
+    accs = [
+        AccountSubscription(id="web-1", provider="gemini", auth_type="browser_session"),
+        AccountSubscription(id="api-1", provider="gemini", auth_type="api_key", api_key="k1"),
+        AccountSubscription(id="web-2", provider="gemini", auth_type="browser_session"),
+        AccountSubscription(id="api-2", provider="gemini", auth_type="api_key", api_key="k2"),
+    ]
+    sorted_accs = sort_accounts_by_auth_priority(accs)
+    assert [a.id for a in sorted_accs] == ["api-1", "api-2", "web-1", "web-2"]
+    assert [a.auth_type for a in sorted_accs] == ["api_key", "api_key", "browser_session", "browser_session"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_4_neon_multi_account_failover_and_logging(caplog):
+    """
+    Verify multi-account failover for gemini-4-neon:
+    Strict priority:
+    1. gemini-2 (api_key) -> 429
+    2. gemini-3 (api_key) -> timeout
+    3. gemini-4 (api_key) -> 500
+    4. gemini-web-2 (browser_session) -> success
+    Verify exact log statements contain account ID, type, and error code.
+    """
+    import logging
+    from core.mesh import QuotaMesh
+    from core.healer import AccountSubscription
+
+    test_mesh = QuotaMesh()
+    accs = [
+        AccountSubscription(id="gemini-web-2", provider="gemini", auth_type="browser_session", status="active"),
+        AccountSubscription(id="gemini-2", provider="gemini", auth_type="api_key", status="active", api_key="sk-gem-2"),
+        AccountSubscription(id="gemini-3", provider="gemini", auth_type="api_key", status="active", api_key="sk-gem-3"),
+        AccountSubscription(id="gemini-4", provider="gemini", auth_type="api_key", status="active", api_key="sk-gem-4"),
+    ]
+    test_mesh.sync_active_accounts(accs)
+
+    # 1. Verify candidate accounts ordering: all api_key first, browser_session last
+    candidates = test_mesh.get_candidate_accounts("gemini", model_id="gemini-4-neon")
+    assert [c.account_id for c in candidates] == ["gemini-2", "gemini-3", "gemini-4", "gemini-web-2"]
+    assert [c.auth_type for c in candidates] == ["api_key", "api_key", "api_key", "browser_session"]
+
+    # 2. Test orchestrator execution
+    mock_browser = MagicMock()
+    mock_browser.is_ready = True
+
+    orch = HybridOrchestrator(browser_engine=mock_browser)
+    cfg = AppConfig()
+    cfg.cascade.planner = RoleConfig(primary="gemini-4-neon", fallback_order=["deepseek-reasoner"])
+    orch.config = cfg
+
+    called_accounts = []
+
+    async def mock_single_api(provider, account_id, key, model_id, prompt, timeout_sec=90.0):
+        called_accounts.append((account_id, "api_key"))
+        if account_id == "gemini-2":
+            raise RuntimeError("HTTP 429 - Resource has been exhausted (rate limit)")
+        elif account_id == "gemini-3":
+            raise asyncio.TimeoutError()
+        elif account_id == "gemini-4":
+            raise RuntimeError("HTTP 500 - Internal server error")
+        return "API success"
+
+    async def mock_browser_query(prompt, model_id, account_id=None):
+        called_accounts.append((account_id, "browser_session"))
+        return "Success blueprint from gemini-web-2"
+
+    orch._query_single_api_account = mock_single_api
+    orch.browser_engine.query = mock_browser_query
+
+    with patch("core.orchestrator.mesh", test_mesh), caplog.at_level(logging.INFO):
+        res, used_model = await orch.query_role_with_fallback("planner", "Build architecture blueprint")
+
+    assert used_model == "gemini-4-neon"
+    assert res == "Success blueprint from gemini-web-2"
+    assert called_accounts == [
+        ("gemini-2", "api_key"),
+        ("gemini-3", "api_key"),
+        ("gemini-4", "api_key"),
+        ("gemini-web-2", "browser_session")
+    ]
+
+    # Verify log messages
+    log_text = caplog.text
+    assert "Trying role 'planner' via candidate 'gemini-4-neon' (account=gemini-2, type=api_key" in log_text
+    assert "HTTP 429 - Resource has been exhausted" in log_text
+    assert "Trying role 'planner' via candidate 'gemini-4-neon' (account=gemini-3, type=api_key" in log_text
+    assert "timed out after 90s -> switching to next account" in log_text
+    assert "Trying role 'planner' via candidate 'gemini-4-neon' (account=gemini-4, type=api_key" in log_text
+    assert "HTTP 500 - Internal server error" in log_text
+    assert "Trying role 'planner' via candidate 'gemini-4-neon' (account=gemini-web-2, type=browser_session" in log_text
+    assert "Role 'planner' succeeded via candidate 'gemini-4-neon' (account=gemini-web-2, type=browser_session)" in log_text
+
+
+

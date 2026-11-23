@@ -183,47 +183,68 @@ class HybridOrchestrator:
             payload["stream"] = True
         return "openai_compatible", url, headers, payload
 
+    async def _query_single_api_account(
+        self,
+        provider: str,
+        account_id: str,
+        key: str,
+        model_id: str,
+        prompt: str,
+        timeout_sec: float = 90.0
+    ) -> str:
+        """
+        Executes prompt via a specific API key account with exact HTTP error capture.
+        """
+        api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False)
+        if "://0.0.0.0" in url:
+            url = url.replace("://0.0.0.0", "://127.0.0.1")
+        is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
+        timeout = httpx.Timeout(connect=10.0, read=timeout_sec, write=30.0, pool=10.0)
+
+        async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                if api_type == "openai_compatible":
+                    msg = data["choices"][0]["message"]
+                    return msg.get("content") or msg.get("reasoning_content") or ""
+                elif api_type == "anthropic":
+                    blocks = data.get("content", [])
+                    return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                return resp.text
+
+            err_body = resp.text.strip().replace("\r", " ").replace("\n", " ")
+            if len(err_body) > 200:
+                err_body = err_body[:200] + "..."
+            raise RuntimeError(f"HTTP {resp.status_code} - {err_body}")
+
     async def _query_api_provider(self, provider: str, model_id: str, prompt: str) -> str:
         """Routes prompt to official cloud API via QuotaMesh with automatic failover on 429/5xx."""
         pool = mesh._pools.get(provider.lower(), [])
         max_attempts = max(1, len(pool))
         last_error = None
-        timeout = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 
         for _ in range(max_attempts):
             key = mesh.get_active_key(provider)
             if not key:
                 break
+            key_state = next((k for k in pool if k.key == key), None)
+            acc_id = key_state.account_id if key_state else key
             try:
-                api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False)
-                if "://0.0.0.0" in url:
-                    url = url.replace("://0.0.0.0", "://127.0.0.1")
-                is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
-                async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-
-                    if resp.status_code == 200:
-                        mesh.record_success(provider, key)
-                        data = resp.json()
-                        if api_type == "openai_compatible":
-                            msg = data["choices"][0]["message"]
-                            content = msg.get("content") or msg.get("reasoning_content") or ""
-                            return content
-                        elif api_type == "anthropic":
-                            blocks = data.get("content", [])
-                            return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-                    elif resp.status_code in (429, 500, 502, 503, 504):
-                        mesh.record_failure(provider, key, resp.status_code)
-                        last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                        logger.warning(f"[Orchestrator] Key failure for {provider} ({resp.status_code}). Failing over...")
-                        continue
-                    else:
-                        mesh.record_failure(provider, key, resp.status_code)
-                        raise RuntimeError(f"Provider {provider} API error ({resp.status_code}): {resp.text[:300]}")
-            except httpx.RequestError as e:
-                mesh.record_failure(provider, key, 500)
-                last_error = str(e)
-                logger.warning(f"[Orchestrator] Network error calling {provider} API: {e}. Retrying next key...")
+                content = await self._query_single_api_account(provider, acc_id, key, model_id, prompt, timeout_sec=90.0)
+                mesh.record_success(provider, key)
+                return content
+            except Exception as e:
+                last_error = e
+                status_code = 500
+                if "HTTP " in str(e):
+                    try:
+                        status_code = int(str(e).split("HTTP ")[1].split(" ")[0].rstrip(":"))
+                    except Exception:
+                        status_code = 500
+                mesh.record_failure(provider, key, status_code)
+                logger.warning(f"[Orchestrator] Key failure for {provider} ({acc_id}): {e}. Failing over...")
                 continue
 
         raise RuntimeError(f"Все API-ключи для провайдера '{provider}' исчерпали квоту или недоступны: {last_error}")
@@ -617,15 +638,23 @@ class HybridOrchestrator:
         if browser_is_ready is None and hasattr(self.browser_engine, "query"):
             return await self.browser_engine.query(prompt, resolved_id)
 
-        # 1. Active Web Session in browser engine
+        # 1. Cloud API key in QuotaMesh (Strict Priority)
+        if provider and mesh.get_active_key(provider):
+            try:
+                return await self._query_api_provider(provider, resolved_id, prompt)
+            except Exception as e:
+                logger.warning(f"[Orchestrator] API key pool failed for '{provider}' ({e}). Falling back to Web Session / Local...")
+
+        # 2. Active Web Session in browser engine (Secondary Fallback)
         if browser_is_ready is True and provider:
             active_web = mesh.get_active_web_account(provider)
             if active_web:
-                return await self.browser_engine.query(prompt, resolved_id)
-
-        # 2. Active Cloud API key in QuotaMesh
-        if provider and mesh.get_active_key(provider):
-            return await self._query_api_provider(provider, resolved_id, prompt)
+                try:
+                    res = await self.browser_engine.query(prompt, resolved_id, account_id=active_web)
+                    if res and not any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated")):
+                        return res
+                except Exception as e:
+                    logger.warning(f"[Orchestrator] Web session query failed for '{provider}' ({e}).")
 
         # 3. Local GPU via Ollama
         try:
@@ -639,12 +668,13 @@ class HybridOrchestrator:
         if browser_is_ready is True:
             return await self.browser_engine.query(prompt, resolved_id)
 
-        # 5. Check global fallback order for any active key
+        # 5. Check global fallback order for any active key matching the provider
         cascade_cfg = getattr(config, "cascade", None)
         global_order = getattr(cascade_cfg, "fallback_order", ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "openai"]) or []
         for p in global_order:
-            if mesh.get_active_key(p):
-                return await self._query_api_provider(p, resolved_id, prompt)
+            if p == "openrouter" or (provider and p == provider):
+                if mesh.get_active_key(p):
+                    return await self._query_api_provider(p, resolved_id, prompt)
 
         return await self.browser_engine.query(prompt, resolved_id)
 
@@ -663,17 +693,22 @@ class HybridOrchestrator:
                 yield chunk
             return
 
+        # 1. Cloud API key in QuotaMesh (Strict Priority)
+        if provider and mesh.get_active_key(provider):
+            try:
+                async for chunk in self._query_api_provider_stream(provider, resolved_id, prompt):
+                    yield chunk
+                return
+            except Exception as e:
+                logger.warning(f"[Orchestrator] API key stream failed for '{provider}' ({e}). Falling back to Web Session / Local...")
+
+        # 2. Active Web Session in browser engine (Secondary Fallback)
         if browser_is_ready is True and provider:
             active_web = mesh.get_active_web_account(provider)
             if active_web:
-                async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
+                async for chunk in self.browser_engine.query_stream(prompt, resolved_id, account_id=active_web):
                     yield chunk
                 return
-
-        if provider and mesh.get_active_key(provider):
-            async for chunk in self._query_api_provider_stream(provider, resolved_id, prompt):
-                yield chunk
-            return
 
         try:
             ollama_models = await self.ollama.list_models()
@@ -692,10 +727,11 @@ class HybridOrchestrator:
         cascade_cfg = getattr(config, "cascade", None)
         global_order = getattr(cascade_cfg, "fallback_order", ["gemini", "deepseek", "qwen", "chatgpt", "grok", "claude", "openai"]) or []
         for p in global_order:
-            if mesh.get_active_key(p):
-                async for chunk in self._query_api_provider_stream(p, resolved_id, prompt):
-                    yield chunk
-                return
+            if p == "openrouter" or (provider and p == provider):
+                if mesh.get_active_key(p):
+                    async for chunk in self._query_api_provider_stream(p, resolved_id, prompt):
+                        yield chunk
+                    return
 
         async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
             yield chunk
@@ -752,49 +788,125 @@ class HybridOrchestrator:
             if candidate in DEFAULT_PROVIDER_MODELS:
                 resolved_candidate = DEFAULT_PROVIDER_MODELS[candidate][0]
 
-            logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' (timeout={candidate_timeout}s)...")
-            try:
-                res = await asyncio.wait_for(
-                    self._query_model(resolved_candidate, prompt),
-                    timeout=candidate_timeout
-                )
+            prov = self._detect_provider(resolved_candidate)
+            accounts = mesh.get_candidate_accounts(prov, model_id=resolved_candidate) if prov else []
 
-                # Check for Standby response or unauthenticated fallback
-                if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
-                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response. Failing over...")
-                    prov = self._detect_provider(resolved_candidate)
-                    if prov:
-                        web_acc = mesh.get_active_web_account(prov)
-                        if web_acc:
-                            mesh.record_web_failure(prov, web_acc)
-                        else:
-                            mesh.record_web_failure(prov, resolved_candidate)
-                    continue
-
-                logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
-                return res, resolved_candidate
-            except asyncio.TimeoutError:
-                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' timed out after {int(candidate_timeout)}s -> switching to next fallback")
-                prov = self._detect_provider(resolved_candidate)
-                if prov:
-                    web_acc = mesh.get_active_web_account(prov)
-                    if web_acc:
-                        mesh.record_web_failure(prov, web_acc)
+            if accounts:
+                for acc in accounts:
+                    if acc.auth_type == "api_key":
+                        acc_timeout = 90.0
+                    elif acc.auth_type == "browser_session":
+                        acc_timeout = 45.0
                     else:
+                        acc_timeout = candidate_timeout
+
+                    logger.info(
+                        f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' "
+                        f"(account={acc.account_id}, type={acc.auth_type}, timeout={int(acc_timeout)}s)..."
+                    )
+
+                    try:
+                        if acc.auth_type == "api_key":
+                            res = await asyncio.wait_for(
+                                self._query_single_api_account(
+                                    prov, acc.account_id, acc.key, resolved_candidate, prompt, timeout_sec=acc_timeout
+                                ),
+                                timeout=acc_timeout
+                            )
+                        elif acc.auth_type == "browser_session":
+                            res = await asyncio.wait_for(
+                                self.browser_engine.query(prompt, resolved_candidate, account_id=acc.account_id),
+                                timeout=acc_timeout
+                            )
+                        else:
+                            res = await asyncio.wait_for(
+                                self._query_model(resolved_candidate, prompt),
+                                timeout=acc_timeout
+                            )
+
+                        # Check for Standby response or unauthenticated fallback
+                        if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                            logger.warning(
+                                f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                                f"returned Standby/Unauthenticated response. Failing over to next account..."
+                            )
+                            acc.trip(cooldown_seconds=120.0)
+                            mesh.record_web_failure(prov, acc.account_id)
+                            continue
+
+                        logger.info(
+                            f"[Cascade] Role '{role}' succeeded via candidate '{resolved_candidate}' "
+                            f"(account={acc.account_id}, type={acc.auth_type})"
+                        )
+                        if acc.auth_type == "api_key":
+                            mesh.record_success(prov, acc.key)
+                        elif acc.auth_type == "browser_session":
+                            mesh.record_web_success(prov, acc.account_id)
+                        return res, resolved_candidate
+
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                            f"timed out after {int(acc_timeout)}s -> switching to next account"
+                        )
+                        acc.trip(cooldown_seconds=120.0)
+                        if acc.auth_type == "api_key":
+                            mesh.record_failure(prov, acc.key, 504)
+                        else:
+                            mesh.record_web_failure(prov, acc.account_id)
+                        continue
+
+                    except Exception as e:
+                        last_error = e
+                        status_code = 500
+                        if "HTTP " in str(e):
+                            try:
+                                status_code = int(str(e).split("HTTP ")[1].split(" ")[0].rstrip(":"))
+                            except Exception:
+                                status_code = 500
+                        acc.trip(cooldown_seconds=120.0)
+                        if acc.auth_type == "api_key":
+                            mesh.record_failure(prov, acc.key, status_code)
+                        else:
+                            mesh.record_web_failure(prov, acc.account_id)
+                        logger.warning(
+                            f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                            f"failed: {e}. Failing over to next account..."
+                        )
+                        continue
+
+                logger.warning(f"[Cascade] All accounts for candidate '{resolved_candidate}' exhausted. Switching to next fallback...")
+            else:
+                # Direct query for candidate without mesh accounts (e.g. mock or local)
+                logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' (timeout={candidate_timeout}s)...")
+                try:
+                    res = await asyncio.wait_for(
+                        self._query_model(resolved_candidate, prompt),
+                        timeout=candidate_timeout
+                    )
+
+                    # Check for Standby response or unauthenticated fallback
+                    if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                        logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response. Failing over...")
+                        if prov:
+                            mesh.record_web_failure(prov, resolved_candidate)
+                        continue
+
+                    logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
+                    return res, resolved_candidate
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' timed out after {int(candidate_timeout)}s -> switching to next fallback")
+                    if prov:
                         mesh.record_web_failure(prov, resolved_candidate)
-                    key = mesh.get_active_key(prov)
-                    if key:
-                        mesh.record_failure(prov, key, 504)
-                continue
-            except Exception as e:
-                last_error = e
-                prov = self._detect_provider(resolved_candidate)
-                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' failed for role '{role}': {e}. Failing over...")
-                if prov:
-                    key = mesh.get_active_key(prov)
-                    if key:
-                        mesh.record_failure(prov, key, 500)
-                continue
+                    continue
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' failed for role '{role}': {e}. Failing over...")
+                    if prov:
+                        key = mesh.get_active_key(prov)
+                        if key:
+                            mesh.record_failure(prov, key, 500)
+                    continue
 
         raise RuntimeError(f"Все кандидаты в каскаде для роли '{role}' ({candidates}) исчерпали квоту или недоступны: {last_error}")
 
