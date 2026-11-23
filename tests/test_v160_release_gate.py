@@ -547,6 +547,135 @@ def test_root_dashboard_resolves_html():
     assert "<html" in res.text.lower()
 
 
+def test_claude_resolves_strictly_to_claude_driver():
+    """Verifies that provider 'claude' resolves strictly to ClaudeDriver (claude.ai) and never falls back to GeminiDriver."""
+    import pytest
+    from core.browser_session import DRIVER_MAP, PROVIDER_URLS, get_driver_for_provider
+    from core.drivers.claude import ClaudeDriver
+    from core.drivers.gemini import GeminiDriver
+
+    assert "claude" in DRIVER_MAP
+    assert DRIVER_MAP["claude"] == ClaudeDriver
+    assert ClaudeDriver.URL == "https://claude.ai"
+    assert PROVIDER_URLS["claude"] == "https://claude.ai"
+
+    driver_inst = get_driver_for_provider("claude", None)
+    assert isinstance(driver_inst, ClaudeDriver)
+    assert not isinstance(driver_inst, GeminiDriver)
+
+    # Unknown provider must raise ValueError, not silently substitute GeminiDriver
+    with pytest.raises(ValueError) as exc_info:
+        get_driver_for_provider("unknown_provider_xyz", None)
+    assert "Неподдерживаемый или неизвестный провайдер" in str(exc_info.value)
+
+
+def test_repeated_sync_cookies_returns_unchanged_and_avoids_rewrite(tmp_path: Path, monkeypatch):
+    """Verifies that repeating POST /v1/auth/sync-cookies with unchanged cookies returns status 'unchanged'."""
+    from starlette.testclient import TestClient
+    from main import app
+    from core.config import config
+
+    fake_runtime = tmp_path / "runtime_repeat_cookies"
+    fake_runtime.mkdir()
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: fake_runtime)
+    monkeypatch.setattr("main.get_runtime_cwd", lambda: fake_runtime)
+
+    client = TestClient(app)
+    expected_token = getattr(config, "cookie_sync_token", "default_test_token")
+
+    payload = {
+        "provider": "claude",
+        "account_id": "claude-web-primary",
+        "cookies": [
+            {
+                "name": "sessionKey",
+                "value": "sk-ant-sid-test-val",
+                "domain": ".claude.ai",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "lax"
+            }
+        ]
+    }
+
+    # 1. First sync -> status ok
+    res1 = client.post(
+        "/v1/auth/sync-cookies",
+        headers={"x-zca-sync-token": expected_token},
+        json=payload
+    )
+    assert res1.status_code == 200
+    assert res1.json()["status"] == "ok"
+
+    # 2. Second sync with identical cookies -> status unchanged
+    res2 = client.post(
+        "/v1/auth/sync-cookies",
+        headers={"x-zca-sync-token": expected_token},
+        json=payload
+    )
+    assert res2.status_code == 200
+    assert res2.json()["status"] == "unchanged"
+
+
+def test_gemini_expanded_cookie_whitelist_in_background_js():
+    """Verifies that chrome_extension/background.js includes __Secure-1PAPISID, __Secure-3PAPISID, and SIDCC."""
+    from pathlib import Path
+    bg_path = Path(__file__).resolve().parent.parent / "chrome_extension" / "background.js"
+    assert bg_path.exists(), "chrome_extension/background.js must exist"
+    bg_code = bg_path.read_text(encoding="utf-8")
+
+    # Critical Google cookie tokens
+    assert "SIDCC" in bg_code
+    assert "__Secure-1P" in bg_code
+    assert "__Secure-3P" in bg_code
+    assert "__Host-" in bg_code
+    assert "gemini.google.com" in bg_code
+
+
+def test_cookie_conversion_session_and_host_prefix():
+    """Verifies that session cookies lack 'expires' and __Host- cookies use url instead of domain."""
+    from main import convert_chrome_cookie_to_playwright
+
+    # 1. Session cookie (no expirationDate)
+    c_session = {
+        "name": "session_tok",
+        "value": "xyz123",
+        "domain": "chatgpt.com",
+        "path": "/"
+    }
+    pw_session = convert_chrome_cookie_to_playwright(c_session)
+    assert pw_session is not None
+    assert "expires" not in pw_session
+
+    # 2. Negative/zero expirationDate -> session cookie
+    c_zero_exp = {
+        "name": "zero_exp_tok",
+        "value": "xyz123",
+        "domain": "chatgpt.com",
+        "path": "/",
+        "expirationDate": -1
+    }
+    pw_zero = convert_chrome_cookie_to_playwright(c_zero_exp)
+    assert pw_zero is not None
+    assert "expires" not in pw_zero
+
+    # 3. __Host- prefixed cookie
+    c_host = {
+        "name": "__Host-auth",
+        "value": "sec_val_456",
+        "domain": ".google.com",
+        "path": "/subpath"
+    }
+    pw_host = convert_chrome_cookie_to_playwright(c_host)
+    assert pw_host is not None
+    assert pw_host["secure"] is True
+    assert pw_host["path"] == "/"
+    assert "domain" not in pw_host
+    assert pw_host["url"] == "https://google.com/"
+
+
+
 
 
 

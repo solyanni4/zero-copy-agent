@@ -17,6 +17,18 @@ class ChatGPTDriver(BaseDriver):
                 await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
                 await asyncio.sleep(1)
 
+            # Ожидаем рендер контента страницы (если страница пока пустая/белая)
+            start_render_wait = time.time()
+            while time.time() - start_render_wait < 5.0:
+                try:
+                    eval_fn = self.page.evaluate("() => (document.body ? document.body.innerText : '').trim()")
+                    body_text = (await eval_fn) if asyncio.iscoroutine(eval_fn) else str(eval_fn or "")
+                    if body_text:
+                        break
+                except Exception:
+                    break
+                await asyncio.sleep(0.5)
+
             # Ожидаем гидратацию SPA в цикле до 8 секунд с шагом 1 сек
             for _ in range(8):
                 # Fail-fast check for login redirect or captcha

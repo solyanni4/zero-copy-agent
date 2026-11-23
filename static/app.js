@@ -1051,7 +1051,10 @@ async function openExtensionSetup() {
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       _activeSyncToken = data.sync_token || _activeSyncToken;
-      showModelsLog(`[CHROME] Папка расширения открыта в Проводнике (${data.path}). Перетащите её в окно Chrome с включенным «Режимом разработчика».`, 'text-emerald');
+      if (data.path && navigator.clipboard) {
+        try { await navigator.clipboard.writeText(data.path); } catch (e) {}
+      }
+      showModelsLog(`[CHROME] Папка расширения открыта (${data.path}) и путь скопирован в буфер. Перетащите папку chrome_extension в окно Chrome или вставьте этот путь при нажатии «Загрузить распакованное расширение».`, 'text-emerald');
       await loadChromeSyncInfo();
     } else {
       showModelsLog(`[ERROR] Не удалось подготовить расширение: ${data.detail || res.statusText}`, 'text-crimson');

@@ -616,10 +616,26 @@ def convert_chrome_cookie_to_playwright(c: dict) -> Optional[dict]:
         "domain": str(c["domain"]),
         "path": str(c.get("path") or "/")
     }
+
+    # Session cookies: do not set expires if expirationDate is absent or <= 0
+    exp = None
     if "expirationDate" in c and c["expirationDate"] is not None:
-        pw["expires"] = float(c["expirationDate"])
+        try:
+            exp_val = float(c["expirationDate"])
+            if exp_val > 0:
+                exp = exp_val
+        except (ValueError, TypeError):
+            pass
     elif "expires" in c and c["expires"] is not None:
-        pw["expires"] = float(c["expires"])
+        try:
+            exp_val = float(c["expires"])
+            if exp_val > 0:
+                exp = exp_val
+        except (ValueError, TypeError):
+            pass
+
+    if exp is not None:
+        pw["expires"] = exp
 
     if "httpOnly" in c:
         pw["httpOnly"] = bool(c["httpOnly"])
@@ -627,16 +643,20 @@ def convert_chrome_cookie_to_playwright(c: dict) -> Optional[dict]:
         pw["secure"] = bool(c["secure"])
 
     raw_same_site = str(c.get("sameSite", "")).lower()
-    if raw_same_site == "no_restriction":
+    if raw_same_site in ("no_restriction", "none"):
         pw["sameSite"] = "None"
         pw["secure"] = True
     elif raw_same_site == "strict":
         pw["sameSite"] = "Strict"
     elif raw_same_site in ("lax", "unspecified"):
         pw["sameSite"] = "Lax"
-    elif raw_same_site in ("none",):
-        pw["sameSite"] = "None"
+
+    # Strict compliance for __Host- prefixed cookies
+    if pw["name"].startswith("__Host-"):
         pw["secure"] = True
+        pw["path"] = "/"
+        clean_domain = pw.pop("domain", "").lstrip(".")
+        pw["url"] = f"https://{clean_domain}/"
 
     return pw
 
@@ -655,6 +675,7 @@ async def sync_cookies_from_extension(request: Request, payload: dict = Body(...
     provider = str(payload.get("provider", "")).strip().lower()
     account_id = str(payload.get("account_id", "")).strip() or f"{provider}-web-primary"
     raw_cookies = payload.get("cookies", [])
+    user_agent = str(payload.get("user_agent", "")).strip()
 
     if not provider or not raw_cookies:
         raise HTTPException(status_code=400, detail="Missing provider or cookies payload")
@@ -665,16 +686,63 @@ async def sync_cookies_from_extension(request: Request, payload: dict = Body(...
         if pw_c:
             converted_cookies.append(pw_c)
 
-    # Save to runtime browser_profiles directory
     prof_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     prof_dir.mkdir(parents=True, exist_ok=True)
     cookie_path = prof_dir / "synced_cookies.json"
+
+    # Check if incoming cookies are identical to existing saved set
+    cookies_changed = True
+    if cookie_path.exists():
+        try:
+            with open(cookie_path, "r", encoding="utf-8") as f:
+                old_data = json.load(f)
+            old_cookies = old_data.get("cookies", [])
+            old_sig = sorted(
+                (c.get("domain", "") or c.get("url", ""), c.get("name", ""), c.get("value", ""))
+                for c in old_cookies
+            )
+            new_sig = sorted(
+                (c.get("domain", "") or c.get("url", ""), c.get("name", ""), c.get("value", ""))
+                for c in converted_cookies
+            )
+            if old_sig == new_sig:
+                cookies_changed = False
+        except Exception:
+            pass
+
+    sub_cfg, _ = config_healer.load_or_create()
+    is_already_active = any(
+        a.id == account_id and a.status == "active"
+        for a in sub_cfg.accounts
+    )
+
+    if not cookies_changed and is_already_active:
+        if user_agent:
+            ua_file = prof_dir / "user_agent.txt"
+            if not ua_file.exists():
+                ua_file.write_text(user_agent, encoding="utf-8")
+        return {
+            "status": "unchanged",
+            "provider": provider,
+            "account_id": account_id,
+            "cookies_synced": len(converted_cookies)
+        }
+
+    # Save user_agent if provided
     save_data = {
         "provider": provider,
         "account_id": account_id,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "cookies": converted_cookies
     }
+    if user_agent:
+        save_data["user_agent"] = user_agent
+        ua_file = prof_dir / "user_agent.txt"
+        try:
+            ua_file.write_text(user_agent, encoding="utf-8")
+        except Exception:
+            pass
+
     with open(cookie_path, "w", encoding="utf-8") as f:
         json.dump(save_data, f, indent=2, ensure_ascii=False)
 
@@ -695,18 +763,26 @@ async def sync_cookies_from_extension(request: Request, payload: dict = Body(...
         profile_dir=f"browser_profiles/{account_id}"
     )
 
-    # If context is currently live, inject cookies dynamically
+    # If context is currently live, inject cookies dynamically and reload page
     if hasattr(orchestrator, "browser_engine") and orchestrator.browser_engine:
         b_eng = orchestrator.browser_engine
-        ctx = b_eng._contexts.get(account_id)
-        if ctx:
-            try:
-                await ctx.add_cookies(converted_cookies)
-                if hasattr(b_eng, "_cookie_mtimes"):
-                    b_eng._cookie_mtimes[account_id] = time.time()
-                logging.getLogger("zca.main").info(f"[Auth Assistant] Injected {len(converted_cookies)} cookies into active context '{account_id}'")
-            except Exception as inj_e:
-                logging.getLogger("zca.main").warning(f"[Auth Assistant] Live cookie injection note: {inj_e}")
+        if hasattr(b_eng, "inject_synced_cookies"):
+            await b_eng.inject_synced_cookies(account_id, provider, converted_cookies, user_agent=user_agent)
+        else:
+            ctx = b_eng._contexts.get(account_id)
+            if ctx:
+                try:
+                    await ctx.add_cookies(converted_cookies)
+                    if hasattr(b_eng, "_cookie_mtimes"):
+                        b_eng._cookie_mtimes[account_id] = time.time()
+                    page = b_eng._pages.get(account_id)
+                    if page and not getattr(page, "is_closed", lambda: True)():
+                        from core.browser_session import PROVIDER_URLS
+                        target_url = PROVIDER_URLS.get(provider, "https://gemini.google.com/app")
+                        await page.goto(target_url, wait_until="domcontentloaded")
+                    logging.getLogger("zca.main").info(f"[Auth Assistant] Injected {len(converted_cookies)} cookies into active context '{account_id}'")
+                except Exception as inj_e:
+                    logging.getLogger("zca.main").warning(f"[Auth Assistant] Live cookie injection note: {inj_e}")
 
     # Reset cooldown in QuotaMesh
     if hasattr(orchestrator, "quota_mesh") and orchestrator.quota_mesh:

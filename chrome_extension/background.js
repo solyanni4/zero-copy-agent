@@ -3,23 +3,39 @@
  * Provides background cookie replication to local zero-copy-agent without active chat tabs.
  */
 
-const GEMINI_COOKIE_WHITELIST = new Set([
-  "__Secure-1PSID",
-  "__Secure-1PSIDTS",
-  "__Secure-1PSIDCC",
-  "__Secure-3PSID",
-  "__Secure-3PSIDTS",
-  "__Secure-3PSIDCC",
+const GOOGLE_ALLOWED_EXACT = new Set([
   "SID",
   "HSID",
   "SSID",
   "APISID",
   "SAPISID",
+  "SIDCC",
+  "OSID",
   "NID",
   "AEC",
-  "OSID",
-  "__Secure-OSID"
+  "SOCS",
+  "CONSENT",
+  "1P_JAR",
+  "SEARCH_SAMESITE"
 ]);
+
+function isGeminiCookieAllowed(cookie) {
+  const domain = cookie.domain || "";
+  // Do not cut any cookies specifically targeting gemini.google.com
+  if (domain.includes("gemini.google.com")) return true;
+
+  const name = cookie.name || "";
+  if (GOOGLE_ALLOWED_EXACT.has(name)) return true;
+  if (
+    name.startsWith("__Secure-1P") ||
+    name.startsWith("__Secure-3P") ||
+    name.startsWith("__Secure-OSID") ||
+    name.startsWith("__Host-")
+  ) {
+    return true;
+  }
+  return false;
+}
 
 const PROVIDERS = [
   {
@@ -27,8 +43,7 @@ const PROVIDERS = [
     name: "Gemini",
     url: "https://gemini.google.com/",
     domainFilter: "google.com",
-    defaultAccountId: "gemini-web-primary",
-    whitelist: GEMINI_COOKIE_WHITELIST
+    defaultAccountId: "gemini-web-primary"
   },
   {
     id: "chatgpt",
@@ -67,7 +82,16 @@ const PROVIDERS = [
   }
 ];
 
+function computeCookieSignature(cookies) {
+  if (!cookies || !cookies.length) return "";
+  return cookies
+    .map(c => `${c.domain || ""}|${c.name || ""}|${c.value || ""}`)
+    .sort()
+    .join(";;");
+}
+
 let debounceTimer = null;
+const pendingProviders = new Set();
 
 // Initialize defaults and register alarms
 async function initializeFromDefaults() {
@@ -105,90 +129,119 @@ async function initializeFromDefaults() {
     chrome.alarms.create("syncCookiesAlarm", { periodInMinutes: 30 });
 
     // Initial sync
-    await syncAllProviders();
+    await syncAllProviders(false);
   } catch (e) {
     // Silent fail on boot
   }
 }
 
-// Perform cookie extraction and synchronization
-async function syncAllProviders() {
-  const data = await chrome.storage.local.get(["zcaUrl", "syncToken", "accountIds", "syncStatuses"]);
+// Perform cookie extraction and synchronization for a single provider
+async function syncProvider(providerId, force = false) {
+  const prov = PROVIDERS.find(p => p.id === providerId);
+  if (!prov) return { ok: false, message: "Unknown provider" };
+
+  const data = await chrome.storage.local.get([
+    "zcaUrl", "syncToken", "accountIds", "syncStatuses", "cookieSignatures"
+  ]);
   const zcaUrl = (data.zcaUrl || "http://127.0.0.1:8000").replace(/\/+$/, "");
   const syncToken = data.syncToken || "";
   const accountIds = data.accountIds || {};
   const statuses = data.syncStatuses || {};
+  const signatures = data.cookieSignatures || {};
 
   if (!syncToken) {
     return { ok: false, message: "Sync token missing" };
   }
 
-  let totalSynced = 0;
+  const accountId = accountIds[prov.id] || prov.defaultAccountId;
 
-  for (const prov of PROVIDERS) {
-    const accountId = accountIds[prov.id] || prov.defaultAccountId;
-    try {
-      const allCookies = await chrome.cookies.getAll({ url: prov.url });
-      let filtered = allCookies;
+  try {
+    const allCookies = await chrome.cookies.getAll({ url: prov.url });
+    let filtered = allCookies;
+    if (prov.id === "gemini") {
+      filtered = allCookies.filter(isGeminiCookieAllowed);
+    }
 
-      if (prov.whitelist) {
-        filtered = allCookies.filter(c => prov.whitelist.has(c.name));
-      }
-
-      if (!filtered || filtered.length === 0) {
-        statuses[prov.id] = {
-          status: "no_cookies",
-          message: "Нет активных кук",
-          cookieCount: 0,
-          updatedAt: new Date().toISOString()
-        };
-        continue;
-      }
-
-      // Send to ZCA API
-      const targetEndpoint = `${zcaUrl}/v1/auth/sync-cookies`;
-      const response = await fetch(targetEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-ZCA-Sync-Token": syncToken
-        },
-        body: JSON.stringify({
-          provider: prov.id,
-          account_id: accountId,
-          cookies: filtered
-        })
-      });
-
-      if (response.ok) {
-        totalSynced++;
-        statuses[prov.id] = {
-          status: "ok",
-          message: "Синхронизировано",
-          cookieCount: filtered.length,
-          updatedAt: new Date().toISOString()
-        };
-      } else {
-        statuses[prov.id] = {
-          status: "error",
-          message: `Ошибка HTTP ${response.status}`,
-          cookieCount: filtered.length,
-          updatedAt: new Date().toISOString()
-        };
-      }
-    } catch (netErr) {
-      // Quietly log offline state without breaking UI or throwing errors
+    if (!filtered || filtered.length === 0) {
       statuses[prov.id] = {
-        status: "offline",
-        message: "ZCA сервер недоступен",
+        status: "no_cookies",
+        message: "Нет активных кук",
         cookieCount: 0,
         updatedAt: new Date().toISOString()
       };
+      await chrome.storage.local.set({ syncStatuses: statuses });
+      return { ok: true, status: "no_cookies" };
     }
-  }
 
-  await chrome.storage.local.set({ syncStatuses: statuses, lastSyncTime: new Date().toISOString() });
-  return { ok: true, syncedProviders: totalSynced };
+    const currentSig = computeCookieSignature(filtered);
+    if (!force && signatures[prov.id] === currentSig) {
+      // Cookies did not change, skip sending network request
+      return { ok: true, status: "unchanged", cookieCount: filtered.length };
+    }
+
+    const userAgent = typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "";
+
+    const targetEndpoint = `${zcaUrl}/v1/auth/sync-cookies`;
+    const response = await fetch(targetEndpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-ZCA-Sync-Token": syncToken
+      },
+      body: JSON.stringify({
+        provider: prov.id,
+        account_id: accountId,
+        user_agent: userAgent,
+        cookies: filtered
+      })
+    });
+
+    const resJson = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      signatures[prov.id] = currentSig;
+      statuses[prov.id] = {
+        status: "ok",
+        message: resJson.status === "unchanged" ? "Актуально (без изменений)" : "Синхронизировано",
+        cookieCount: filtered.length,
+        updatedAt: new Date().toISOString()
+      };
+      await chrome.storage.local.set({
+        syncStatuses: statuses,
+        cookieSignatures: signatures,
+        lastSyncTime: new Date().toISOString()
+      });
+      return { ok: true, status: resJson.status || "ok", cookieCount: filtered.length };
+    } else {
+      statuses[prov.id] = {
+        status: "error",
+        message: `Ошибка HTTP ${response.status}`,
+        cookieCount: filtered.length,
+        updatedAt: new Date().toISOString()
+      };
+      await chrome.storage.local.set({ syncStatuses: statuses });
+      return { ok: false, error: response.status };
+    }
+  } catch (netErr) {
+    statuses[prov.id] = {
+      status: "offline",
+      message: "ZCA сервер недоступен",
+      cookieCount: 0,
+      updatedAt: new Date().toISOString()
+    };
+    await chrome.storage.local.set({ syncStatuses: statuses });
+    return { ok: false, error: netErr.message };
+  }
+}
+
+// Synchronizes all providers
+async function syncAllProviders(force = false) {
+  let count = 0;
+  for (const prov of PROVIDERS) {
+    const res = await syncProvider(prov.id, force);
+    if (res.ok) count++;
+  }
+  return { ok: true, syncedProviders: count };
 }
 
 // Lifecycle listeners
@@ -202,26 +255,33 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "syncCookiesAlarm") {
-    syncAllProviders();
+    syncAllProviders(false);
   }
 });
 
-// Watch cookie changes with 5s debounce for target AI domains
+// Watch cookie changes with 10s debounce targeting only the affected provider
 chrome.cookies.onChanged.addListener((changeInfo) => {
   const domain = (changeInfo.cookie && changeInfo.cookie.domain) || "";
-  const isTarget = PROVIDERS.some(p => domain.includes(p.domainFilter));
-  if (isTarget) {
+  const matched = PROVIDERS.filter(p => domain.includes(p.domainFilter));
+  if (matched.length > 0) {
+    for (const m of matched) {
+      pendingProviders.add(m.id);
+    }
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      syncAllProviders();
-    }, 5000);
+    debounceTimer = setTimeout(async () => {
+      const toSync = Array.from(pendingProviders);
+      pendingProviders.clear();
+      for (const pid of toSync) {
+        await syncProvider(pid, false);
+      }
+    }, 10000); // 10s debounce
   }
 });
 
 // Internal message handler for popup interactions
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "syncNow") {
-    syncAllProviders().then(res => sendResponse(res));
+    syncAllProviders(true).then(res => sendResponse(res));
     return true; // Keep message channel open for async response
   }
   if (request.action === "getStatus") {

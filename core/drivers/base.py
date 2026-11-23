@@ -80,22 +80,31 @@ class BaseDriver(ABC):
                 const iframes = Array.from(document.querySelectorAll('iframe'));
                 for (const f of iframes) {
                     const src = (f.src || '').toLowerCase();
-                    if (src.includes('recaptcha') || src.includes('hcaptcha') || src.includes('turnstile') || src.includes('challenge')) {
+                    if (src.includes('challenges.cloudflare.com') || src.includes('turnstile')) {
+                        return 'cloudflare_challenge: ' + src;
+                    }
+                    if (src.includes('recaptcha') || src.includes('hcaptcha') || src.includes('challenge')) {
                         return 'iframe ' + src;
                     }
                 }
-                if (document.querySelector('.cf-turnstile, #challenge-stage, #cf-challenge-running, [id*="captcha"]')) {
+                if (document.querySelector('.cf-turnstile, #challenge-stage, #cf-challenge-running, [id*="cf-challenge"]')) {
+                    return 'cloudflare_challenge: container';
+                }
+                if (document.querySelector('[id*="captcha"]')) {
                     return 'captcha_container';
                 }
                 const bodyText = (document.body ? document.body.innerText : '').toLowerCase();
                 if (bodyText.includes('verify you are human') || 
                     bodyText.includes('подтвердите, что вы человек') ||
                     bodyText.includes('security check to continue')) {
-                    return 'verify_text';
+                    return 'cloudflare_challenge: verify_text';
                 }
                 return null;
             }''')
             if captcha_found:
+                if "cloudflare_challenge" in captcha_found:
+                    logger.warning(f"[Cloudflare] Обнаружен защитный экран Cloudflare Turnstile ({captcha_found}) для {provider_name}")
+                    raise WebSessionAuthError(f"cloudflare_challenge: обнаружен экран проверки Cloudflare Turnstile ({captcha_found}) в {provider_name}")
                 raise WebSessionAuthError(f"Обнаружена проверка на человека (CAPTCHA: {captcha_found}) в {provider_name}")
         except WebSessionAuthError:
             raise

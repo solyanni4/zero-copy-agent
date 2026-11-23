@@ -1272,6 +1272,8 @@ class HybridOrchestrator:
             else:
                 log_orchestrator_stage("architect", arch_model, status="формирование чертежа...")
                 plan, used_arch = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
+                if used_arch:
+                    activity_tracker.set_stage_model("analysis", used_arch)
 
         # Breakpoint verification
         if self.breakpoint_enabled:
@@ -1317,6 +1319,8 @@ class HybridOrchestrator:
             # Fallback to role-based coder pool
             try:
                 resp, chosen = await self.query_role_with_fallback("coder", prompt_text, req_id=req_id)
+                if chosen:
+                    activity_tracker.set_stage_model("code", chosen)
                 return resp, chosen
             except Exception as fb_err:
                 logger.warning(f"[Cascade] Role coder pool exhausted ({fb_err}). Falling back to planner {used_arch}...")
@@ -1424,6 +1428,8 @@ class HybridOrchestrator:
                     raw_audit, used_reviewer = await self.query_role_with_fallback(
                         "reviewer", audit_prompt, req_id=req_id, validator=self.auditor.is_valid_audit_response
                     )
+                    if used_reviewer:
+                        activity_tracker.set_stage_model("audit", used_reviewer)
                     audit_res = self.auditor.parse_audit_response(raw_audit)
                     verdict = audit_res.get("verdict", "PASS")
                     audit_issues = audit_res.get("issues", [])

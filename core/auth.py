@@ -484,10 +484,16 @@ def open_chrome_extension_setup(cfg: Optional[Any] = None) -> Path:
     if sys.platform == "win32":
         import subprocess
 
-        manifest_path = ext_folder / "manifest.json"
-        target_to_select = manifest_path if manifest_path.exists() else ext_folder
+        # Try copying extension folder path to clipboard for 1-click paste into Chrome picker
         try:
-            subprocess.Popen(["explorer", f"/select,{str(target_to_select)}"])
+            import pyperclip
+            pyperclip.copy(str(ext_folder))
+        except Exception:
+            pass
+
+        # Highlight the chrome_extension folder itself in parent directory
+        try:
+            subprocess.Popen(["explorer", f"/select,{str(ext_folder)}"])
         except Exception as e:
             logging.warning(f"[Auth Assistant] Failed to open explorer: {e}")
 

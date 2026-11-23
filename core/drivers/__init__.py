@@ -5,6 +5,7 @@ from core.drivers.base import BaseDriver, WebSessionAuthError
 from core.drivers.mock import MockDriver
 from core.drivers.gemini import GeminiDriver
 from core.drivers.chatgpt import ChatGPTDriver
+from core.drivers.claude import ClaudeDriver
 from core.drivers.deepseek import DeepSeekDriver
 from core.drivers.qwen import QwenDriver
 from core.drivers.grok import GrokDriver
@@ -15,6 +16,7 @@ __all__ = [
     "MockDriver",
     "GeminiDriver",
     "ChatGPTDriver",
+    "ClaudeDriver",
     "DeepSeekDriver",
     "QwenDriver",
     "GrokDriver"

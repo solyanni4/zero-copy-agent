@@ -92,11 +92,19 @@ class ActivityTracker:
         if len(self._state.history) > 10:
             self._state.history = self._state.history[-10:]
 
+    def set_stage_model(self, stage: str, model: str):
+        """Directly sets the actual resolved model for a pipeline stage."""
+        stage_key = "analysis" if stage in ("planner", "planning") else ("code" if stage in ("coder", "coding") else ("audit" if stage in ("reviewer", "audit") else stage))
+        if stage_key in self._trace_map and model:
+            self._trace_map[stage_key] = model
+            self._state.trace = self._build_trace()
+
     async def record_fallback(
         self,
         failed_model: str,
         next_model: str,
-        reason: str = ""
+        reason: str = "",
+        stage: Optional[str] = None
     ):
         """Records a failover/fallback transition in history and broadcasts event."""
         reason_str = f" ({reason})" if reason else ""
@@ -105,6 +113,11 @@ class ActivityTracker:
             self._state.fallback_active = True
             self._state.fallback_reason = reason or "fallback"
             self._state.model = next_model
+            if stage:
+                stage_key = "analysis" if stage in ("planner", "planning") else ("code" if stage in ("coder", "coding") else ("audit" if stage in ("reviewer", "audit") else stage))
+                if stage_key in self._trace_map:
+                    self._trace_map[stage_key] = next_model
+            self._state.trace = self._build_trace()
             self._add_history_entry(msg, "fallback")
             event_data = self._state.to_dict()
             event = {

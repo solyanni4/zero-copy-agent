@@ -21,6 +21,7 @@ from core.auth import detect_proxy, is_proxy_alive
 from core.drivers import (
     GeminiDriver,
     ChatGPTDriver,
+    ClaudeDriver,
     DeepSeekDriver,
     QwenDriver,
     GrokDriver,
@@ -30,6 +31,26 @@ from core.drivers import (
 )
 
 logger = logging.getLogger("zcao.browser")
+
+DRIVER_MAP = {
+    "gemini": GeminiDriver,
+    "chatgpt": ChatGPTDriver,
+    "claude": ClaudeDriver,
+    "deepseek": DeepSeekDriver,
+    "qwen": QwenDriver,
+    "grok": GrokDriver,
+}
+
+def get_driver_for_provider(provider: str, page) -> BaseDriver:
+    """Returns specialized WebDriver instance for provider. Never silently falls back to other providers."""
+    prov_key = (provider or "").lower().strip()
+    driver_cls = DRIVER_MAP.get(prov_key)
+    if not driver_cls:
+        raise ValueError(
+            f"Неподдерживаемый или неизвестный провайдер веб-сессии: '{provider}'. "
+            f"Поддерживаются только: {list(DRIVER_MAP.keys())}"
+        )
+    return driver_cls(page)
 
 async def capture_web_failure_screenshot(page, account_id: str) -> Optional[str]:
     """Captures diagnostic screenshot on web failure to logs/web_failures/<account_id>_<timestamp>.png."""
@@ -50,7 +71,7 @@ async def capture_web_failure_screenshot(page, account_id: str) -> Optional[str]
 PROVIDER_URLS = {
     "gemini": "https://gemini.google.com/app",
     "chatgpt": "https://chatgpt.com",
-    "claude": "https://claude.ai/chats",
+    "claude": "https://claude.ai",
     "deepseek": "https://chat.deepseek.com",
     "qwen": "https://chat.qwen.ai",
     "grok": "https://grok.com"
@@ -288,6 +309,23 @@ class BrowserSessionEngine:
             is_frozen = getattr(sys, "frozen", False)
             channels = ["chrome", "msedge"] if (is_frozen or sys.platform == "win32") else ["chrome", "msedge", None]
 
+            # Discover user agent from extension sync if saved
+            ua_file = profile_path / "user_agent.txt"
+            synced_ua = None
+            if ua_file.exists():
+                try:
+                    synced_ua = ua_file.read_text(encoding="utf-8").strip()
+                except Exception:
+                    pass
+            if not synced_ua:
+                cookie_cand = profile_path / "synced_cookies.json"
+                if cookie_cand.exists():
+                    try:
+                        with open(cookie_cand, "r", encoding="utf-8") as f:
+                            synced_ua = json.load(f).get("user_agent")
+                    except Exception:
+                        pass
+
             context = None
             last_err = None
             for channel in channels:
@@ -299,6 +337,9 @@ class BrowserSessionEngine:
                         "args": launch_args,
                         "ignore_default_args": ["--enable-automation"]
                     }
+                    if synced_ua:
+                        clean_ua = synced_ua.replace("HeadlessChrome", "Chrome")
+                        kwargs["user_agent"] = clean_ua
                     if channel:
                         kwargs["channel"] = channel
                     if proxy_cfg:
@@ -351,16 +392,7 @@ class BrowserSessionEngine:
                 except Exception as nav_e:
                     logger.warning(f"[ENGINE] Initial navigation for '{acc_id}' timed out or errored: {nav_e}")
 
-            if provider == "chatgpt":
-                driver = ChatGPTDriver(page)
-            elif provider == "deepseek":
-                driver = DeepSeekDriver(page)
-            elif provider == "qwen":
-                driver = QwenDriver(page)
-            elif provider == "grok":
-                driver = GrokDriver(page)
-            else:
-                driver = GeminiDriver(page)
+            driver = get_driver_for_provider(provider, page)
 
             self._contexts[acc_id] = context
             self._pages[acc_id] = page
@@ -369,6 +401,22 @@ class BrowserSessionEngine:
             self.is_ready = True
             logger.info(f"[ENGINE] Account '{acc_id}' ready (channel={channel or 'chromium'}, profile={profile_path})")
             return True
+
+    async def inject_synced_cookies(self, account_id: str, provider: str, cookies: list, user_agent: Optional[str] = None):
+        """Injects cookies into active browser context and reloads page to apply auth session."""
+        ctx = self._contexts.get(account_id)
+        if ctx and cookies:
+            await ctx.add_cookies(cookies)
+            self._cookie_mtimes[account_id] = time.time()
+            page = self._pages.get(account_id)
+            driver = self._drivers.get(account_id)
+            if page and not getattr(page, "is_closed", lambda: True)():
+                target_url = getattr(driver, "URL", None) or PROVIDER_URLS.get(provider.lower(), "https://gemini.google.com/app")
+                try:
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
+                    logger.info(f"[ENGINE] Reloaded page '{target_url}' for account '{account_id}' after cookie injection.")
+                except Exception as e:
+                    logger.warning(f"[ENGINE] Reload note after cookie injection: {e}")
 
     def get_driver(self, account_id: str) -> BaseDriver:
         return self._drivers.get(account_id, self.mock_driver)
