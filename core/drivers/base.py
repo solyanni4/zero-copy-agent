@@ -139,27 +139,43 @@ class BaseDriver(ABC):
         is_generating_fn: Callable[[], Awaitable[bool]],
         ttft_timeout: float = 25.0,
         max_generation_time: float = 120.0,
-        stability_window: float = 3.5
+        stability_window: float = 3.5,
+        baseline_text: str = ""
     ) -> str:
         """
-        Smart two-stage response waiting:
+        Smart two-stage response waiting with Thinking model support:
         1. TTFT check (25s): aborts if model does not begin generating within 25 seconds.
-        2. Active generation tracking (up to 120s): does not interrupt while text is actively growing.
-           Finishes combined: when generating indicator is gone OR text is stable for 3.5s.
+           Ignores current_text while it matches baseline_text.
+        2. Active generation / thinking tracking (up to 120s):
+           - While is_generating is True: does NOT cut off after stability_window (3.5s).
+             Allows thinking pauses. Emergency exit only if text stalls > 25.0s and len > 80.
+           - When is_generating is False and text is non-empty:
+             Returns result after 2.5s (or stability_window) of stability.
         """
         start_time = time.monotonic()
         first_char_seen = False
         last_text = ""
         stable_since = None
+        base_clean = (baseline_text or "").strip()
 
-        # Stage 1: Wait for TTFT (first token or generating indicator)
+        def is_new_content(txt: Optional[str]) -> bool:
+            if not txt:
+                return False
+            clean = txt.strip()
+            if not clean:
+                return False
+            if base_clean and clean == base_clean:
+                return False
+            return True
+
+        # Stage 1: Wait for TTFT (first token or generating/thinking indicator)
         while (time.monotonic() - start_time) < ttft_timeout:
-            current_text = await extract_fn()
+            raw_text = await extract_fn()
             is_generating = await is_generating_fn()
 
-            if current_text and len(current_text.strip()) > 0:
+            if is_new_content(raw_text):
                 first_char_seen = True
-                last_text = current_text
+                last_text = raw_text.strip()
                 break
 
             if is_generating:
@@ -175,11 +191,12 @@ class BaseDriver(ABC):
         gen_start = time.monotonic()
         while (time.monotonic() - gen_start) < max_generation_time:
             await asyncio.sleep(0.5)
-            current_text = await extract_fn()
+            raw_text = await extract_fn()
             is_generating = await is_generating_fn()
 
-            curr_len = len(current_text) if current_text else 0
-            last_len = len(last_text) if last_text else 0
+            current_text = raw_text.strip() if is_new_content(raw_text) else ""
+            curr_len = len(current_text)
+            last_len = len(last_text)
 
             if curr_len > last_len:
                 # Text is actively growing
@@ -191,15 +208,30 @@ class BaseDriver(ABC):
                     stable_since = time.monotonic()
                 else:
                     elapsed_stable = time.monotonic() - stable_since
-                    # Combined condition: text stable for 3.5s OR stop indicator disappeared and text stable for 1s
-                    if elapsed_stable >= stability_window:
-                        return current_text
-                    if not is_generating and elapsed_stable >= 1.0:
-                        return current_text
+                    if is_generating:
+                        # Model is still actively thinking or generating.
+                        # Do not interrupt on stability_window!
+                        # Only emergency exit if text stalled > 25.0s and length > 80.
+                        if elapsed_stable >= 25.0 and curr_len > 80:
+                            return current_text
+                    else:
+                        # Generation finished (is_generating is False) and text is non-empty
+                        exit_window = min(stability_window, 2.5)
+                        if elapsed_stable >= exit_window:
+                            return current_text
             elif not is_generating and curr_len > 0:
-                return current_text
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif (time.monotonic() - stable_since) >= min(stability_window, 2.5):
+                    return current_text
+            elif not is_generating and last_len > 0:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif (time.monotonic() - stable_since) >= min(stability_window, 2.5):
+                    return last_text
 
-        final_text = await extract_fn()
+        final_raw = await extract_fn()
+        final_text = final_raw.strip() if is_new_content(final_raw) else ""
         return final_text or last_text
 
     async def reset_to_new_chat(self):

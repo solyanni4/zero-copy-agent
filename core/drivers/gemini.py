@@ -78,6 +78,9 @@ class GeminiDriver(BaseDriver):
             await self.check_fast_auth_or_captcha("Gemini")
             raise RuntimeError("Could not locate Gemini input area. Please ensure you are logged in.")
 
+        # 2.5 Capture baseline response before sending new prompt
+        baseline_text = await self._extract_last_response()
+
         # 3. Enter prompt
         try:
             await input_elem.click(force=True, timeout=2000)
@@ -113,20 +116,23 @@ class GeminiDriver(BaseDriver):
             # Fallback to Enter key
             await self.page.keyboard.press("Enter")
 
-        # 5. Smart response waiting with TTFT cut-off and stability detection
+        # 5. Smart response waiting with TTFT cut-off, thinking detection and stability tracking
         async def is_generating_fn() -> bool:
             stop_btn = await self.page.query_selector(
                 'button[aria-label*="Stop"], button[aria-label*="Остановить"], button[aria-label*="stop"], button[data-testid*="stop"]'
             )
-            loading = await self.page.query_selector('mat-progress-bar, .loading, [aria-label*="Loading"]')
-            return bool(stop_btn or loading)
+            thinking = await self.page.query_selector(
+                'model-thoughts, [aria-busy="true"], .thinking, [class*="thinking"], mat-progress-bar, .loading, [aria-label*="Loading"]'
+            )
+            return bool(stop_btn or thinking)
 
         response_text = await self.wait_for_smart_response(
             extract_fn=self._extract_last_response,
             is_generating_fn=is_generating_fn,
             ttft_timeout=25.0,
             max_generation_time=120.0,
-            stability_window=3.5
+            stability_window=3.5,
+            baseline_text=baseline_text
         )
         return response_text or "[zero-copy-agent] Ответ от Gemini получен, но не удалось извлечь DOM разметку."
 
@@ -142,7 +148,7 @@ class GeminiDriver(BaseDriver):
                 await new_chat_btn.click()
                 await asyncio.sleep(0.5)
             else:
-                if "gemini.google.com/app" not in self.page.url:
+                if self.page.url.rstrip("/") != self.URL:
                     await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=15000)
         except Exception:
             pass
@@ -155,8 +161,42 @@ class GeminiDriver(BaseDriver):
             await asyncio.sleep(0.01)
 
     async def _extract_last_response(self) -> str:
+        if not self.page:
+            return ""
+        try:
+            text = await self.page.evaluate('''() => {
+                const containers = document.querySelectorAll(
+                    '.model-response-text, message-content, .response-container-content'
+                );
+                if (!containers || containers.length === 0) return '';
+                const last = containers[containers.length - 1];
+
+                const clone = last.cloneNode(true);
+                // Exclude internal thinking blocks
+                const thoughts = clone.querySelectorAll('model-thoughts, .model-thoughts, [class*="thinking"]');
+                thoughts.forEach(t => t.remove());
+
+                // Content from .model-response-text or message-content .markdown
+                const contentEl = clone.querySelector('.model-response-text, .markdown') || clone;
+                const raw = (contentEl ? contentEl.innerText : clone.innerText) || '';
+                const cleaned = raw.trim();
+
+                // If text is only a stub header like 'Gemini said' or 'Gemini', treat as empty
+                const low = cleaned.toLowerCase();
+                const stubs = ['gemini said', 'gemini said:', 'gemini', 'ответ gemini', 'ответ gemini:'];
+                if (!cleaned || stubs.includes(low)) {
+                    return '';
+                }
+                return cleaned;
+            }''')
+            if text and text.strip():
+                return text.strip()
+        except Exception:
+            pass
+
         response_selectors = [
             '.model-response-text',
+            'message-content .markdown',
             'message-content',
             '.response-container-content',
             'div.markdown'
@@ -165,6 +205,10 @@ class GeminiDriver(BaseDriver):
             elems = await self.page.query_selector_all(sel)
             if elems:
                 text = await elems[-1].inner_text()
-                if text and text.strip():
-                    return text.strip()
+                if text:
+                    cleaned = text.strip()
+                    low = cleaned.lower()
+                    stubs = ['gemini said', 'gemini said:', 'gemini', 'ответ gemini', 'ответ gemini:']
+                    if cleaned and low not in stubs:
+                        return cleaned
         return ""

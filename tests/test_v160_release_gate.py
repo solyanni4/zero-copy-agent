@@ -262,3 +262,94 @@ def test_save_config_never_writes_to_meipass(tmp_path: Path, monkeypatch):
     meipass_file = fake_meipass / "config.yaml"
     assert not meipass_file.exists()
 
+
+@pytest.mark.asyncio
+async def test_wait_for_smart_response_thinking_model_pause():
+    """
+    Verifies that wait_for_smart_response does NOT cut off after stability_window (3.5s)
+    while the model is in thinking/reasoning phase (is_generating_fn=True).
+    Simulates a 5s thinking pause before JSON output is returned.
+    """
+    from core.drivers.base import BaseDriver
+
+    class ConcreteDriver(BaseDriver):
+        async def is_authenticated(self) -> bool:
+            return True
+        async def send_prompt(self, prompt: str, timeout: float = 60.0) -> str:
+            return ""
+        async def send_prompt_stream(self, prompt: str, timeout: float = 60.0):
+            yield ""
+
+    driver = ConcreteDriver(page=None)
+    t0 = time.monotonic()
+
+    async def mock_extract():
+        elapsed = time.monotonic() - t0
+        # First 5 seconds: thinking phase, no output text yet
+        if elapsed < 5.0:
+            return ""
+        return '{"verdict": "PASS", "issues": []}'
+
+    async def mock_is_generating():
+        elapsed = time.monotonic() - t0
+        # Generating is True during 5s thinking phase and 1s after text begins
+        return elapsed < 6.0
+
+    res = await driver.wait_for_smart_response(
+        extract_fn=mock_extract,
+        is_generating_fn=mock_is_generating,
+        ttft_timeout=10.0,
+        max_generation_time=20.0,
+        stability_window=3.5,
+        baseline_text=""
+    )
+
+    assert '"verdict": "PASS"' in res
+    # Ensure it waited past the 5s thinking threshold
+    total_elapsed = time.monotonic() - t0
+    assert total_elapsed >= 5.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_smart_response_baseline_ignored():
+    """
+    Verifies that baseline_text from previous turns is ignored during Stage 1 and Stage 2
+    until new content is produced.
+    """
+    from core.drivers.base import BaseDriver
+
+    class ConcreteDriver(BaseDriver):
+        async def is_authenticated(self) -> bool:
+            return True
+        async def send_prompt(self, prompt: str, timeout: float = 60.0) -> str:
+            return ""
+        async def send_prompt_stream(self, prompt: str, timeout: float = 60.0):
+            yield ""
+
+    driver = ConcreteDriver(page=None)
+    t0 = time.monotonic()
+    baseline = "Previous turn completed response"
+
+    async def mock_extract():
+        elapsed = time.monotonic() - t0
+        if elapsed < 1.0:
+            return baseline
+        return "Updated new response"
+
+    async def mock_is_generating():
+        elapsed = time.monotonic() - t0
+        return elapsed < 2.0
+
+    res = await driver.wait_for_smart_response(
+        extract_fn=mock_extract,
+        is_generating_fn=mock_is_generating,
+        ttft_timeout=5.0,
+        max_generation_time=10.0,
+        stability_window=1.5,
+        baseline_text=baseline
+    )
+
+    assert res == "Updated new response"
+
+
+

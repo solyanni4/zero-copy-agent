@@ -84,6 +84,9 @@ class QwenDriver(BaseDriver):
             await self.check_fast_auth_or_captcha("Qwen")
             raise RuntimeError("Could not locate Qwen prompt area. Please ensure you are logged in.")
 
+        # Capture baseline response before sending prompt
+        baseline_text = await self._extract_last_response()
+
         try:
             await input_elem.click(force=True, timeout=2000)
         except Exception:
@@ -131,20 +134,23 @@ class QwenDriver(BaseDriver):
         if not clicked:
             await self.page.keyboard.press("Enter")
 
-        # Smart response waiting
+        # Smart response waiting with thinking indicator support
         async def is_generating_fn() -> bool:
             stop_btn = await self.page.query_selector(
-                'button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"], button[class*="stop"]'
+                'button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"], button[class*="stop"], button[data-testid*="stop"]'
             )
-            loading = await self.page.query_selector('.ant-spin, .loading, [class*="generating"]')
-            return bool(stop_btn or loading)
+            thinking = await self.page.query_selector(
+                '[class*="thinking"], [class*="reasoning"], [aria-busy="true"], .ant-spin, .loading, [class*="generating"]'
+            )
+            return bool(stop_btn or thinking)
 
         response_text = await self.wait_for_smart_response(
             extract_fn=self._extract_last_response,
             is_generating_fn=is_generating_fn,
             ttft_timeout=25.0,
             max_generation_time=120.0,
-            stability_window=3.5
+            stability_window=3.5,
+            baseline_text=baseline_text
         )
         return response_text or "[zero-copy-agent] Ответ от Qwen получен, но не удалось извлечь DOM разметку."
 
@@ -173,11 +179,44 @@ class QwenDriver(BaseDriver):
             await asyncio.sleep(0.01)
 
     async def _extract_last_response(self) -> str:
+        if not self.page:
+            return ""
+        try:
+            text = await self.page.evaluate('''() => {
+                const assistants = document.querySelectorAll(
+                    'div[data-role="assistant"], div[class*="message-assistant"], .qwen-chat-message, .message-item[data-is-user="false"]'
+                );
+                let target = null;
+                if (assistants && assistants.length > 0) {
+                    target = assistants[assistants.length - 1];
+                } else {
+                    const mds = document.querySelectorAll('.markdown-body, div.markdown');
+                    if (mds && mds.length > 0) target = mds[mds.length - 1];
+                }
+                if (!target) return '';
+
+                const clone = target.cloneNode(true);
+                // Exclude thinking/reasoning and temporary status indicators
+                const extra = clone.querySelectorAll('[class*="thinking"], [class*="reasoning"], .ant-spin, [class*="generating"], .status-tag');
+                extra.forEach(e => e.remove());
+
+                const md = clone.querySelector('.markdown-body, div.markdown');
+                const raw = (md ? md.innerText : clone.innerText) || '';
+                return raw.trim();
+            }''')
+            if text and text.strip():
+                return text.strip()
+        except Exception:
+            pass
+
         response_selectors = [
-            '.qwen-chat-message',
+            'div[data-role="assistant"] .markdown-body',
+            'div[class*="message-assistant"] .markdown-body',
+            '.qwen-chat-message .markdown-body',
             '.markdown-body',
             'div[data-role="assistant"]',
             'div[class*="message-assistant"]',
+            '.qwen-chat-message',
             'div.markdown'
         ]
         for sel in response_selectors:
