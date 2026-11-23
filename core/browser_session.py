@@ -7,6 +7,7 @@ session keep-alive daemon (SKD), and LRU multi-account isolation.
 # Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any
 
 from core.config import config, get_runtime_cwd
+from core.auth import detect_proxy, is_proxy_alive
 from core.drivers import (
     GeminiDriver,
     ChatGPTDriver,
@@ -117,6 +119,8 @@ class BrowserSessionEngine:
         self.mock_driver = MockDriver()
         self.keepalive_task = None
         self.warmup_task = None
+        self.using_patchright = False
+        self._cookie_mtimes: Dict[str, float] = {}
 
     @property
     def context(self):
@@ -152,16 +156,15 @@ class BrowserSessionEngine:
     async def initialize(self):
         """Initializes the background browser runtime in lazy standby mode without pre-locking profiles."""
         try:
-            try:
-                from patchright.async_api import async_playwright, BrowserContext, Page
-            except ImportError:
-                from playwright.async_api import async_playwright, BrowserContext, Page
             if not self.playwright:
                 try:
+                    from patchright.async_api import async_playwright
+                    self.using_patchright = True
                     self.playwright = await asyncio.wait_for(async_playwright().start(), timeout=8.0)
-                except (asyncio.TimeoutError, Exception) as driver_err:
+                except Exception as driver_err:
                     logger.warning(f"[ENGINE-WARN] Primary browser driver start note ({driver_err}), falling back...")
                     from playwright.async_api import async_playwright
+                    self.using_patchright = False
                     self.playwright = await asyncio.wait_for(async_playwright().start(), timeout=8.0)
             self.is_ready = True
             logger.info("[ENGINE] Browser runtime ready in lazy multi-account standby mode.")
@@ -255,8 +258,10 @@ class BrowserSessionEngine:
                 try:
                     try:
                         from patchright.async_api import async_playwright
+                        self.using_patchright = True
                     except ImportError:
                         from playwright.async_api import async_playwright
+                        self.using_patchright = False
                     self.playwright = await async_playwright().start()
                 except Exception as pw_err:
                     logger.error(f"[ENGINE] Could not start browser runtime: {pw_err}")
@@ -312,14 +317,31 @@ class BrowserSessionEngine:
                     logger.error(f"[ENGINE] Failed to launch context for '{acc_id}': {last_err}")
                 return False
 
-            try:
-                await context.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                """)
-            except Exception:
-                pass
+            if not self.using_patchright:
+                try:
+                    await context.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                    """)
+                except Exception:
+                    pass
+
+            # Auto-apply synced cookies from Chrome extension if available and newer
+            cookie_file = profile_path / "synced_cookies.json"
+            if cookie_file.exists():
+                try:
+                    mtime = cookie_file.stat().st_mtime
+                    if mtime > self._cookie_mtimes.get(acc_id, 0.0):
+                        with open(cookie_file, "r", encoding="utf-8") as f:
+                            cdata = json.load(f)
+                        cookies_to_add = cdata.get("cookies", [])
+                        if cookies_to_add:
+                            await context.add_cookies(cookies_to_add)
+                            self._cookie_mtimes[acc_id] = mtime
+                            logger.info(f"[ENGINE] Applied {len(cookies_to_add)} synced cookies for account '{acc_id}'")
+                except Exception as ce:
+                    logger.warning(f"[ENGINE] Error loading synced cookies for '{acc_id}': {ce}")
 
             page = context.pages[0] if context.pages else await context.new_page()
             target_url = PROVIDER_URLS.get(provider.lower(), "https://gemini.google.com/app")

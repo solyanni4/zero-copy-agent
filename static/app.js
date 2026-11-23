@@ -978,8 +978,92 @@ async function fetchAccountsAndModels() {
 
     renderAccountsTable();
     await syncConnectedModels();
+    await loadChromeSyncInfo();
   } catch (err) {
     // fallback if endpoint returns error
+  }
+}
+
+let _activeSyncToken = "";
+
+async function loadChromeSyncInfo() {
+  try {
+    const res = await fetch('/v1/auth/sync-info');
+    if (!res.ok) return;
+    const data = await res.json();
+    _activeSyncToken = data.sync_token || "";
+
+    const tokenDisp = document.getElementById('chrome-sync-token-display');
+    if (tokenDisp) {
+      if (_activeSyncToken) {
+        tokenDisp.innerText = _activeSyncToken;
+        tokenDisp.title = `Нажмите, чтобы скопировать токен: ${_activeSyncToken}`;
+      } else {
+        tokenDisp.innerText = 'не задан';
+      }
+    }
+
+    const badge = document.getElementById('chrome-sync-badge');
+    if (badge) {
+      const providers = data.providers || {};
+      const provKeys = Object.keys(providers);
+      if (provKeys.length > 0) {
+        let totalCookies = 0;
+        provKeys.forEach(k => { totalCookies += (providers[k].cookie_count || 0); });
+        badge.innerText = `Активно (${provKeys.length} акк., ${totalCookies} кук)`;
+        badge.className = 'px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald/15 text-emerald border border-emerald/30';
+      } else {
+        badge.innerText = 'Токен активен';
+        badge.className = 'px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald/10 text-emerald border border-emerald/20';
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function copySyncToken() {
+  if (!_activeSyncToken) {
+    await loadChromeSyncInfo();
+  }
+  if (!_activeSyncToken) return;
+
+  try {
+    await navigator.clipboard.writeText(_activeSyncToken);
+    showModelsLog('[CHROME] Sync Token успешно скопирован в буфер обмена!', 'text-emerald');
+  } catch (err) {
+    prompt('Скопируйте Sync Token вручную:', _activeSyncToken);
+  }
+}
+
+async function openExtensionSetup() {
+  const btn = document.getElementById('btn-open-ext-setup');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i><span>Открываем...</span>`;
+    if (window.lucide) lucide.createIcons();
+  }
+
+  showModelsLog('[CHROME] Подготовка папки chrome_extension и запуск браузера...', 'text-cobalt');
+
+  try {
+    const res = await fetch('/v1/auth/open-extension-setup', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      _activeSyncToken = data.sync_token || _activeSyncToken;
+      showModelsLog(`[CHROME] Папка расширения открыта в Проводнике (${data.path}). Перетащите её в окно Chrome с включенным «Режимом разработчика».`, 'text-emerald');
+      await loadChromeSyncInfo();
+    } else {
+      showModelsLog(`[ERROR] Не удалось подготовить расширение: ${data.detail || res.statusText}`, 'text-crimson');
+    }
+  } catch (err) {
+    showModelsLog(`[ERROR] Ошибка запуска: ${err.message}`, 'text-crimson');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-lucide="external-link" class="w-3.5 h-3.5"></i><span>Подключить Chrome (1 шаг)</span>`;
+      if (window.lucide) lucide.createIcons();
+    }
   }
 }
 

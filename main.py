@@ -13,6 +13,7 @@ import uuid
 import os
 import sys
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 import logging
 from contextlib import asynccontextmanager
@@ -75,6 +76,14 @@ async def lifespan(app: FastAPI):
     # Auto-heal configuration on startup
     sub_cfg, heal_mods = config_healer.load_or_create()
     sync_mesh_from_subscriptions(sub_cfg)
+
+    # Ensure Chrome Extension is ready and prefilled with syncToken
+    try:
+        from core.auth import ensure_chrome_extension_ready
+        ext_path = ensure_chrome_extension_ready(config)
+        logging.getLogger("zca.main").info(f"[Auth Assistant] Chrome Extension ready at: {ext_path}")
+    except Exception as e:
+        logging.getLogger("zca.main").warning(f"[Auth Assistant] Extension unpack warning: {e}")
 
     # Smart auto-sync IDEs on startup if version changed or new IDE detected
     try:
@@ -174,16 +183,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Restrict CORS to local host origins and IDE webviews (preventing malicious web CSRF)
+# Restrict CORS to local host origins, Chrome extension, and IDE webviews (preventing malicious web CSRF)
 cors_env = os.getenv("ZCA_CORS_ORIGINS")
 if cors_env:
     allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
+        allow_origin_regex=r"^chrome-extension://.*$",
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*", "X-ZCA-Sync-Token"],
     )
 else:
     allowed_origins = [
@@ -198,10 +208,10 @@ else:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://.*|vscode-webview://.*)$",
+        allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://.*|vscode-webview://.*|chrome-extension://.*)$",
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*", "X-ZCA-Sync-Token"],
     )
 
 # Include Native Model Context Protocol (MCP) Router
@@ -213,8 +223,29 @@ app.state.orchestrator = orchestrator
 # Include UI Operations API Router
 app.include_router(ui_router)
 
+def get_static_dir() -> Path:
+    """Resolves static directory safely for both frozen binaries (PyInstaller _MEIPASS) and dev environments."""
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            cand = Path(meipass) / "static"
+            if cand.exists():
+                return cand
+        cand_exe = Path(sys.executable).resolve().parent / "static"
+        if cand_exe.exists():
+            return cand_exe
+    cand_file = Path(__file__).resolve().parent / "static"
+    if cand_file.exists():
+        return cand_file
+    cand_parent = Path(__file__).resolve().parent.parent / "static"
+    if cand_parent.exists():
+        return cand_parent
+    return Path(__file__).resolve().parent / "static"
+
 def _resolve_bundle_dir(subpath: str) -> str:
     """Resolves resource paths safely for both frozen binaries (PyInstaller) and dev environments."""
+    if subpath == "static":
+        return str(get_static_dir())
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
         cand = os.path.join(base, subpath)
@@ -231,7 +262,7 @@ def _resolve_bundle_dir(subpath: str) -> str:
         return cand
     return os.path.join(os.path.dirname(__file__), subpath)
 
-STATIC_DIR = _resolve_bundle_dir("static")
+STATIC_DIR = str(get_static_dir())
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -521,9 +552,23 @@ async def get_completion_history():
 @app.get("/ui", response_class=HTMLResponse)
 async def root_dashboard():
     """Unified desktop dashboard & monitoring interface."""
-    index_file = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_file):
+    static_dir = get_static_dir()
+    index_file = static_dir / "index.html"
+    if index_file.exists():
         with open(index_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+
+    # Direct fallback for PyInstaller frozen runtime (_MEIPASS)
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        meipass_idx = Path(sys._MEIPASS) / "static" / "index.html"
+        if meipass_idx.exists():
+            with open(meipass_idx, "r", encoding="utf-8") as f:
+                return HTMLResponse(f.read())
+
+    # Direct fallback for dev source tree
+    src_idx = Path(__file__).resolve().parent / "static" / "index.html"
+    if src_idx.exists():
+        with open(src_idx, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
 
     return HTMLResponse("<html><body><h3>zero-copy-agent</h3><p>UI loading error: static/index.html not found.</p></body></html>", status_code=500)
@@ -560,6 +605,162 @@ async def trigger_browser_auth(payload: dict = Body(...)):
     provider = payload.get("provider", "gemini")
     res = await api_web_auth(provider)
     return {"status": "ok", "provider": provider, "message": res.get("message", "")}
+
+def convert_chrome_cookie_to_playwright(c: dict) -> Optional[dict]:
+    """Converts a Chrome extension cookie dictionary to Playwright-compatible format."""
+    if not isinstance(c, dict) or "name" not in c or "value" not in c or "domain" not in c:
+        return None
+    pw = {
+        "name": str(c["name"]),
+        "value": str(c["value"]),
+        "domain": str(c["domain"]),
+        "path": str(c.get("path") or "/")
+    }
+    if "expirationDate" in c and c["expirationDate"] is not None:
+        pw["expires"] = float(c["expirationDate"])
+    elif "expires" in c and c["expires"] is not None:
+        pw["expires"] = float(c["expires"])
+
+    if "httpOnly" in c:
+        pw["httpOnly"] = bool(c["httpOnly"])
+    if "secure" in c:
+        pw["secure"] = bool(c["secure"])
+
+    raw_same_site = str(c.get("sameSite", "")).lower()
+    if raw_same_site == "no_restriction":
+        pw["sameSite"] = "None"
+        pw["secure"] = True
+    elif raw_same_site == "strict":
+        pw["sameSite"] = "Strict"
+    elif raw_same_site in ("lax", "unspecified"):
+        pw["sameSite"] = "Lax"
+    elif raw_same_site in ("none",):
+        pw["sameSite"] = "None"
+        pw["secure"] = True
+
+    return pw
+
+@app.post("/v1/auth/sync-cookies")
+async def sync_cookies_from_extension(request: Request, payload: dict = Body(...)):
+    """Receives authenticated cookies from zero-copy-agent Chrome extension."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(status_code=403, detail="Localhost access only")
+
+    token_hdr = request.headers.get("x-zca-sync-token") or ""
+    expected_token = getattr(config, "cookie_sync_token", "") or ""
+    if not expected_token or token_hdr != expected_token:
+        raise HTTPException(status_code=401, detail="Invalid sync token")
+
+    provider = str(payload.get("provider", "")).strip().lower()
+    account_id = str(payload.get("account_id", "")).strip() or f"{provider}-web-primary"
+    raw_cookies = payload.get("cookies", [])
+
+    if not provider or not raw_cookies:
+        raise HTTPException(status_code=400, detail="Missing provider or cookies payload")
+
+    converted_cookies = []
+    for rc in raw_cookies:
+        pw_c = convert_chrome_cookie_to_playwright(rc)
+        if pw_c:
+            converted_cookies.append(pw_c)
+
+    # Save to runtime browser_profiles directory
+    prof_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    cookie_path = prof_dir / "synced_cookies.json"
+    save_data = {
+        "provider": provider,
+        "account_id": account_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "cookies": converted_cookies
+    }
+    with open(cookie_path, "w", encoding="utf-8") as f:
+        json.dump(save_data, f, indent=2, ensure_ascii=False)
+
+    # Register / refresh in subscriptions.yaml
+    alias_names = {
+        "gemini": "Gemini Advanced (Chrome Sync)",
+        "chatgpt": "ChatGPT Plus / Free (Chrome Sync)",
+        "claude": "Claude Pro / Free (Chrome Sync)",
+        "deepseek": "DeepSeek Reasoner / Chat (Chrome Sync)",
+        "qwen": "Qwen Max / Coder (Chrome Sync)",
+        "grok": "xAI Grok 3 (Chrome Sync)"
+    }
+    alias = alias_names.get(provider, f"{provider.upper()} Web Session ({account_id})")
+    config_healer.register_web_session(
+        provider=provider,
+        account_id=account_id,
+        alias=alias,
+        profile_dir=f"browser_profiles/{account_id}"
+    )
+
+    # If context is currently live, inject cookies dynamically
+    if hasattr(orchestrator, "browser_engine") and orchestrator.browser_engine:
+        b_eng = orchestrator.browser_engine
+        ctx = b_eng._contexts.get(account_id)
+        if ctx:
+            try:
+                await ctx.add_cookies(converted_cookies)
+                if hasattr(b_eng, "_cookie_mtimes"):
+                    b_eng._cookie_mtimes[account_id] = time.time()
+                logging.getLogger("zca.main").info(f"[Auth Assistant] Injected {len(converted_cookies)} cookies into active context '{account_id}'")
+            except Exception as inj_e:
+                logging.getLogger("zca.main").warning(f"[Auth Assistant] Live cookie injection note: {inj_e}")
+
+    # Reset cooldown in QuotaMesh
+    if hasattr(orchestrator, "quota_mesh") and orchestrator.quota_mesh:
+        orchestrator.quota_mesh.reset_account(account_id)
+
+    return {
+        "status": "ok",
+        "provider": provider,
+        "account_id": account_id,
+        "cookies_synced": len(converted_cookies)
+    }
+
+@app.get("/v1/auth/sync-info")
+async def get_sync_info():
+    """Returns sync token, extension path, and sync status across all accounts."""
+    from core.auth import ensure_chrome_extension_ready
+    ext_path = ensure_chrome_extension_ready(config)
+
+    providers_status = {}
+    base_profiles = get_runtime_cwd() / "browser_profiles"
+    if base_profiles.exists():
+        for p_dir in base_profiles.iterdir():
+            if p_dir.is_dir():
+                cf = p_dir / "synced_cookies.json"
+                if cf.exists():
+                    try:
+                        with open(cf, "r", encoding="utf-8") as f:
+                            cdata = json.load(f)
+                        providers_status[p_dir.name] = {
+                            "account_id": cdata.get("account_id", p_dir.name),
+                            "provider": cdata.get("provider", ""),
+                            "updated_at": cdata.get("updated_at", ""),
+                            "cookie_count": len(cdata.get("cookies", []))
+                        }
+                    except Exception:
+                        pass
+
+    return {
+        "status": "ok",
+        "sync_token": getattr(config, "cookie_sync_token", ""),
+        "extension_path": str(ext_path),
+        "providers": providers_status
+    }
+
+@app.post("/v1/auth/open-extension-setup")
+async def open_extension_setup_route():
+    """Unpacks extension, selects it in Explorer, and opens chrome://extensions in Chrome."""
+    from core.auth import open_chrome_extension_setup
+    ext_dir = open_chrome_extension_setup(config)
+    return {
+        "status": "ok",
+        "path": str(ext_dir),
+        "sync_token": getattr(config, "cookie_sync_token", "")
+    }
 
 @app.post("/v1/app/minimize")
 async def app_minimize(request: Request):

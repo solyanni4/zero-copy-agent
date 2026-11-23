@@ -64,6 +64,8 @@ def build():
         f"--add-data={ROOT_DIR / 'presets.yaml'}{';.' if sys.platform == 'win32' else ':.'}",
         f"--add-data={ASSETS_DIR}{';desktop/assets' if sys.platform == 'win32' else ':desktop/assets'}",
         f"--add-data={ROOT_DIR / 'static'}{';static' if sys.platform == 'win32' else ':static'}",
+        f"--add-data={ROOT_DIR / 'chrome_extension'}{';chrome_extension' if sys.platform == 'win32' else ':chrome_extension'}",
+        f"--add-data={ROOT_DIR / 'ide_config'}{';ide_config' if sys.platform == 'win32' else ':ide_config'}",
         "--collect-all=core",
         "--collect-all=playwright",
         "--collect-all=patchright",

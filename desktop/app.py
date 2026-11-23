@@ -286,8 +286,9 @@ class ZeroCopyUnifiedApp:
             try:
                 self.uvicorn_server.run()
             except Exception as e:
-                logging.error(f"[Desktop App] Uvicorn server error: {e}")
+                logging.exception(f"[Desktop App] Uvicorn server error: {e}")
             finally:
+                logging.info(f"[Desktop App] Uvicorn server exited. should_exit={getattr(self.uvicorn_server, 'should_exit', None)}")
                 self.is_running = False
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
@@ -586,6 +587,7 @@ def main():
 
         health_url = f"http://127.0.0.1:{target_port}/health"
         status_url = f"http://127.0.0.1:{target_port}/v1/ui/status"
+        root_url = f"http://127.0.0.1:{target_port}/"
         success = False
         start_wait = time.time()
         while time.time() - start_wait < 10.0:
@@ -593,8 +595,16 @@ def main():
                 with httpx.Client(timeout=1.0, trust_env=False) as client:
                     r_h = client.get(health_url)
                     r_s = client.get(status_url)
-                    if r_h.status_code == 200 and r_s.status_code == 200:
-                        print(f"[Smoke Test] Health: OK ({r_h.status_code}), UI Status: OK ({r_s.status_code})")
+                    r_root = client.get(root_url)
+                    if r_h.status_code == 200 and r_s.status_code == 200 and r_root.status_code == 200:
+                        root_html = r_root.text
+                        if "UI loading error" in root_html:
+                            print(f"[Smoke Test] FAILED: Root UI returned error: {root_html[:120]}")
+                            sys.exit(1)
+                        if "<html" not in root_html.lower():
+                            print("[Smoke Test] FAILED: Root UI response does not contain HTML markup.")
+                            sys.exit(1)
+                        print(f"[Smoke Test] Health: OK ({r_h.status_code}), UI Status: OK ({r_s.status_code}), Root UI: OK ({r_root.status_code})")
                         success = True
                         break
             except Exception:

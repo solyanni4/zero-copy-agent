@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>zero-copy-agent Cookie Sync</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --panel: #334155;
+      --border: #475569;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      width: 360px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 12px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+    }
+    .header-title {
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .version-tag {
+      font-size: 10px;
+      background: var(--panel);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--muted);
+      font-mono: monospace;
+    }
+    .form-group {
+      margin-bottom: 8px;
+    }
+    label {
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus {
+      border-color: var(--accent);
+    }
+    .providers-list {
+      margin-top: 10px;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .provider-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .provider-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .provider-name {
+      font-weight: 600;
+      font-size: 11px;
+    }
+    .status-badge {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 500;
+    }
+    .status-ok { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .status-no_cookies { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+    .status-offline { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .status-error { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+    .account-input {
+      font-family: monospace;
+      font-size: 10px !important;
+      padding: 3px 6px !important;
+      background: var(--bg) !important;
+    }
+    .actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 6px;
+    }
+    button {
+      flex: 1;
+      padding: 6px 10px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+    .btn-secondary {
+      background: var(--panel);
+      color: var(--text);
+    }
+    .btn-secondary:hover {
+      background: #475569;
+    }
+    .footer-note {
+      margin-top: 8px;
+      font-size: 10px;
+      color: var(--muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-title">
+      <span>ZCA Cookie Sync</span>
+    </div>
+    <span class="version-tag">v1.6.0</span>
+  </div>
+
+  <div class="form-group">
+    <label for="zca-url">ZCA Сервер</label>
+    <input type="text" id="zca-url" placeholder="http://127.0.0.1:8000" />
+  </div>
+
+  <div class="form-group">
+    <label for="sync-token">Sync Token (из config.yaml)</label>
+    <input type="password" id="sync-token" placeholder="Секретный токен синхронизации" />
+  </div>
+
+  <label style="margin-top: 8px;">Аккаунты и статусы</label>
+  <div class="providers-list" id="providers-container">
+    <!-- Rendered dynamically via popup.js -->
+  </div>
+
+  <div class="actions">
+    <button class="btn-primary" id="btn-sync">Синхронизировать сейчас</button>
+    <button class="btn-secondary" id="btn-save">Сохранить</button>
+  </div>
+
+  <div class="footer-note" id="sync-footer">
+    Фоновый авто-синк каждые 30 мин и по изменению кук
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

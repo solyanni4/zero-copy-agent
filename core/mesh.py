@@ -239,6 +239,14 @@ class QuotaMesh:
                     state.trip(cooldown_seconds=cooldown_seconds)
                     return
 
+    def reset_account(self, account_id: str):
+        """Resets circuit breaker, error count, and cooldown for account_id."""
+        with self._lock:
+            for pool in list(self._pools.values()) + list(self._web_pools.values()):
+                for state in pool:
+                    if state.account_id == account_id or state.key == account_id:
+                        state.reset()
+
     def record_success(self, provider: str, key: str):
         """Marks request success and resets failure counter."""
         provider_name = provider.lower()

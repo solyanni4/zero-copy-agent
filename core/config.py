@@ -1,5 +1,6 @@
 import os
 import sys
+import secrets
 from pathlib import Path
 from typing import List, Optional, Dict
 import yaml
@@ -127,6 +128,7 @@ class AppConfig(BaseModel):
     version: str = "1.6.0"
     show_mcp_badge: bool = True
     ide_routing_mode: str = "through_zca"  # "through_zca" | "bypass"
+    cookie_sync_token: str = Field(default_factory=lambda: secrets.token_urlsafe(24))
     server: ServerConfig = Field(default_factory=ServerConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     models: ModelsGroupConfig = Field(default_factory=ModelsGroupConfig)
@@ -140,10 +142,16 @@ def load_config() -> AppConfig:
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-            return AppConfig(**data)
+            cfg = AppConfig(**data)
+            if not getattr(cfg, "cookie_sync_token", None):
+                cfg.cookie_sync_token = secrets.token_urlsafe(24)
+                save_config(cfg)
+            return cfg
         except Exception as e:
             print(f"[WARN] Error loading {cfg_path}: {e}. Falling back to default settings.")
-    return AppConfig()
+    new_cfg = AppConfig()
+    save_config(new_cfg)
+    return new_cfg
 
 def save_config(cfg: Optional[AppConfig] = None) -> bool:
     if cfg is None:

@@ -352,4 +352,201 @@ async def test_wait_for_smart_response_baseline_ignored():
     assert res == "Updated new response"
 
 
+def test_chrome_extension_manifest_validation():
+    """Validates chrome_extension/manifest.json for Manifest V3 conformance and required permissions."""
+    import json
+    from core.config import get_runtime_cwd
+
+    manifest_path = Path(__file__).resolve().parent.parent / "chrome_extension" / "manifest.json"
+    assert manifest_path.exists(), f"manifest.json not found at {manifest_path}"
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert data["manifest_version"] == 3
+    assert "cookies" in data["permissions"]
+    assert "alarms" in data["permissions"]
+    assert "storage" in data["permissions"]
+
+    hosts = data.get("host_permissions", [])
+    expected_hosts = [
+        "https://*.google.com/*",
+        "https://gemini.google.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://chat.qwen.ai/*",
+        "https://grok.com/*",
+        "http://127.0.0.1:8000/*"
+    ]
+    for h in expected_hosts:
+        assert h in hosts, f"Expected host permission '{h}' missing from manifest"
+
+    assert data.get("background", {}).get("service_worker") == "background.js"
+
+
+def test_ensure_chrome_extension_ready(tmp_path: Path, monkeypatch):
+    """Verifies ensure_chrome_extension_ready unpacks extension and writes defaults.json with syncToken."""
+    import json
+    from core.auth import ensure_chrome_extension_ready
+    from core.config import AppConfig
+
+    fake_runtime = tmp_path / "runtime"
+    fake_runtime.mkdir()
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: fake_runtime)
+
+    test_cfg = AppConfig()
+    test_cfg.cookie_sync_token = "test_secret_sync_token_12345"
+
+    target_dir = ensure_chrome_extension_ready(test_cfg)
+    assert target_dir.exists()
+    assert target_dir == fake_runtime / "chrome_extension"
+
+    defaults_path = target_dir / "defaults.json"
+    assert defaults_path.exists()
+    with open(defaults_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert data["syncToken"] == "test_secret_sync_token_12345"
+    assert "127.0.0.1" in data["zcaUrl"]
+
+
+def test_sync_cookies_endpoint(tmp_path: Path, monkeypatch):
+    """Verifies POST /v1/auth/sync-cookies auth check, conversion of Chrome cookies to Playwright, and file persistence."""
+    import json
+    from starlette.testclient import TestClient
+    from main import app
+    from core.config import config
+
+    fake_runtime = tmp_path / "runtime_cookies"
+    fake_runtime.mkdir()
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: fake_runtime)
+    monkeypatch.setattr("main.get_runtime_cwd", lambda: fake_runtime)
+
+    client = TestClient(app)
+    expected_token = getattr(config, "cookie_sync_token", "default_test_token")
+
+    payload = {
+        "provider": "gemini",
+        "account_id": "gemini-web-primary",
+        "cookies": [
+            {
+                "name": "__Secure-1PSID",
+                "value": "mock_cookie_val_xyz",
+                "domain": ".google.com",
+                "path": "/",
+                "expirationDate": 1799999999.5,
+                "httpOnly": True,
+                "secure": False,
+                "sameSite": "no_restriction",
+                "hostOnly": True,
+                "session": False
+            }
+        ]
+    }
+
+    # 1. Reject invalid sync token with 401
+    bad_res = client.post(
+        "/v1/auth/sync-cookies",
+        headers={"x-zca-sync-token": "wrong_token"},
+        json=payload
+    )
+    assert bad_res.status_code == 401
+
+    # 2. Accept valid sync token
+    good_res = client.post(
+        "/v1/auth/sync-cookies",
+        headers={"x-zca-sync-token": expected_token},
+        json=payload
+    )
+    assert good_res.status_code == 200
+    res_data = good_res.json()
+    assert res_data["status"] == "ok"
+    assert res_data["cookies_synced"] == 1
+
+    # 3. Verify file saved to browser_profiles/gemini-web-primary/synced_cookies.json
+    saved_file = fake_runtime / "browser_profiles" / "gemini-web-primary" / "synced_cookies.json"
+    assert saved_file.exists()
+
+    with open(saved_file, "r", encoding="utf-8") as f:
+        file_data = json.load(f)
+
+    assert file_data["provider"] == "gemini"
+    assert file_data["account_id"] == "gemini-web-primary"
+    assert "updated_at" in file_data
+    assert len(file_data["cookies"]) == 1
+
+    cookie = file_data["cookies"][0]
+    assert cookie["name"] == "__Secure-1PSID"
+    assert cookie["value"] == "mock_cookie_val_xyz"
+    assert cookie["domain"] == ".google.com"
+    assert cookie["expires"] == 1799999999.5
+    assert cookie["sameSite"] == "None"
+    assert cookie["secure"] is True
+    assert "hostOnly" not in cookie
+    assert "session" not in cookie
+
+
+def test_auth_patchright_avoids_add_init_script():
+    """Verifies that when using_patchright is True, add_init_script is not called in core/auth.py."""
+    import inspect
+    import core.auth as auth_mod
+
+    # Inspect source of authenticate and authenticate_desktop
+    src_auth = inspect.getsource(auth_mod.authenticate)
+    src_desktop = inspect.getsource(auth_mod.authenticate_desktop)
+
+    # Both must check if not using_patchright before add_init_script
+    assert "if not using_patchright:" in src_auth
+    assert "if not using_patchright:" in src_desktop
+    # Neither should call add_init_script unconditionally
+    lines_auth = [l.strip() for l in src_auth.splitlines()]
+    lines_desktop = [l.strip() for l in src_desktop.splitlines()]
+
+    for i, line in enumerate(lines_auth):
+        if "context.add_init_script" in line:
+            assert "if not using_patchright:" in lines_auth[i - 1]
+
+    for i, line in enumerate(lines_desktop):
+        if "context.add_init_script" in line:
+            assert "if not using_patchright:" in lines_desktop[i - 1]
+
+
+def test_pyinstaller_datas_contain_static_and_chrome_extension():
+    """Verifies that PyInstaller spec and build script bundle static, chrome_extension, and ide_config."""
+    from pathlib import Path
+    spec_path = Path(__file__).resolve().parent.parent / "zero-copy-agent.spec"
+    build_path = Path(__file__).resolve().parent.parent / "desktop" / "build.py"
+
+    assert spec_path.exists(), "zero-copy-agent.spec must exist"
+    assert build_path.exists(), "desktop/build.py must exist"
+
+    spec_text = spec_path.read_text(encoding="utf-8")
+    build_text = build_path.read_text(encoding="utf-8")
+
+    # Check spec datas
+    assert "'static'" in spec_text or '"static"' in spec_text
+    assert "'chrome_extension'" in spec_text or '"chrome_extension"' in spec_text
+    assert "'ide_config'" in spec_text or '"ide_config"' in spec_text
+
+    # Check build.py datas
+    assert "static" in build_text
+    assert "chrome_extension" in build_text
+    assert "ide_config" in build_text
+
+
+def test_root_dashboard_resolves_html():
+    """Verifies that GET / returns the dashboard HTML and does not show UI loading error."""
+    from starlette.testclient import TestClient
+    from main import app
+
+    client = TestClient(app)
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "UI loading error" not in res.text
+    assert "<html" in res.text.lower()
+
+
+
+
 
