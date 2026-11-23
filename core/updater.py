@@ -125,6 +125,95 @@ def get_update_state() -> Dict[str, Any]:
     return dict(_update_state)
 
 
+def generate_windows_update_bat(
+    target_exe: Path,
+    staged_exe: Path,
+    backup_exe: Path,
+    pid: int,
+    log_file: Optional[Path] = None
+) -> str:
+    """
+    Generates a reliable Windows .bat script that:
+    1. Waits for the old process PID to terminate (up to 15s).
+    2. Copies/moves the new .exe into place with retry logic.
+    3. Launches the updated process with --post-update in detached mode.
+    4. Logs each phase to update.log next to the executable.
+    """
+    target_str = str(target_exe.resolve())
+    staged_str = str(staged_exe.resolve())
+    backup_str = str(backup_exe.resolve())
+    work_dir = str(target_exe.parent.resolve())
+    log_str = str(log_file.resolve()) if log_file else str(target_exe.parent / "update.log")
+
+    bat_content = f"""@echo off
+chcp 65001 >nul
+set "TARGET_PID={pid}"
+set "TARGET_EXE={target_str}"
+set "STAGED_EXE={staged_str}"
+set "BACKUP_EXE={backup_str}"
+set "WORK_DIR={work_dir}"
+set "LOG_FILE={log_str}"
+
+echo ======================================================= >> "%LOG_FILE%"
+echo [%DATE% %TIME%] [UPDATE] Starting zero-copy-agent self-updater (PID %TARGET_PID%) >> "%LOG_FILE%"
+
+:: 1. Wait for old process to exit (up to 15s)
+echo [%DATE% %TIME%] [1/4] Waiting for old process PID %TARGET_PID% to terminate... >> "%LOG_FILE%"
+set WAIT_COUNT=0
+:wait_loop
+tasklist /FI "PID eq %TARGET_PID%" 2>nul | find /I "%TARGET_PID%" >nul
+if errorlevel 1 (
+    echo [%DATE% %TIME%] [1/4] Old process PID %TARGET_PID% exited cleanly. >> "%LOG_FILE%"
+    goto replace_step
+)
+set /A WAIT_COUNT+=1
+if %WAIT_COUNT% geq 15 (
+    echo [%DATE% %TIME%] [WARN] Timeout waiting for PID %TARGET_PID%. Force killing... >> "%LOG_FILE%"
+    taskkill /F /PID %TARGET_PID% >nul 2>&1
+    timeout /t 1 /nobreak >nul
+    goto replace_step
+)
+timeout /t 1 /nobreak >nul
+goto wait_loop
+
+:: 2. Replace executable with retries
+:replace_step
+echo [%DATE% %TIME%] [2/4] Replacing binary with new version... >> "%LOG_FILE%"
+set RETRY_COUNT=0
+:retry_replace
+if exist "%TARGET_EXE%" (
+    move /Y "%TARGET_EXE%" "%BACKUP_EXE%" >nul 2>&1
+)
+move /Y "%STAGED_EXE%" "%TARGET_EXE%" >nul 2>&1
+if exist "%TARGET_EXE%" (
+    echo [%DATE% %TIME%] [2/4] Successfully replaced "%TARGET_EXE%". >> "%LOG_FILE%"
+    goto launch_step
+)
+set /A RETRY_COUNT+=1
+if %RETRY_COUNT% geq 10 (
+    echo [%DATE% %TIME%] [ERROR] Failed to replace "%TARGET_EXE%" after 10 attempts! >> "%LOG_FILE%"
+    goto end
+)
+timeout /t 1 /nobreak >nul
+goto retry_replace
+
+:: 3. Launch updated process with --post-update
+:launch_step
+echo [%DATE% %TIME%] [3/4] Launching updated zero-copy-agent with --post-update... >> "%LOG_FILE%"
+start "" /D "%WORK_DIR%" "%TARGET_EXE%" --post-update
+if errorlevel 1 (
+    echo [%DATE% %TIME%] [ERROR] Failed to launch "%TARGET_EXE%"! >> "%LOG_FILE%"
+) else (
+    echo [%DATE% %TIME%] [4/4] Process started successfully in detached mode. >> "%LOG_FILE%"
+)
+
+:end
+echo [%DATE% %TIME%] [UPDATE] Self-updater script finished. >> "%LOG_FILE%"
+del "%~f0" >nul 2>&1
+"""
+    return bat_content
+
+
 def get_current_exe_path() -> Path:
     """Finds real target executable to be updated."""
     if getattr(sys, "frozen", False):
@@ -239,50 +328,32 @@ def _run_update_worker(download_url: str = None):
         # 4. Create and launch detached updater script
         pid = os.getpid()
         if sys.platform == "win32":
-            script_path = updates_dir / "apply_update.ps1"
-            ps_script = f"""$ErrorActionPreference = "SilentlyContinue"
-$targetPid = {pid}
-$targetExe = "{str(target_exe)}"
-$stagedExe = "{str(staged_exe)}"
-$backupExe = "{str(backup_exe)}"
+            script_path = updates_dir / "apply_update.bat"
+            log_file = target_exe.parent / "update.log"
+            bat_script = generate_windows_update_bat(
+                target_exe=target_exe,
+                staged_exe=staged_exe,
+                backup_exe=backup_exe,
+                pid=pid,
+                log_file=log_file
+            )
+            script_path.write_text(bat_script, encoding="utf-8")
 
-for ($i = 0; $i -lt 80; $i++) {{
-    $p = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
-    if (-not $p) {{ break }}
-    Start-Sleep -Milliseconds 250
-}}
-
-for ($i = 0; $i -lt 40; $i++) {{
-    try {{
-        $fs = [System.IO.File]::Open($targetExe, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        $fs.Close()
-        break
-    }} catch {{
-        Start-Sleep -Milliseconds 250
-    }}
-}}
-
-if (Test-Path $targetExe) {{
-    Move-Item -Path $targetExe -Destination $backupExe -Force
-}}
-Move-Item -Path $stagedExe -Destination $targetExe -Force
-Start-Process -FilePath $targetExe
-"""
-            script_path.write_text(ps_script, encoding="utf-8")
+            try:
+                with open(log_file, "a", encoding="utf-8") as lf:
+                    lf.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [SPAWN] Spawning detached {script_path} for PID {pid}\n")
+            except Exception:
+                pass
 
             import subprocess
+            creation_flags = (
+                subprocess.DETACHED_PROCESS |
+                subprocess.CREATE_NEW_PROCESS_GROUP |
+                subprocess.CREATE_NO_WINDOW
+            )
             subprocess.Popen(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-File",
-                    str(script_path)
-                ],
-                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                ["cmd.exe", "/c", str(script_path)],
+                creationflags=creation_flags,
                 close_fds=True
             )
         else:
@@ -292,15 +363,15 @@ Start-Process -FilePath $targetExe
 while kill -0 {pid} 2>/dev/null; do sleep 0.2; done
 mv -f "{staged_exe}" "{target_exe}"
 chmod +x "{target_exe}"
-nohup "{target_exe}" >/dev/null 2>&1 &
+nohup "{target_exe}" --post-update >/dev/null 2>&1 &
 """
             script_path.write_text(sh_script, encoding="utf-8")
             os.chmod(script_path, 0o755)
             import subprocess
             subprocess.Popen(["/bin/sh", str(script_path)], close_fds=True)
 
-        # 5. Terminate current process cleanly
-        time.sleep(0.4)
+        # 5. Terminate current process cleanly and immediately
+        time.sleep(0.1)
         os._exit(0)
 
     except Exception as e:

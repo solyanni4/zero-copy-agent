@@ -9,6 +9,7 @@ import json
 import time
 import shutil
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -257,7 +258,11 @@ class TaskPlanner:
         plan_data = None
         if orchestrator:
             try:
-                raw_resp = await orchestrator.query(prompt, architect_model, inject_signature=False)
+                fn = getattr(orchestrator, "query_role_with_fallback", None)
+                if callable(fn) and inspect.iscoroutinefunction(fn):
+                    raw_resp, _ = await fn("planner", prompt)
+                else:
+                    raw_resp = await orchestrator.query(prompt, architect_model, inject_signature=False)
                 # Extract JSON block
                 clean_json = raw_resp.strip()
                 if "```json" in clean_json:
@@ -482,9 +487,13 @@ class StepExecutor:
             response_code = ""
             if orchestrator:
                 try:
-                    response_code = await orchestrator.query(coder_prompt, executor_model, inject_signature=False)
+                    fn = getattr(orchestrator, "query_role_with_fallback", None)
+                    if callable(fn) and inspect.iscoroutinefunction(fn):
+                        response_code, _ = await fn("coder", coder_prompt)
+                    else:
+                        response_code = await orchestrator.query(coder_prompt, executor_model, inject_signature=False)
                 except Exception as e:
-                    logger.warning(f"[StepExecutor] Local coder query error ({e}). Using mock/fallback.")
+                    logger.warning(f"[StepExecutor] Coder query error ({e}). Using mock/fallback.")
                     response_code = ""
 
             extracted = cls._extract_files_from_response(
@@ -585,7 +594,11 @@ class TaskIntegrator:
                 f"all modules integrate cleanly without contract violations or regressions."
             )
             try:
-                audit_report = await orchestrator.query(prompt, reviewer_model, inject_signature=False)
+                fn = getattr(orchestrator, "query_role_with_fallback", None)
+                if callable(fn) and inspect.iscoroutinefunction(fn):
+                    audit_report, _ = await fn("reviewer", prompt)
+                else:
+                    audit_report = await orchestrator.query(prompt, reviewer_model, inject_signature=False)
             except Exception as e:
                 audit_report = f"[Audit] Local tests completed. Architectural audit warning: {e}"
         else:
@@ -660,6 +673,11 @@ async def run_dag_pipeline(
 
     if not plan:
         notify(f"Decomposing goal via Architect ({architect_model})...")
+        try:
+            from core.activity_tracker import activity_tracker
+            await activity_tracker.update_step(step=f"Decomposing goal via Architect ({architect_model})...", model=architect_model)
+        except Exception:
+            pass
         plan = await TaskPlanner.create_plan(
             goal=goal,
             workspace_dir=ws,
@@ -670,6 +688,12 @@ async def run_dag_pipeline(
 
     # 2. Sequential DAG execution
     for idx, step in enumerate(plan.steps, start=1):
+        step_desc = f"Step {idx}/{len(plan.steps)}: {', '.join(step.target_files) if step.target_files else step.title}"
+        try:
+            from core.activity_tracker import activity_tracker
+            await activity_tracker.update_step(step=step_desc, model=executor_model)
+        except Exception:
+            pass
         if step.status == "completed":
             notify(f"[{idx}/{len(plan.steps)}] Step '{step.title}' already completed. Skipping.")
             continue
@@ -713,6 +737,11 @@ async def run_dag_pipeline(
 
     # 3. Final Integration
     notify("All steps passed! Running Final Integrator verification...")
+    try:
+        from core.activity_tracker import activity_tracker
+        await activity_tracker.update_step(step=f"Final Integrator ({len(plan.steps)}/{len(plan.steps)})", model=reviewer_model)
+    except Exception:
+        pass
     integ_res = await TaskIntegrator.verify_all(
         plan=plan,
         workspace_dir=ws,

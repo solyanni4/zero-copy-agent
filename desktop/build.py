@@ -106,6 +106,7 @@ def build():
         "--hidden-import=core.prompt_compressor",
         "--hidden-import=core.orchestration_presets",
         "--hidden-import=core.hardware_advisor",
+        "--hidden-import=core.activity_tracker",
         "--hidden-import=sqlite3",
         "--hidden-import=pystray",
         "--hidden-import=PIL",

@@ -163,6 +163,13 @@
           </select>
           <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-muted pointer-events-none absolute right-2"></i>
         </div>
+
+        <!-- Live Activity Status Bar -->
+        <div id="activity-status-bar" class="activity-bar idle flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate" title="ZCA готов к работе">
+          <span id="activity-pulse-dot" class="w-2 h-2 rounded-full shrink-0"></span>
+          <span id="activity-status-text" class="font-medium truncate">🟢 IDLE</span>
+          <span id="activity-status-timer" class="text-muted text-[10px] hidden shrink-0 font-sans">0s</span>
+        </div>
       </div>
 
       <!-- Right Group: Toggles + Rework Stepper + Action Icons -->
@@ -1241,6 +1248,9 @@
     </div>
 
   </div>
+
+  <!-- Global Toast Container for Activity & System Notifications -->
+  <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none max-w-sm"></div>
 
   <script src="/static/app.js"></script>
 </body>

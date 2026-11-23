@@ -1,4 +1,4 @@
-version: "1.2.0"
+version: "1.4.0"
 
 server:
   host: "0.0.0.0"
@@ -68,10 +68,12 @@ ux:
   inject_model_signature: true
   header_attribution: true
   hide_inactive_models: true
+  show_mcp_badge: true
   display_names_override: {}
 
 cascade:
   max_rework_iterations: 2
+  candidate_timeout_sec: 60
   enable_local_gate: true
   enable_architect_audit: true
   require_compression_approval: true

@@ -745,26 +745,47 @@ class HybridOrchestrator:
             if g and g not in candidates:
                 candidates.append(g)
 
+        candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
         last_error = None
         for candidate in candidates:
             resolved_candidate = candidate
             if candidate in DEFAULT_PROVIDER_MODELS:
                 resolved_candidate = DEFAULT_PROVIDER_MODELS[candidate][0]
 
-            logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}'...")
+            logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' (timeout={candidate_timeout}s)...")
             try:
-                res = await self._query_model(resolved_candidate, prompt)
+                res = await asyncio.wait_for(
+                    self._query_model(resolved_candidate, prompt),
+                    timeout=candidate_timeout
+                )
 
                 # Check for Standby response or unauthenticated fallback
                 if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
                     logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response. Failing over...")
                     prov = self._detect_provider(resolved_candidate)
                     if prov:
-                        mesh.record_web_failure(prov, resolved_candidate)
+                        web_acc = mesh.get_active_web_account(prov)
+                        if web_acc:
+                            mesh.record_web_failure(prov, web_acc)
+                        else:
+                            mesh.record_web_failure(prov, resolved_candidate)
                     continue
 
                 logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
                 return res, resolved_candidate
+            except asyncio.TimeoutError:
+                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' timed out after {int(candidate_timeout)}s -> switching to next fallback")
+                prov = self._detect_provider(resolved_candidate)
+                if prov:
+                    web_acc = mesh.get_active_web_account(prov)
+                    if web_acc:
+                        mesh.record_web_failure(prov, web_acc)
+                    else:
+                        mesh.record_web_failure(prov, resolved_candidate)
+                    key = mesh.get_active_key(prov)
+                    if key:
+                        mesh.record_failure(prov, key, 504)
+                continue
             except Exception as e:
                 last_error = e
                 prov = self._detect_provider(resolved_candidate)
@@ -870,7 +891,14 @@ class HybridOrchestrator:
                 return resp, chosen
             except Exception as fb_err:
                 logger.warning(f"[Cascade] Role coder pool exhausted ({fb_err}). Falling back to planner {used_arch}...")
-                resp = await self._query_model(used_arch, prompt_text)
+                candidate_timeout = float(getattr(getattr(self, "config", None) or config, "cascade", None).candidate_timeout_sec if hasattr(getattr(self, "config", None) or config, "cascade") else 60.0)
+                try:
+                    resp = await asyncio.wait_for(
+                        self._query_model(used_arch, prompt_text),
+                        timeout=candidate_timeout
+                    )
+                except Exception:
+                    resp, _ = await self.query_role_with_fallback("planner", prompt_text, req_id=req_id)
                 return resp, used_arch
 
         base_max_rework = getattr(self, "max_rework_iterations", 2)

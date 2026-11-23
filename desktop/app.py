@@ -145,14 +145,15 @@ def find_free_port(preferred: int = 8000) -> int:
 
 
 class ZeroCopyUnifiedApp:
-    def __init__(self, port: int = None, start_hidden: bool = False):
+    def __init__(self, port: int = None, start_hidden: bool = False, is_post_update: bool = False):
         self.preferred_port = port or config.server.port or 8000
         self.port = self.preferred_port
         self.host = config.server.host or "0.0.0.0"
         self.client_host = "127.0.0.1" if self.host in ("0.0.0.0", "::", "") else self.host
         self.api_url = f"http://{self.client_host}:{self.port}/v1"
         self.mcp_url = f"http://{self.client_host}:{self.port}/sse"
-        self.start_hidden = start_hidden
+        self.is_post_update = is_post_update
+        self.start_hidden = False if is_post_update else start_hidden
 
         self.server_thread = None
         self.uvicorn_server = None
@@ -161,6 +162,75 @@ class ZeroCopyUnifiedApp:
         self.stop_event = threading.Event()
         self.is_running = True
         self._notified_tray_hide = False
+
+    def _run_post_update_watcher(self, has_gui: bool):
+        """Monitors health check after self-update and brings window/browser to front."""
+        import urllib.request
+        import webbrowser
+        from core.version import __version__
+
+        log_file = get_runtime_cwd() / "update.log"
+        def log_u(msg: str):
+            try:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [POST-UPDATE] {msg}\n")
+            except Exception:
+                pass
+
+        log_u(f"Watcher started (has_gui={has_gui}). Waiting for http://127.0.0.1:{self.port}/health -> 200 OK...")
+
+        health_url = f"http://127.0.0.1:{self.port}/health"
+        server_ok = False
+        start_t = time.time()
+        while time.time() - start_t < 30.0:
+            try:
+                req = urllib.request.Request(health_url)
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        server_ok = True
+                        break
+            except Exception:
+                time.sleep(0.3)
+
+        if server_ok:
+            log_u(f"Server is healthy (200 OK) after {round(time.time() - start_t, 2)}s.")
+        else:
+            log_u("Server health check timed out after 30s. Proceeding with window activation.")
+
+        ui_url = f"http://{self.client_host}:{self.port}/?post_update=1&version={__version__}"
+
+        if has_gui and self.window:
+            log_u("Activating desktop GUI window...")
+            time.sleep(0.5)
+            try:
+                self.window.show()
+                self.window.restore()
+                if hasattr(self.window, "on_top"):
+                    self.window.on_top = True
+                    time.sleep(0.15)
+                    self.window.on_top = False
+                if hasattr(self.window, "focus"):
+                    self.window.focus()
+            except Exception as e:
+                log_u(f"Webview window activation note: {e}")
+
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    hwnd = ctypes.windll.user32.FindWindowW(None, "zero-copy-agent")
+                    if hwnd:
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        ctypes.windll.user32.SetForegroundWindow(hwnd)
+                        log_u(f"SetForegroundWindow activated successfully (HWND {hwnd}).")
+                except Exception as e:
+                    log_u(f"Win32 SetForegroundWindow warning: {e}")
+        else:
+            log_u(f"Opening browser Web UI: {ui_url}")
+            try:
+                webbrowser.open(ui_url)
+                log_u("Browser opened successfully.")
+            except Exception as e:
+                log_u(f"Failed to open browser: {e}")
 
     def copy_to_clipboard(self, text: str) -> bool:
         """Copies text to system clipboard."""
@@ -359,6 +429,8 @@ class ZeroCopyUnifiedApp:
 
         # If headless or CLI requested
         if force_cli or not is_gui_supported():
+            if self.is_post_update:
+                threading.Thread(target=self._run_post_update_watcher, args=(False,), daemon=True).start()
             print(f"\n[CLI Mode] zero-copy-agent запущен в фоновом консольном режиме")
             print(f"  API Endpoint : {self.api_url}")
             print(f"  Web Dashboard: http://{self.client_host}:{self.port}/")
@@ -423,6 +495,9 @@ class ZeroCopyUnifiedApp:
 
         self.window.events.closing += on_closing
 
+        if self.is_post_update:
+            threading.Thread(target=self._run_post_update_watcher, args=(True,), daemon=True).start()
+
         # Blocking GUI event loop in main thread
         try:
             logging.info("Starting webview GUI event loop...")
@@ -486,6 +561,9 @@ def main():
 
     force_cli = ("--cli" in sys.argv) or ("--headless" in sys.argv)
     start_hidden = ("--minimized" in sys.argv) or ("--tray-only" in sys.argv)
+    is_post_update = ("--post-update" in sys.argv)
+    if is_post_update:
+        start_hidden = False
 
     port = None
     if "--port" in sys.argv:
@@ -495,7 +573,7 @@ def main():
         except (ValueError, IndexError):
             pass
 
-    app = ZeroCopyUnifiedApp(port=port, start_hidden=start_hidden)
+    app = ZeroCopyUnifiedApp(port=port, start_hidden=start_hidden, is_post_update=is_post_update)
     app.run(force_cli=force_cli)
 
 

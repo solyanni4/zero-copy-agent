@@ -217,3 +217,37 @@ def test_ollama_auto_ping_endpoint():
     assert "онлайн" in data["detail"].lower()
     assert data["latency_ms"] is not None
 
+
+@pytest.mark.asyncio
+async def test_cascade_candidate_timeout_failover():
+    """Verify orchestrator fails over to next candidate when current candidate exceeds candidate_timeout_sec."""
+    cfg = AppConfig()
+    cfg.cascade.candidate_timeout_sec = 0.5
+    cfg.cascade.planner = RoleConfig(
+        primary="slow-candidate-1",
+        fallback_order=["fast-candidate-2"]
+    )
+    orch = HybridOrchestrator(browser_engine=None)
+    orch.config = cfg
+
+    call_history = []
+
+    async def mock_query(model, prompt, **kwargs):
+        call_history.append(model)
+        if model == "slow-candidate-1":
+            # Sleep longer than candidate_timeout_sec (0.5s)
+            await asyncio.sleep(2.0)
+            return "Should not be returned because of timeout"
+        elif model == "fast-candidate-2":
+            await asyncio.sleep(0.05)
+            return "Fast candidate success plan"
+        return "Unknown"
+
+    orch._query_model = mock_query
+
+    res, used_model = await orch.query_role_with_fallback("planner", "Test timeout prompt")
+    assert used_model == "fast-candidate-2"
+    assert res == "Fast candidate success plan"
+    assert call_history == ["slow-candidate-1", "fast-candidate-2"]
+
+

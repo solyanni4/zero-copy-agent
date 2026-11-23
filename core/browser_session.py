@@ -136,9 +136,14 @@ class BrowserSessionEngine:
             except ImportError:
                 from playwright.async_api import async_playwright, BrowserContext, Page
             if not self.playwright:
-                self.playwright = await async_playwright().start()
+                try:
+                    self.playwright = await asyncio.wait_for(async_playwright().start(), timeout=8.0)
+                except (asyncio.TimeoutError, Exception) as driver_err:
+                    logger.warning(f"[ENGINE-WARN] Primary browser driver start note ({driver_err}), falling back...")
+                    from playwright.async_api import async_playwright
+                    self.playwright = await asyncio.wait_for(async_playwright().start(), timeout=8.0)
             self.is_ready = True
-            logger.info("[ENGINE] Browser runtime (patchright/playwright) ready in lazy multi-account standby mode.")
+            logger.info("[ENGINE] Browser runtime ready in lazy multi-account standby mode.")
             self.keepalive_task = asyncio.create_task(self._keepalive_loop())
         except Exception as e:
             logger.warning(f"[ENGINE-WARN] Could not initialize Browser runtime ({e}). Running in Standby mode.")

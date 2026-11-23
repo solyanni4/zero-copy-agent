@@ -73,6 +73,7 @@ class UxConfig(BaseModel):
     inject_model_signature: bool = True
     header_attribution: bool = True
     hide_inactive_models: bool = True
+    show_mcp_badge: bool = True
     display_names_override: Dict[str, str] = Field(default_factory=dict)
 
 class RoleConfig(BaseModel):
@@ -81,6 +82,7 @@ class RoleConfig(BaseModel):
 
 class CascadeConfig(BaseModel):
     max_rework_iterations: int = 2
+    candidate_timeout_sec: float = 60.0
     enable_local_gate: bool = True
     enable_architect_audit: bool = True
     require_compression_approval: bool = True
@@ -116,6 +118,7 @@ class CascadeConfig(BaseModel):
 
 class AppConfig(BaseModel):
     version: str = "1.4.0"
+    show_mcp_badge: bool = True
     server: ServerConfig = Field(default_factory=ServerConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     models: ModelsGroupConfig = Field(default_factory=ModelsGroupConfig)

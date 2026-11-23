@@ -2552,6 +2552,161 @@ async function clearSystemLogs() {
 }
 
 // ------------------------------------------------------------------------
+// Toast notification system
+function showToast(message, type = 'info', duration = 4000) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+
+  const toast = document.createElement('div');
+  toast.className = `zca-toast toast-${type}`;
+
+  let icon = 'ℹ️';
+  if (type === 'start') icon = '⚡';
+  else if (type === 'done') icon = '✅';
+  else if (type === 'error') icon = '❌';
+
+  toast.innerHTML = `
+    <span class="text-[14px] shrink-0 select-none">${icon}</span>
+    <div class="flex-1 min-w-0">
+      <div class="font-medium text-ink">${message}</div>
+    </div>
+  `;
+
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 250);
+  }, duration);
+}
+
+// ------------------------------------------------------------------------
+// Activity Tracker Live SSE
+let activityEventSource = null;
+let activityTimerInterval = null;
+let activityStartedAt = null;
+
+function updateActivityUI(data) {
+  const bar = document.getElementById('activity-status-bar');
+  const textEl = document.getElementById('activity-status-text');
+  const timerEl = document.getElementById('activity-status-timer');
+  if (!bar || !textEl || !timerEl) return;
+
+  if (data.state === 'working') {
+    bar.className = 'activity-bar working flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
+    
+    let display = `⚡ WORKING: ${data.tool || 'ZCA'}`;
+    if (data.step) display += ` · ${data.step}`;
+    if (data.model) display += ` (${data.model})`;
+    textEl.textContent = display;
+    bar.title = display;
+
+    timerEl.classList.remove('hidden');
+    if (data.started_at) {
+      activityStartedAt = data.started_at;
+      if (!activityTimerInterval) {
+        activityTimerInterval = setInterval(() => {
+          if (!activityStartedAt) return;
+          const secs = Math.floor(Date.now() / 1000 - activityStartedAt);
+          timerEl.textContent = `${Math.max(0, secs)}s`;
+        }, 1000);
+      }
+      const initialSecs = Math.floor(Date.now() / 1000 - activityStartedAt);
+      timerEl.textContent = `${Math.max(0, initialSecs)}s`;
+    }
+  } else {
+    // idle
+    bar.className = 'activity-bar idle flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
+    textEl.textContent = '🟢 IDLE';
+    timerEl.classList.add('hidden');
+    if (activityTimerInterval) {
+      clearInterval(activityTimerInterval);
+      activityTimerInterval = null;
+    }
+    activityStartedAt = null;
+
+    if (data.last_completed) {
+      const lc = data.last_completed;
+      bar.title = `Последний вызов: ${lc.tool || 'ZCA'} (${lc.model || 'локально'}) — ${lc.elapsed_seconds}с`;
+    } else {
+      bar.title = 'ZCA в простое, готов к выполнению задач';
+    }
+  }
+}
+
+function initActivityTrackerSSE() {
+  if (activityEventSource) {
+    activityEventSource.close();
+  }
+
+  try {
+    activityEventSource = new EventSource('/api/activity/stream');
+
+    activityEventSource.addEventListener('current', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateActivityUI(data);
+      } catch (err) {
+        console.error('[Activity] Error parsing current event:', err);
+      }
+    });
+
+    activityEventSource.addEventListener('start', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateActivityUI(data);
+        const tool = data.tool || 'Инструмент';
+        const model = data.model ? ` (${data.model})` : '';
+        showToast(`Выполняется: ${tool}${model}`, 'start', 4000);
+      } catch (err) {
+        console.error('[Activity] Error parsing start event:', err);
+      }
+    });
+
+    activityEventSource.addEventListener('progress', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateActivityUI(data);
+      } catch (err) {
+        console.error('[Activity] Error parsing progress event:', err);
+      }
+    });
+
+    activityEventSource.addEventListener('done', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        updateActivityUI(data);
+        const comp = data.completed || {};
+        const tool = comp.tool || 'Задача';
+        const elapsed = comp.elapsed_seconds ? ` за ${comp.elapsed_seconds}с` : '';
+        const model = comp.model ? ` [${comp.model}]` : '';
+        showToast(`${tool} завершен${elapsed}${model}`, 'done', 4000);
+      } catch (err) {
+        console.error('[Activity] Error parsing done event:', err);
+      }
+    });
+
+    activityEventSource.addEventListener('error', (e) => {
+      if (e.data) {
+        try {
+          const data = JSON.parse(e.data);
+          updateActivityUI(data);
+          const comp = data.completed || {};
+          showToast(`Ошибка ${comp.tool || 'выполнения'}: ${comp.error || 'Сбой'}`, 'error', 4000);
+        } catch (err) {
+          // Normal SSE reconnect
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('[Activity] EventSource connection failed:', err);
+  }
+}
+
+// ------------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
   renderTraces();
   renderGlobalModelSelect();
@@ -2569,6 +2724,18 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchRealHistoryIntoTraces();
   loadOrchestrationConfig();
   fetchPresets();
+
+  // Initialize Activity Tracker SSE
+  initActivityTrackerSSE();
+
+  // Check URL params for post-update toast
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('post_update') || urlParams.has('updated')) {
+    const ver = urlParams.get('version') || '1.4.0';
+    setTimeout(() => {
+      showToast(`Обновлено до версии v${ver}`, 'done', 6000);
+    }, 500);
+  }
 
   // Periodic polling every 4s
   setInterval(() => {

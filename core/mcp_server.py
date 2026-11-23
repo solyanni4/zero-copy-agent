@@ -5,8 +5,10 @@ Enables Google Antigravity, Cursor IDE, Claude Desktop, and Cline to call zero-c
 """
 import asyncio
 import json
+import time
 import uuid
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -133,122 +135,242 @@ TOOLS_MANIFEST = [
     }
 ]
 
+WORKING_TOOLS = {"cascade_architect", "local_gpu_code", "gemini_deep_analysis", "plan_and_execute_task"}
+
+def _is_mcp_badge_enabled() -> bool:
+    try:
+        from core.config import config
+        if hasattr(config, "ux") and hasattr(config.ux, "show_mcp_badge"):
+            return bool(config.ux.show_mcp_badge)
+        return bool(getattr(config, "show_mcp_badge", True))
+    except Exception:
+        return True
+
+def _get_active_preset_name() -> str:
+    global _orchestrator
+    try:
+        if _orchestrator and hasattr(_orchestrator, "active_preset") and _orchestrator.active_preset:
+            return getattr(_orchestrator.active_preset, "id", None) or getattr(_orchestrator.active_preset, "name", "auto")
+        from core.config import config
+        return getattr(config.cascade, "active_preset", "auto")
+    except Exception:
+        return "auto"
+
 async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
     """Executes the requested tool and returns the text response."""
     global _orchestrator
     if not _orchestrator:
         return "[ERROR] Ошибка: Оркестратор шлюза не инициализирован."
 
-    if name == "cascade_architect":
-        task = arguments.get("task", "")
-        preset = arguments.get("preset")
-        if not task:
-            return "Ошибка: параметр 'task' обязателен."
-        if preset and _orchestrator:
-            try:
-                from core.orchestration_presets import presets_manager
-                p_obj = presets_manager.get_preset(preset)
-                if p_obj:
-                    _orchestrator.apply_preset(p_obj)
-            except Exception as e:
-                logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
-        try:
-            return await asyncio.wait_for(
-                _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
-                timeout=180.0
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
-            return "[TIMEOUT] Превышено время ожидания ответа инструмента 'cascade_architect' (таймаут 180 секунд). Попробуйте разбить задачу на части или уменьшить число итераций каскада."
-
-    elif name == "local_gpu_code":
-        prompt = arguments.get("prompt", "")
-        model = arguments.get("model", "qwen2.5-coder:14b")
-        if not prompt:
-            return "Ошибка: параметр 'prompt' обязателен."
-        return await _orchestrator.query(prompt, f"ollama/{model}", req_id=f"mcp-{uuid.uuid4().hex[:8]}")
-
+    start_time = time.time()
+    tool_model = "system"
+    if name == "local_gpu_code":
+        tool_model = f"ollama/{arguments.get('model', 'qwen2.5-coder:14b')}"
+    elif name == "cascade_architect":
+        tool_model = getattr(_orchestrator, "cascade_architect_model", "cascade:architect")
     elif name == "gemini_deep_analysis":
-        prompt = arguments.get("prompt", "")
-        if not prompt:
-            return "Ошибка: параметр 'prompt' обязателен."
-        rag_prompt = prompt
-        try:
-            from core.solutions_db import solutions_db
-            rels = solutions_db.search_solutions(prompt, top_k=3)
-            if rels:
-                ctx = solutions_db.format_context_prompt(rels)
-                rag_prompt = f"{ctx}\n\nЗапрос:\n{prompt}"
-                for r in rels:
-                    solutions_db.increment_usage(r["id"])
-        except Exception as e:
-            logger.debug(f"[MCP] Solutions RAG lookup warning: {e}")
-        try:
-            return await asyncio.wait_for(
-                _orchestrator.query(rag_prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
-                timeout=180.0
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
-            return "[TIMEOUT] Превышено время ожидания ответа инструмента 'gemini_deep_analysis' (таймаут 180 секунд). Попробуйте повторить запрос с более компактным промптом."
-
-    elif name == "get_token_savings":
-        summary = analytics.get_summary()
-        local_status = "Офлайн [OFFLINE]"
-        if _orchestrator and getattr(_orchestrator, "ollama", None):
-            try:
-                if await _orchestrator.ollama.is_authenticated():
-                    models = await _orchestrator.ollama.list_models()
-                    if models:
-                        local_status = f"{models[0]} (Онлайн [OK])"
-                    else:
-                        local_status = "Ollama активен (0 моделей) [OFFLINE]"
-            except Exception:
-                pass
-        return (
-            f"**Метрики экономии Zero-Copy Agent:**\n"
-            f"- Сэкономлено на API: **${summary.get('total_saved_usd', 0.0):.2f}** (Сегодня: ${summary.get('today_saved_usd', 0.0):.2f})\n"
-            f"- Всего токенов: **{summary.get('total_tokens', 0):,}**\n"
-            f"- Запросов выполнено: **{summary.get('total_requests', 0)}**\n"
-            f"- Локальный GPU: **{local_status}**"
-        )
-
-    elif name == "compress_code_context":
-        code = arguments.get("code", "")
-        compressed, orig_t, comp_t = compressor.compress_text(code)
-        saved = orig_t - comp_t
-        pct = (saved / orig_t * 100) if orig_t > 0 else 0
-        return (
-            f"**Результат L1-сжатия:**\n"
-            f"- До: ~{orig_t} токенов | После: ~{comp_t} токенов | Сэкономлено: {saved} токенов ({pct:.1f}%)\n\n"
-            f"```\n{compressed}\n```"
-        )
-
+        tool_model = "gemini-4-neon"
     elif name == "plan_and_execute_task":
-        goal = arguments.get("goal", "")
-        workspace_dir = arguments.get("workspace_dir")
-        resume = arguments.get("resume", True)
-        preset = arguments.get("preset")
-        if not goal:
-            return "Ошибка: параметр 'goal' обязателен."
-        if preset and _orchestrator:
-            try:
-                from core.orchestration_presets import presets_manager
-                p_obj = presets_manager.get_preset(preset)
-                if p_obj:
-                    _orchestrator.apply_preset(p_obj)
-            except Exception as e:
-                logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
-        try:
-            return await asyncio.wait_for(
-                _orchestrator.plan_and_execute_task(goal, workspace_dir=workspace_dir, resume=resume),
-                timeout=300.0
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"[MCP] Timeout executing tool '{name}' after 300s")
-            return "[TIMEOUT] Выполнение крупной задачи превысило лимит 300 секунд. Прогресс сохранен в .zca/task_plan.json. Вы можете продолжить вызовом с resume=True."
+        tool_model = getattr(_orchestrator, "cascade_executor_model", "ollama/qwen2.5-coder:14b")
 
-    return f"Неизвестный инструмент: '{name}'"
+    initial_step = f"Executing {name}..."
+    if name == "plan_and_execute_task":
+        initial_step = "Planning and executing task..."
+    elif name == "local_gpu_code":
+        initial_step = "Generating code with local GPU..."
+    elif name == "cascade_architect":
+        initial_step = "Architecting solution..."
+
+    try:
+        from core.activity_tracker import activity_tracker
+        await activity_tracker.start_activity(tool=name, model=tool_model, step=initial_step)
+    except Exception as e:
+        logger.debug(f"[MCP] Failed to start activity tracking: {e}")
+
+    success = True
+    error_msg = None
+    result_text = ""
+    local_tokens = 0
+
+    try:
+        if name == "cascade_architect":
+            task = arguments.get("task", "")
+            preset = arguments.get("preset")
+            if not task:
+                result_text = "Ошибка: параметр 'task' обязателен."
+                success = False
+            else:
+                if preset and _orchestrator:
+                    try:
+                        from core.orchestration_presets import presets_manager
+                        p_obj = presets_manager.get_preset(preset)
+                        if p_obj:
+                            _orchestrator.apply_preset(p_obj)
+                    except Exception as e:
+                        logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
+                try:
+                    result_text = await asyncio.wait_for(
+                        _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
+                        timeout=180.0
+                    )
+                    if "ollama" in tool_model.lower() or "local" in tool_model.lower():
+                        local_tokens = max(1, len(result_text) // 4)
+                except asyncio.TimeoutError:
+                    success = False
+                    error_msg = "Timeout 180s"
+                    logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
+                    result_text = "[TIMEOUT] Превышено время ожидания ответа инструмента 'cascade_architect' (таймаут 180 секунд). Попробуйте разбить задачу на части или уменьшить число итераций каскада."
+
+        elif name == "local_gpu_code":
+            prompt = arguments.get("prompt", "")
+            model = arguments.get("model", "qwen2.5-coder:14b")
+            tool_model = f"ollama/{model}"
+            if not prompt:
+                result_text = "Ошибка: параметр 'prompt' обязателен."
+                success = False
+            else:
+                result_text = await _orchestrator.query(prompt, tool_model, req_id=f"mcp-{uuid.uuid4().hex[:8]}")
+                local_tokens = max(1, len(result_text) // 4)
+
+        elif name == "gemini_deep_analysis":
+            prompt = arguments.get("prompt", "")
+            if not prompt:
+                result_text = "Ошибка: параметр 'prompt' обязателен."
+                success = False
+            else:
+                rag_prompt = prompt
+                try:
+                    from core.solutions_db import solutions_db
+                    rels = solutions_db.search_solutions(prompt, top_k=3)
+                    if rels:
+                        ctx = solutions_db.format_context_prompt(rels)
+                        rag_prompt = f"{ctx}\n\nЗапрос:\n{prompt}"
+                        for r in rels:
+                            solutions_db.increment_usage(r["id"])
+                except Exception as e:
+                    logger.debug(f"[MCP] Solutions RAG lookup warning: {e}")
+                try:
+                    result_text = await asyncio.wait_for(
+                        _orchestrator.query(rag_prompt, "gemini-4-neon", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
+                        timeout=180.0
+                    )
+                    local_tokens = 0
+                except asyncio.TimeoutError:
+                    success = False
+                    error_msg = "Timeout 180s"
+                    logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
+                    result_text = "[TIMEOUT] Превышено время ожидания ответа инструмента 'gemini_deep_analysis' (таймаут 180 секунд). Попробуйте повторить запрос с более компактным промптом."
+
+        elif name == "get_token_savings":
+            summary = analytics.get_summary()
+            local_status = "Офлайн [OFFLINE]"
+            if _orchestrator and getattr(_orchestrator, "ollama", None):
+                try:
+                    if await _orchestrator.ollama.is_authenticated():
+                        models = await _orchestrator.ollama.list_models()
+                        if models:
+                            local_status = f"{models[0]} (Онлайн [OK])"
+                        else:
+                            local_status = "Ollama активен (0 моделей) [OFFLINE]"
+                except Exception:
+                    pass
+            result_text = (
+                f"**Метрики экономии Zero-Copy Agent:**\n"
+                f"- Сэкономлено на API: **${summary.get('total_saved_usd', 0.0):.2f}** (Сегодня: ${summary.get('today_saved_usd', 0.0):.2f})\n"
+                f"- Всего токенов: **{summary.get('total_tokens', 0):,}**\n"
+                f"- Запросов выполнено: **{summary.get('total_requests', 0)}**\n"
+                f"- Локальный GPU: **{local_status}**"
+            )
+
+        elif name == "compress_code_context":
+            code = arguments.get("code", "")
+            compressed, orig_t, comp_t = compressor.compress_text(code)
+            saved = orig_t - comp_t
+            pct = (saved / orig_t * 100) if orig_t > 0 else 0
+            result_text = (
+                f"**Результат L1-сжатия:**\n"
+                f"- До: ~{orig_t} токенов | После: ~{comp_t} токенов | Сэкономлено: {saved} токенов ({pct:.1f}%)\n\n"
+                f"```\n{compressed}\n```"
+            )
+
+        elif name == "plan_and_execute_task":
+            goal = arguments.get("goal", "")
+            workspace_dir = arguments.get("workspace_dir")
+            resume = arguments.get("resume", True)
+            preset = arguments.get("preset")
+            if not goal:
+                result_text = "Ошибка: параметр 'goal' обязателен."
+                success = False
+            else:
+                if preset and _orchestrator:
+                    try:
+                        from core.orchestration_presets import presets_manager
+                        p_obj = presets_manager.get_preset(preset)
+                        if p_obj:
+                            _orchestrator.apply_preset(p_obj)
+                    except Exception as e:
+                        logger.debug(f"[MCP] Failed to apply preset '{preset}': {e}")
+                try:
+                    result_text = await asyncio.wait_for(
+                        _orchestrator.plan_and_execute_task(goal, workspace_dir=workspace_dir, resume=resume),
+                        timeout=300.0
+                    )
+                    local_tokens = max(1, len(result_text) // 4)
+                except asyncio.TimeoutError:
+                    success = False
+                    error_msg = "Timeout 300s"
+                    logger.error(f"[MCP] Timeout executing tool '{name}' after 300s")
+                    result_text = "[TIMEOUT] Выполнение крупной задачи превысило лимит 300 секунд. Прогресс сохранен в .zca/task_plan.json. Вы можете продолжить вызовом с resume=True."
+
+        else:
+            result_text = f"Неизвестный инструмент: '{name}'"
+            success = False
+
+        # Add signature badge for working tools if enabled
+        if name in WORKING_TOOLS and _is_mcp_badge_enabled():
+            elapsed = max(0.01, round(time.time() - start_time, 2))
+            active_preset = _get_active_preset_name()
+            steps_info = ""
+            if name == "plan_and_execute_task":
+                try:
+                    ws_dir = arguments.get("workspace_dir")
+                    ws_path = Path(ws_dir).resolve() if ws_dir else Path.cwd()
+                    plan_file = ws_path / ".zca" / "task_plan.json"
+                    if plan_file.exists():
+                        with open(plan_file, "r", encoding="utf-8") as pf:
+                            pdata = json.load(pf)
+                            steps = pdata.get("steps", [])
+                            if steps:
+                                comp_c = sum(1 for s in steps if s.get("status") == "completed")
+                                steps_info = f" | Steps: {comp_c}/{len(steps)}"
+                except Exception:
+                    pass
+
+            badge = f"[⚡ ZCA | Tool: {name} | Preset: {active_preset} | Model: {tool_model}{steps_info} | Local tokens: {local_tokens} | Time: {elapsed:.1f}s]"
+            if not result_text.startswith("[⚡ ZCA"):
+                result_text = f"{badge}\n\n{result_text}"
+
+        return result_text
+
+    except Exception as e:
+        success = False
+        error_msg = str(e)
+        logger.exception(f"[MCP] Exception executing tool '{name}': {e}")
+        return f"[ERROR] Ошибка выполнения инструмента '{name}': {e}"
+
+    finally:
+        try:
+            from core.activity_tracker import activity_tracker
+            elapsed_final = max(0.01, round(time.time() - start_time, 2))
+            summary_txt = f"{name} завершен за {elapsed_final:.1f}s" if success else f"{name} завершился с ошибкой"
+            await activity_tracker.finish_activity(
+                success=success,
+                summary=summary_txt,
+                error=error_msg,
+                tokens=local_tokens
+            )
+        except Exception as e:
+            logger.debug(f"[MCP] Failed to finish activity tracking: {e}")
 
 async def handle_jsonrpc(req: Dict[str, Any], session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Handles standard MCP JSON-RPC 2.0 messages."""

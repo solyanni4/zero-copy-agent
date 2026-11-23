@@ -4,6 +4,7 @@ Supports Grok 3 (grok-3) and Grok 3 Mini (grok-3-mini).
 """
 import asyncio
 import logging
+import time
 from typing import AsyncGenerator
 from core.drivers.base import BaseDriver
 
@@ -141,25 +142,26 @@ class GrokDriver(BaseDriver):
         if not clicked:
             await self.page.keyboard.press("Enter")
 
-        # Wait for generation to complete
+        # Wait for generation to complete with bounded wall-clock timeout
         await asyncio.sleep(2)
-        max_wait = 90
-        waited = 0
+        max_wait = 55.0
+        start_time = time.monotonic()
         last_text = ""
-        while waited < max_wait:
+        while (time.monotonic() - start_time) < max_wait:
             await asyncio.sleep(1)
-            waited += 1
+            elapsed = time.monotonic() - start_time
 
             stop_btn = await self.page.query_selector(
                 'button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"]'
             )
-            if not stop_btn and waited > 3:
+            if not stop_btn and elapsed > 3.0:
                 current_text = await self._extract_last_response()
                 if current_text and current_text == last_text:
                     return current_text
                 last_text = current_text
 
-        return last_text or "[zero-copy-agent] Ответ от Grok получен, но не удалось извлечь DOM разметку."
+        final_text = await self._extract_last_response()
+        return final_text or last_text or "[zero-copy-agent] Ответ от Grok получен, но не удалось извлечь DOM разметку."
 
     async def send_prompt_stream(self, prompt: str) -> AsyncGenerator[str, None]:
         full_response = await self.send_prompt(prompt)

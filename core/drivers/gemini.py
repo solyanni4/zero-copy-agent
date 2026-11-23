@@ -2,6 +2,7 @@
 Web Driver for Google Gemini Advanced (https://gemini.google.com/app).
 """
 import asyncio
+import time
 from typing import AsyncGenerator
 from core.drivers.base import BaseDriver
 
@@ -119,28 +120,28 @@ class GeminiDriver(BaseDriver):
             # Fallback to Enter key
             await self.page.keyboard.press("Enter")
 
-        # 5. Wait for generation
+        # 5. Wait for generation with bounded wall-clock timeout
         await asyncio.sleep(2)
-        # Wait until generation finishes (stop button disappears or text stabilizes)
-        max_wait = 60
-        waited = 0
+        max_wait = 55.0
+        start_time = time.monotonic()
         last_text = ""
-        while waited < max_wait:
+        while (time.monotonic() - start_time) < max_wait:
             await asyncio.sleep(1)
-            waited += 1
+            elapsed = time.monotonic() - start_time
 
             # Check if stop button is present
             stop_btn = await self.page.query_selector(
-                'button[aria-label*="Stop"], button[aria-label*="Остановить"]'
+                'button[aria-label*="Stop"], button[aria-label*="Остановить"], button[aria-label*="stop"], button[data-testid*="stop"]'
             )
-            if not stop_btn and waited > 3:
+            if not stop_btn and elapsed > 3.0:
                 # Text stabilization check
                 current_text = await self._extract_last_response()
                 if current_text and current_text == last_text:
                     return current_text
                 last_text = current_text
 
-        return last_text or "[zero-copy-agent] Ответ от Gemini получен, но не удалось извлечь DOM разметку."
+        final_text = await self._extract_last_response()
+        return final_text or last_text or "[zero-copy-agent] Ответ от Gemini получен, но не удалось извлечь DOM разметку."
 
     async def send_prompt_stream(self, prompt: str) -> AsyncGenerator[str, None]:
         full_response = await self.send_prompt(prompt)

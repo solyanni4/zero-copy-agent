@@ -3,6 +3,7 @@ zero-copy-agent v0.3.0
 OpenAI-compatible Sidecar Gateway & Native Model Context Protocol (MCP) Server.
 Routes Web Chat Subscriptions, Local Ollama GPU, and provides tools for Antigravity, Cursor & Claude.
 """
+import asyncio
 import json
 import time
 import uuid
@@ -115,6 +116,32 @@ async def lifespan(app: FastAPI):
     print(f"  [Info] (В браузере используйте 127.0.0.1 или localhost, не 0.0.0.0)")
     print(f"=======================================================\n")
     await engine.initialize()
+
+    if "--post-update" in sys.argv:
+        import asyncio
+        async def _main_post_update_watcher():
+            import webbrowser
+            log_file = get_runtime_cwd() / "update.log"
+            def _log(m):
+                try:
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [POST-UPDATE-SERVER] {m}\n")
+                except Exception:
+                    pass
+            _log("Server initialized. Checking desktop window or opening browser...")
+            await asyncio.sleep(1.2)
+            desktop_win = getattr(app.state, "desktop_window", None)
+            if desktop_win:
+                _log("Desktop window instance exists in state.")
+            else:
+                ui_url = f"http://{client_host}:{config.server.port}/?post_update=1&version={__version__}"
+                _log(f"Opening browser Web UI: {ui_url}")
+                try:
+                    webbrowser.open(ui_url)
+                except Exception as ex:
+                    _log(f"webbrowser.open warning: {ex}")
+        asyncio.create_task(_main_post_update_watcher())
+
     yield
     print("[INIT] Shutting down zero-copy-agent...")
     await engine.close()
@@ -1356,6 +1383,58 @@ async def api_ollama_activate(payload: Dict[str, Any] = Body(...)):
     res = hardware_advisor.activate_model(model_name, role=role)
     sync_mesh_from_subscriptions()
     return res
+
+
+@app.get("/api/activity/status")
+async def get_activity_status():
+    """Returns the current live activity state as JSON."""
+    from core.activity_tracker import activity_tracker
+    return activity_tracker.get_status()
+
+
+@app.get("/api/activity/stream")
+async def get_activity_stream(request: Request):
+    """
+    Server-Sent Events (SSE) stream for live activity events:
+    start, progress, done, error with keep-alive pings every 15s.
+    """
+    from core.activity_tracker import activity_tracker
+    q = activity_tracker.subscribe()
+
+    async def event_generator():
+        # Immediate initial state event on connection
+        try:
+            init_state = activity_tracker.get_status()
+            yield f"event: current\ndata: {json.dumps(init_state, ensure_ascii=False)}\n\n"
+        except Exception:
+            pass
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    evt_name = event.get("event", "message")
+                    evt_data = json.dumps(event.get("data", {}), ensure_ascii=False)
+                    yield f"event: {evt_name}\ndata: {evt_data}\n\n"
+                except asyncio.TimeoutError:
+                    # SSE keep-alive ping comment
+                    yield ": keep-alive\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            activity_tracker.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.post("/v1/chat/completions")
