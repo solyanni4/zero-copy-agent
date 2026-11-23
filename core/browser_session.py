@@ -20,10 +20,27 @@ from core.drivers import (
     QwenDriver,
     GrokDriver,
     MockDriver,
-    BaseDriver
+    BaseDriver,
+    WebSessionAuthError
 )
 
 logger = logging.getLogger("zcao.browser")
+
+async def capture_web_failure_screenshot(page, account_id: str) -> Optional[str]:
+    """Captures diagnostic screenshot on web failure to logs/web_failures/<account_id>_<timestamp>.png."""
+    if not page or getattr(page, "is_closed", lambda: True)():
+        return None
+    try:
+        ts = int(time.time())
+        fail_dir = get_runtime_cwd() / "logs" / "web_failures"
+        fail_dir.mkdir(parents=True, exist_ok=True)
+        shot_path = fail_dir / f"{account_id}_{ts}.png"
+        await page.screenshot(path=str(shot_path), timeout=5000)
+        logger.info(f"[BROWSER-FAIL] Captured diagnostic failure screenshot: {shot_path}")
+        return str(shot_path)
+    except Exception as e:
+        logger.debug(f"[BROWSER-FAIL] Could not capture screenshot: {e}")
+        return None
 
 PROVIDER_URLS = {
     "gemini": "https://gemini.google.com/app",
@@ -171,6 +188,13 @@ class BrowserSessionEngine:
                 page = self._pages.get(acc_id)
                 if page and not page.is_closed():
                     self._last_used[acc_id] = time.time()
+                    # Keep existing tab warm and ready for new message
+                    driver = self._drivers.get(acc_id)
+                    if driver:
+                        try:
+                            await driver.reset_to_new_chat()
+                        except Exception:
+                            pass
                     return True
                 # Stale or closed, clean up before re-launching
                 await self.close_account(acc_id)
@@ -388,14 +412,45 @@ class BrowserSessionEngine:
                             pass
                         return await driver.send_prompt(prompt)
                     else:
-                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Serving Standby response.")
-                except Exception as e:
-                    logger.error(f"[ENGINE-ERR] Driver execution failed on '{target_acc}' ({e}). Falling back to Mock.")
+                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Marking needs_auth.")
+                        page = self._pages.get(target_acc)
+                        await capture_web_failure_screenshot(page, target_acc)
+                        try:
+                            from core.healer import config_healer
+                            config_healer.set_account_status(target_acc, "needs_auth")
+                        except Exception:
+                            pass
+                        try:
+                            from core.mesh import mesh
+                            mesh.trip_account(target_acc, cooldown_seconds=300.0)
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"Web-сессия '{target_acc}' не авторизована (needs_auth)")
+                except WebSessionAuthError as auth_err:
+                    logger.warning(f"[ENGINE-AUTH-ERR] Fail-fast auth invalidated for '{target_acc}': {auth_err.message}")
+                    page = self._pages.get(target_acc)
+                    await capture_web_failure_screenshot(page, target_acc)
                     try:
-                        from core.mesh import mesh
-                        mesh.record_web_failure(prov, target_acc)
+                        from core.healer import config_healer
+                        config_healer.set_account_status(target_acc, "needs_auth")
                     except Exception:
                         pass
+                    try:
+                        from core.mesh import mesh
+                        mesh.trip_account(target_acc, cooldown_seconds=300.0)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Web-сессия '{target_acc}' требует повторной авторизации: {auth_err.message}")
+                except Exception as e:
+                    logger.error(f"[ENGINE-ERR] Driver execution failed on '{target_acc}' ({repr(e)}). Tripping account.")
+                    page = self._pages.get(target_acc)
+                    await capture_web_failure_screenshot(page, target_acc)
+                    try:
+                        from core.mesh import mesh
+                        mesh.trip_account(target_acc, cooldown_seconds=120.0)
+                    except Exception:
+                        pass
+                    raise
 
             return await self.mock_driver.send_prompt(prompt)
 
@@ -431,14 +486,45 @@ class BrowserSessionEngine:
                             yield token
                         return
                     else:
-                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Serving Standby stream.")
-                except Exception as e:
-                    logger.error(f"[ENGINE-ERR] Stream execution failed on '{target_acc}' ({e}). Falling back to Mock stream.")
+                        logger.info(f"[ENGINE-INFO] Session not authenticated for '{target_acc}'. Marking needs_auth.")
+                        page = self._pages.get(target_acc)
+                        await capture_web_failure_screenshot(page, target_acc)
+                        try:
+                            from core.healer import config_healer
+                            config_healer.set_account_status(target_acc, "needs_auth")
+                        except Exception:
+                            pass
+                        try:
+                            from core.mesh import mesh
+                            mesh.trip_account(target_acc, cooldown_seconds=300.0)
+                        except Exception:
+                            pass
+                        raise RuntimeError(f"Web-сессия '{target_acc}' не авторизована (needs_auth)")
+                except WebSessionAuthError as auth_err:
+                    logger.warning(f"[ENGINE-AUTH-ERR] Fail-fast auth invalidated for '{target_acc}': {auth_err.message}")
+                    page = self._pages.get(target_acc)
+                    await capture_web_failure_screenshot(page, target_acc)
                     try:
-                        from core.mesh import mesh
-                        mesh.record_web_failure(prov, target_acc)
+                        from core.healer import config_healer
+                        config_healer.set_account_status(target_acc, "needs_auth")
                     except Exception:
                         pass
+                    try:
+                        from core.mesh import mesh
+                        mesh.trip_account(target_acc, cooldown_seconds=300.0)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Web-сессия '{target_acc}' требует повторной авторизации: {auth_err.message}")
+                except Exception as e:
+                    logger.error(f"[ENGINE-ERR] Stream execution failed on '{target_acc}' ({repr(e)}). Tripping account.")
+                    page = self._pages.get(target_acc)
+                    await capture_web_failure_screenshot(page, target_acc)
+                    try:
+                        from core.mesh import mesh
+                        mesh.trip_account(target_acc, cooldown_seconds=120.0)
+                    except Exception:
+                        pass
+                    raise
 
             async for token in self.mock_driver.send_prompt_stream(prompt):
                 yield token

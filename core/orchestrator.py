@@ -207,7 +207,8 @@ class HybridOrchestrator:
         if "://0.0.0.0" in url:
             url = url.replace("://0.0.0.0", "://127.0.0.1")
         is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
-        timeout = httpx.Timeout(connect=10.0, read=timeout_sec, write=30.0, pool=10.0)
+        effective_read_timeout = 240.0 if (provider.lower() == "ollama" or "qwen2.5-coder" in model_id.lower()) else timeout_sec
+        timeout = httpx.Timeout(connect=10.0, read=effective_read_timeout, write=30.0, pool=10.0)
 
         async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
             resp = await client.post(url, headers=headers, json=payload)
@@ -872,7 +873,18 @@ class HybridOrchestrator:
         accounts = mesh.get_candidate_accounts(prov, model_id=resolved_candidate) if prov else []
 
         if accounts:
+            attempted_any = False
             for acc in accounts:
+                # QuotaMesh Cooldown Guard: skip accounts currently in cooldown/tripped
+                if not acc.is_healthy or not mesh.is_available(acc.account_id):
+                    rem_cd = max(0, int(acc.tripped_until - time.time()))
+                    logger.info(
+                        f"[Cascade] Skipping account '{acc.account_id}' for candidate '{resolved_candidate}' "
+                        f"(in cooldown for {rem_cd}s)"
+                    )
+                    continue
+
+                attempted_any = True
                 if acc.auth_type == "api_key":
                     acc_timeout = 90.0
                 elif acc.auth_type == "browser_session":
@@ -954,6 +966,8 @@ class HybridOrchestrator:
                     )
                     continue
 
+            if not attempted_any:
+                raise RuntimeError(f"All accounts for candidate '{resolved_candidate}' are currently in cooldown.")
             raise RuntimeError(f"All accounts for candidate '{resolved_candidate}' exhausted.")
         else:
             # Direct query for candidate without mesh accounts (e.g. mock or local)
@@ -1180,7 +1194,7 @@ class HybridOrchestrator:
                         resp = await self.ollama.send_prompt(prompt_text)
                         return resp, "ollama/default"
                 except Exception as e:
-                    logger.warning(f"[Cascade] Local Ollama execution failed ({e}). Falling back to role coder pool.")
+                    logger.warning(f"[Cascade] Local Ollama execution failed ({repr(e)}). Falling back to role coder pool.")
 
             # Fallback to role-based coder pool
             try:

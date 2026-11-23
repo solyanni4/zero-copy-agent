@@ -17,11 +17,12 @@ class GeminiDriver(BaseDriver):
                 await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(1)
 
+            # Fail-fast check for login redirect or captcha
+            await self.check_fast_auth_or_captcha("Gemini")
+
             # Ожидаем загрузку SPA в цикле до 8 секунд с шагом 1 сек
             for _ in range(8):
-                # Проверяем редирект на форму авторизации Google
-                if "accounts.google.com" in self.page.url:
-                    return False
+                await self.check_fast_auth_or_captcha("Gemini")
 
                 # Проверяем явные кнопки входа
                 signin_btn = await self.page.query_selector(
@@ -50,21 +51,11 @@ class GeminiDriver(BaseDriver):
         # 1. Navigate if needed
         if "gemini.google.com" not in self.page.url:
             await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
-        # 1.5 Auto-dismiss consent and overlay banners if present
-        try:
-            await self.page.evaluate('''() => {
-                const buttons = Array.from(document.querySelectorAll('button, a'));
-                for (const b of buttons) {
-                    const txt = (b.innerText || '').toLowerCase().trim();
-                    if (txt === 'accept all' || txt === 'принять все' || txt === 'i agree' || txt === 'got it' || txt === 'понятно' || txt === 'dismiss' || txt === 'close') {
-                        b.click();
-                    }
-                }
-            }''')
-        except Exception:
-            pass
+        # 1.5 Fail-fast check and popup dismissal
+        await self.check_fast_auth_or_captcha("Gemini")
+        await self.dismiss_popups()
 
         # 2. Locate input area
         input_selectors = [
@@ -83,6 +74,8 @@ class GeminiDriver(BaseDriver):
                 continue
 
         if not input_elem:
+            # Re-check if auth was invalidated before declaring input not found
+            await self.check_fast_auth_or_captcha("Gemini")
             raise RuntimeError("Could not locate Gemini input area. Please ensure you are logged in.")
 
         # 3. Enter prompt
@@ -120,28 +113,39 @@ class GeminiDriver(BaseDriver):
             # Fallback to Enter key
             await self.page.keyboard.press("Enter")
 
-        # 5. Wait for generation with bounded wall-clock timeout
-        await asyncio.sleep(2)
-        max_wait = 55.0
-        start_time = time.monotonic()
-        last_text = ""
-        while (time.monotonic() - start_time) < max_wait:
-            await asyncio.sleep(1)
-            elapsed = time.monotonic() - start_time
-
-            # Check if stop button is present
+        # 5. Smart response waiting with TTFT cut-off and stability detection
+        async def is_generating_fn() -> bool:
             stop_btn = await self.page.query_selector(
                 'button[aria-label*="Stop"], button[aria-label*="Остановить"], button[aria-label*="stop"], button[data-testid*="stop"]'
             )
-            if not stop_btn and elapsed > 3.0:
-                # Text stabilization check
-                current_text = await self._extract_last_response()
-                if current_text and current_text == last_text:
-                    return current_text
-                last_text = current_text
+            loading = await self.page.query_selector('mat-progress-bar, .loading, [aria-label*="Loading"]')
+            return bool(stop_btn or loading)
 
-        final_text = await self._extract_last_response()
-        return final_text or last_text or "[zero-copy-agent] Ответ от Gemini получен, но не удалось извлечь DOM разметку."
+        response_text = await self.wait_for_smart_response(
+            extract_fn=self._extract_last_response,
+            is_generating_fn=is_generating_fn,
+            ttft_timeout=25.0,
+            max_generation_time=120.0,
+            stability_window=3.5
+        )
+        return response_text or "[zero-copy-agent] Ответ от Gemini получен, но не удалось извлечь DOM разметку."
+
+    async def reset_to_new_chat(self):
+        """Resets Gemini tab to a fresh conversation to keep context warm."""
+        if not self.page or self.page.is_closed():
+            return
+        try:
+            new_chat_btn = await self.page.query_selector(
+                'button[aria-label*="New chat"], button[aria-label*="Новый чат"], a[aria-label*="New chat"], a[aria-label*="Новый чат"]'
+            )
+            if new_chat_btn:
+                await new_chat_btn.click()
+                await asyncio.sleep(0.5)
+            else:
+                if "gemini.google.com/app" not in self.page.url:
+                    await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass
 
     async def send_prompt_stream(self, prompt: str) -> AsyncGenerator[str, None]:
         full_response = await self.send_prompt(prompt)

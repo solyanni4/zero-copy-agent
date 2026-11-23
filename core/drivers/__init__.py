@@ -1,7 +1,7 @@
 """
 WebDriver implementations for zero-copy-agent.
 """
-from core.drivers.base import BaseDriver
+from core.drivers.base import BaseDriver, WebSessionAuthError
 from core.drivers.mock import MockDriver
 from core.drivers.gemini import GeminiDriver
 from core.drivers.chatgpt import ChatGPTDriver
@@ -11,6 +11,7 @@ from core.drivers.grok import GrokDriver
 
 __all__ = [
     "BaseDriver",
+    "WebSessionAuthError",
     "MockDriver",
     "GeminiDriver",
     "ChatGPTDriver",

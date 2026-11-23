@@ -216,15 +216,15 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
                 try:
                     result_text = await asyncio.wait_for(
                         _orchestrator.query(task, "cascade:architect", req_id=f"mcp-{uuid.uuid4().hex[:8]}"),
-                        timeout=180.0
+                        timeout=360.0
                     )
                     if "ollama" in tool_model.lower() or "local" in tool_model.lower():
                         local_tokens = max(1, len(result_text) // 4)
                 except asyncio.TimeoutError:
                     success = False
-                    error_msg = "Timeout 180s"
-                    logger.error(f"[MCP] Timeout executing tool '{name}' after 180s")
-                    result_text = "[TIMEOUT] Превышено время ожидания ответа инструмента 'cascade_architect' (таймаут 180 секунд). Попробуйте разбить задачу на части или уменьшить число итераций каскада."
+                    error_msg = "Timeout 360s"
+                    logger.error(f"[MCP] Timeout executing tool '{name}' after 360s")
+                    result_text = "[TIMEOUT] Превышено время ожидания ответа инструмента 'cascade_architect' (таймаут 360 секунд). Попробуйте разбить задачу на части или уменьшить число итераций каскада."
 
         elif name == "local_gpu_code":
             prompt = arguments.get("prompt", "")
@@ -318,14 +318,14 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
                 try:
                     result_text = await asyncio.wait_for(
                         _orchestrator.plan_and_execute_task(goal, workspace_dir=workspace_dir, resume=resume),
-                        timeout=300.0
+                        timeout=360.0
                     )
                     local_tokens = max(1, len(result_text) // 4)
                 except asyncio.TimeoutError:
                     success = False
-                    error_msg = "Timeout 300s"
-                    logger.error(f"[MCP] Timeout executing tool '{name}' after 300s")
-                    result_text = "[TIMEOUT] Выполнение крупной задачи превысило лимит 300 секунд. Прогресс сохранен в .zca/task_plan.json. Вы можете продолжить вызовом с resume=True."
+                    error_msg = "Timeout 360s"
+                    logger.error(f"[MCP] Timeout executing tool '{name}' after 360s")
+                    result_text = "[TIMEOUT] Выполнение крупной задачи превысило лимит 360 секунд. Прогресс сохранен в .zca/task_plan.json. Вы можете продолжить вызовом с resume=True."
 
         else:
             result_text = f"Неизвестный инструмент: '{name}'"

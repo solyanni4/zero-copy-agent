@@ -9,6 +9,9 @@ from typing import AsyncGenerator, List, Optional
 import httpx
 from core.drivers.base import BaseDriver
 
+# Increased timeout for local models (e.g. 14b) so RTX 4070 has time to load into VRAM and generate code
+DEFAULT_OLLAMA_TIMEOUT = httpx.Timeout(connect=10.0, read=240.0, write=30.0, pool=10.0)
+
 class OllamaDriver(BaseDriver):
     def __init__(self, base_url: str = "http://127.0.0.1:11434"):
         super().__init__(page=None)
@@ -54,7 +57,7 @@ class OllamaDriver(BaseDriver):
             "prompt": prompt,
             "stream": False
         }
-        async with httpx.AsyncClient(timeout=60.0, trust_env=not self.is_local) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_OLLAMA_TIMEOUT, trust_env=not self.is_local) as client:
             r = await client.post(f"{self.base_url}/api/generate", json=payload)
             r.raise_for_status()
             data = r.json()
@@ -71,7 +74,7 @@ class OllamaDriver(BaseDriver):
             "prompt": prompt,
             "stream": True
         }
-        async with httpx.AsyncClient(timeout=60.0, trust_env=not self.is_local) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_OLLAMA_TIMEOUT, trust_env=not self.is_local) as client:
             async with client.stream("POST", f"{self.base_url}/api/generate", json=payload) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():

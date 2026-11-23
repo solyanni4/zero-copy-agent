@@ -159,6 +159,16 @@ class QuotaMesh:
 
         return ordered
 
+    def is_available(self, account_id: str) -> bool:
+        """Returns True if account exists and is not currently in cooldown."""
+        with self._lock:
+            for pool in (self._pools, self._web_pools):
+                for states in pool.values():
+                    for s in states:
+                        if s.account_id == account_id or s.key == account_id:
+                            return s.is_healthy
+        return True
+
     def get_active_key(self, provider: str) -> Optional[str]:
         """Returns the next healthy API key using round-robin rotation."""
         provider_name = provider.lower()
@@ -220,6 +230,14 @@ class QuotaMesh:
                 if state.consecutive_failures >= 3:
                     state.trip(cooldown_seconds=120.0)
                 break
+
+    def trip_account(self, account_id: str, cooldown_seconds: float = 300.0):
+        """Immediately trips circuit breaker for account_id for cooldown_seconds."""
+        for pool in list(self._pools.values()) + list(self._web_pools.values()):
+            for state in pool:
+                if state.account_id == account_id:
+                    state.trip(cooldown_seconds=cooldown_seconds)
+                    return
 
     def record_success(self, provider: str, key: str):
         """Marks request success and resets failure counter."""

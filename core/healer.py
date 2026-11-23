@@ -568,5 +568,15 @@ class ConfigHealer:
                 return new_status
         return None
 
+    def set_account_status(self, account_id: str, status: str) -> bool:
+        """Sets an account's status (e.g. 'needs_auth', 'inactive', 'active') in subscriptions.yaml."""
+        config, _ = self.load_or_create()
+        for acc in config.accounts:
+            if acc.id == account_id:
+                acc.status = status
+                self.atomic_save(config)
+                return True
+        return False
+
 # Global singleton
 config_healer = ConfigHealer()
