@@ -51,9 +51,6 @@ class ChatGPTDriver(BaseDriver):
         if "chatgpt.com" not in self.page.url:
             await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(1)
-        else:
-            # Reusing warm tab: reset to new chat to prevent context bloat
-            await self.reset_to_new_chat()
 
         # Fail-fast check and popup dismissal
         await self.check_fast_auth_or_captcha("ChatGPT")

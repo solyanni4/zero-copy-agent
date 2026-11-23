@@ -91,7 +91,7 @@ class CascadeConfig(BaseModel):
     candidate_timeout_sec: float = 60.0
     enable_local_gate: bool = True
     enable_architect_audit: bool = True
-    require_compression_approval: bool = True
+    require_compression_approval: bool = False
     active_preset: str = "auto"
     architect_model: str = "gemini-4-neon"
     architect_models: List[str] = Field(default_factory=lambda: ["gemini-4-neon"])
@@ -148,8 +148,13 @@ def load_config() -> AppConfig:
 def save_config(cfg: Optional[AppConfig] = None) -> bool:
     if cfg is None:
         cfg = config
-    cfg_path = get_config_path()
+    env_path = os.getenv("CONFIG_PATH")
+    if env_path:
+        cfg_path = Path(env_path)
+    else:
+        cfg_path = get_runtime_cwd() / "config.yaml"
     try:
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
         data = cfg.model_dump() if hasattr(cfg, "model_dump") else cfg.dict()
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True)

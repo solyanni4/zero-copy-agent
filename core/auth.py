@@ -142,9 +142,12 @@ def authenticate(provider: str, account_id: str = None):
             if page.is_closed() or (context and len(context.pages) == 0):
                 break
             try:
-                has_input = page.locator("textarea, [contenteditable='true'], input[type='text']").count() > 0
+                curr_url = page.url.lower()
+                is_on_login = any(kw in curr_url for kw in ("accounts.google.com", "/login", "/signin", "auth0", "appleid.apple.com"))
+                chat_input_sel = "#prompt-textarea, #chat-input, rich-textarea, div.ql-editor[contenteditable='true'], textarea[placeholder*='DeepSeek'], textarea[placeholder*='Grok']"
+                has_input = page.locator(chat_input_sel).count() > 0
                 has_login_btn = page.locator("text='Sign in', text='Log in', text='Войти'").count() > 0
-                if has_input and not has_login_btn:
+                if not is_on_login and has_input and not has_login_btn:
                     time.sleep(2)
                     break
             except Exception:
@@ -203,8 +206,9 @@ def authenticate_desktop(provider: str, account_id: str = None):
     from core.config import get_runtime_cwd
     from core.healer import config_healer
 
+    cfg, _ = config_healer.load_or_create()
+    target_acc = None
     if not account_id:
-        cfg, _ = config_healer.load_or_create()
         primary_id = f"{prov}-web-primary"
         primary_acc = next((a for a in cfg.accounts if a.id == primary_id and a.auth_type == "browser_session"), None)
         if primary_acc and primary_acc.status == "active":
@@ -215,15 +219,16 @@ def authenticate_desktop(provider: str, account_id: str = None):
             account_id = f"{prov}-web-{idx}"
         else:
             account_id = primary_id
+            target_acc = primary_acc
+    else:
+        target_acc = next((a for a in cfg.accounts if a.id == account_id), None)
 
     profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     kill_zombie_browser_processes(profile_dir)
 
-    # Release any lingering zombie Chrome/Edge processes holding this profile
-    kill_zombie_browser_processes(profile_dir)
-
-    proxy_server = detect_proxy()
+    account_proxy = getattr(target_acc, "proxy", None) if target_acc else None
+    proxy_server = account_proxy or detect_proxy()
     proxy_cfg = {"server": proxy_server} if proxy_server else None
 
     logging.info(f"[Auth Assistant] Запуск браузера для {prov.upper()} (account: {account_id}) по адресу {url} (profile: {profile_dir})...")
@@ -269,6 +274,11 @@ def authenticate_desktop(provider: str, account_id: str = None):
                     if proxy_cfg:
                         kwargs["proxy"] = proxy_cfg
                     context = p.chromium.launch_persistent_context(**kwargs)
+                    context.add_init_script("""
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        });
+                    """)
                     logging.info(f"[Auth Assistant] Браузер успешно запущен через канал: {channel or 'chromium'}")
                     break
                 except Exception as e:

@@ -480,7 +480,7 @@ class HybridOrchestrator:
                 content = badge + resp
             else:
                 content = resp
-            routed = target
+            routed = f"api_key:{target}"
         # 5. Ollama Local Model
         elif target.startswith("ollama/") or (target in await self.ollama.list_models()):
             try:
@@ -598,9 +598,14 @@ class HybridOrchestrator:
 
         provider = self._detect_provider(target)
         has_mesh_key = bool(provider and mesh.get_active_key(provider))
+        if has_mesh_key:
+            routed = f"api_key:{target}"
+        elif target == "cascade:architect":
+            routed = "cascade:architect"
 
         # Generator selector
         async def _get_stream():
+            nonlocal routed
             if target == "cascade:architect":
                 async for tok in self._run_cascade_architect_stream(compressed_prompt, req_id=req_id, inject_signature=inject_signature):
                     yield tok
@@ -819,11 +824,30 @@ class HybridOrchestrator:
             return True
         if self.browser_engine and type(self.browser_engine).__name__ == "MockEngine":
             return True
+        if getattr(self.browser_engine, "is_ready", False):
+            prov = self._detect_provider(candidate)
+            if prov in ("gemini", "chatgpt", "openai", "deepseek", "qwen", "grok", "claude") or candidate in ("gemini-advanced", "chatgpt-plus"):
+                return True
 
         cand_low = candidate.lower()
         # Ollama / local weights
-        if cand_low.startswith("ollama/") or "coder" in cand_low or cand_low in ("tier:local-fast", "ollama"):
+        if cand_low.startswith(("ollama/", "qwen2.5-coder")) or cand_low in ("tier:local-fast", "ollama", "qwen2.5-coder:14b"):
             return True
+        cached_ollama = getattr(self.ollama, "_cached_models", None)
+        if cached_ollama and (candidate in cached_ollama or cand_low in [m.lower() for m in cached_ollama]):
+            return True
+
+        # Check subscriptions.yaml for explicit model registration across active accounts
+        try:
+            sub_cfg, _ = config_healer.load_or_create()
+            for acc in sub_cfg.accounts:
+                if acc.status == "active":
+                    for m in getattr(acc, "models", []) or []:
+                        m_id = getattr(m, "id", "") if hasattr(m, "id") else (m.get("id", "") if isinstance(m, dict) else str(m))
+                        if m_id and m_id.lower() == cand_low:
+                            return True
+        except Exception:
+            pass
         # Detected provider
         prov = self._detect_provider(candidate)
         if prov:
@@ -946,6 +970,20 @@ class HybridOrchestrator:
         candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
 
         prov = self._detect_provider(resolved_candidate)
+        is_local_ollama = (
+            resolved_candidate.startswith("ollama/")
+            or resolved_candidate in ("tier:local-fast", "ollama")
+            or prov == "ollama"
+            or "qwen2.5-coder" in resolved_candidate.lower()
+        )
+        if is_local_ollama:
+            try:
+                is_auth = await self.ollama.is_authenticated()
+            except Exception:
+                is_auth = False
+            if not is_auth:
+                raise RuntimeError(f"Ollama candidate '{resolved_candidate}' unavailable: Ollama daemon is offline.")
+
         accounts = mesh.get_candidate_accounts(prov, model_id=resolved_candidate) if prov else []
 
         if accounts:
@@ -964,7 +1002,7 @@ class HybridOrchestrator:
                 if acc.auth_type == "api_key":
                     acc_timeout = 90.0
                 elif acc.auth_type == "browser_session":
-                    acc_timeout = 45.0
+                    acc_timeout = 135.0
                 else:
                     acc_timeout = candidate_timeout
 
@@ -1257,7 +1295,8 @@ class HybridOrchestrator:
 
             if ollama_ok:
                 try:
-                    ollama_models = await self.ollama.list_models()
+                    raw_ollama_models = await self.ollama.list_models()
+                    ollama_models = [m for m in raw_ollama_models if "embed" not in m.lower()]
                     chosen_coder = coder_target if (coder_target and coder_target in ollama_models) else next((m for m in ollama_models if "qwen2.5-coder" in m), None)
 
                     if chosen_coder:

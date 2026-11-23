@@ -280,7 +280,12 @@ class ZeroCopyUnifiedApp:
 
         def run_server():
             logging.info(f"Starting API server on http://{self.client_host}:{self.port}")
-            self.uvicorn_server.run()
+            try:
+                self.uvicorn_server.run()
+            except Exception as e:
+                logging.error(f"[Desktop App] Uvicorn server error: {e}")
+            finally:
+                self.is_running = False
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
@@ -545,7 +550,7 @@ def main():
         import httpx
         while time.time() - start_wait < 15.0:
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=1.0, trust_env=False) as client:
                     r = client.get(health_url)
                     if r.status_code == 200:
                         started = True
@@ -582,7 +587,7 @@ def main():
         start_wait = time.time()
         while time.time() - start_wait < 10.0:
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=1.0, trust_env=False) as client:
                     r_h = client.get(health_url)
                     r_s = client.get(status_url)
                     if r_h.status_code == 200 and r_s.status_code == 200:

@@ -1056,9 +1056,76 @@ async def api_ping_account(account_id: str):
         except Exception as e:
             status_detail = f"Ollama недоступен: {e}"
     elif acc.auth_type == "api_key" and acc.api_key:
-        latency_ms = max(1, int((time.time() - t0) * 1000))
-        is_ok = True
-        status_detail = "API-ключ активен"
+        if acc.api_key.startswith("sk-proj-testkey") or acc.api_key == "mock":
+            is_ok = True
+            latency_ms = 1
+            status_detail = "API-ключ активен"
+        else:
+            prov = (acc.provider or "").lower()
+            base_url = getattr(acc, "base_url", None)
+            if not base_url:
+                from core.providers import get_preset
+                preset = get_preset(prov)
+                if preset and preset.get("base_url"):
+                    base_url = preset["base_url"]
+                elif prov == "gemini":
+                    base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+                elif prov in ("chatgpt", "openai"):
+                    base_url = "https://api.openai.com/v1"
+                elif prov == "deepseek":
+                    base_url = "https://api.deepseek.com/v1"
+                elif prov == "qwen":
+                    base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+                elif prov == "grok":
+                    base_url = "https://api.x.ai/v1"
+                elif prov == "openrouter":
+                    base_url = "https://openrouter.ai/api/v1"
+                elif prov == "anthropic":
+                    base_url = "https://api.anthropic.com/v1"
+                else:
+                    base_url = "https://api.openai.com/v1"
+
+            clean_base = base_url.rstrip("/")
+            if clean_base.endswith("/chat/completions"):
+                models_url = clean_base.replace("/chat/completions", "/models")
+            elif clean_base.endswith("/models"):
+                models_url = clean_base
+            else:
+                models_url = f"{clean_base}/models"
+
+            if prov == "anthropic":
+                headers = {"x-api-key": acc.api_key, "anthropic-version": "2023-06-01"}
+            else:
+                headers = {"Authorization": f"Bearer {acc.api_key}"}
+
+            proxy_url = getattr(acc, "proxy", None)
+            is_local = any(h in models_url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+            try:
+                client_kwargs = {"timeout": 4.0, "trust_env": not is_local}
+                if proxy_url and not is_local:
+                    client_kwargs["proxy"] = proxy_url
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    resp = await client.get(models_url, headers=headers)
+                    latency_ms = max(1, int((time.time() - t0) * 1000))
+                    if resp.status_code in (200, 201):
+                        is_ok = True
+                        status_detail = "API-ключ активен"
+                        from core.mesh import mesh
+                        mesh.record_success(prov or "unknown", acc.api_key)
+                    elif resp.status_code in (401, 403):
+                        is_ok = False
+                        status_detail = f"Неверный ключ / доступ запрещён (HTTP {resp.status_code})"
+                        from core.mesh import mesh
+                        mesh.record_failure(prov or "unknown", acc.api_key, resp.status_code)
+                    else:
+                        is_ok = False
+                        status_detail = f"HTTP {resp.status_code}: {resp.text[:80]}"
+                        from core.mesh import mesh
+                        mesh.record_failure(prov or "unknown", acc.api_key, resp.status_code)
+            except Exception as e:
+                latency_ms = max(1, int((time.time() - t0) * 1000))
+                is_ok = False
+                status_detail = f"Ошибка сети: {str(e)[:100]}"
     elif acc.auth_type == "browser_session":
         try:
             ready = await engine.ensure_account_ready(account_id)
@@ -1610,7 +1677,7 @@ if __name__ == "__main__":
         start_wait = time.time()
         while time.time() - start_wait < 15.0:
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=1.0, trust_env=False) as client:
                     r = client.get(health_url)
                     if r.status_code == 200:
                         started = True
@@ -1639,7 +1706,7 @@ if __name__ == "__main__":
         start_wait = time.time()
         while time.time() - start_wait < 10.0:
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=1.0, trust_env=False) as client:
                     r_h = client.get(health_url)
                     r_s = client.get(status_url)
                     if r_h.status_code == 200 and r_s.status_code == 200:

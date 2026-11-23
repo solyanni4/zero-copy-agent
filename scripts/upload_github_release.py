@@ -27,7 +27,10 @@ headers = {
     'Accept': 'application/vnd.github.v3+json'
 }
 
-exe_path = Path(r'C:\Users\Solyanni4\.gemini\antigravity\scratch\zero-copy-agent\dist\zero-copy-agent.exe')
+exe_path = Path(__file__).resolve().parent.parent / "dist" / "zero-copy-agent.exe"
+if not exe_path.exists():
+    print(f"[ERROR] Executable not found at {exe_path}. Build it first.")
+    sys.exit(1)
 exe_bytes = exe_path.read_bytes()
 print(f'Exe size: {len(exe_bytes)} bytes')
 

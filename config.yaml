@@ -77,7 +77,7 @@ cascade:
   candidate_timeout_sec: 60
   enable_local_gate: true
   enable_architect_audit: true
-  require_compression_approval: true
+  require_compression_approval: false
   active_preset: "auto"
   hard_gate_cmd: "python -m py_compile"
   mode: "auto"

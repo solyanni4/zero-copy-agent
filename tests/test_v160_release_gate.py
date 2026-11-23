@@ -230,3 +230,35 @@ async def test_orchestrator_compression_works_without_approval():
     called_prompt = mock_browser.query.call_args[0][0]
     assert called_prompt == expected_compressed
     assert len(called_prompt) < len(raw_prompt)
+
+
+def test_save_config_never_writes_to_meipass(tmp_path: Path, monkeypatch):
+    """Verifies save_config writes to get_runtime_cwd / config.yaml and never to _MEIPASS."""
+    import sys
+    from core.config import save_config, CascadeConfig, AppConfig
+
+    # 1. CascadeConfig defaults to require_compression_approval=False
+    assert CascadeConfig().require_compression_approval is False
+
+    # 2. Simulate PyInstaller frozen runtime with _MEIPASS
+    fake_meipass = tmp_path / "fake_meipass"
+    fake_meipass.mkdir()
+    monkeypatch.setattr(sys, "_MEIPASS", str(fake_meipass), raising=False)
+
+    fake_cwd = tmp_path / "runtime_cwd"
+    fake_cwd.mkdir()
+    monkeypatch.delenv("CONFIG_PATH", raising=False)
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: fake_cwd)
+
+    test_cfg = AppConfig()
+    success = save_config(test_cfg)
+    assert success is True
+
+    # Written to fake_cwd / config.yaml
+    expected_file = fake_cwd / "config.yaml"
+    assert expected_file.exists()
+
+    # Never written to _MEIPASS
+    meipass_file = fake_meipass / "config.yaml"
+    assert not meipass_file.exists()
+
