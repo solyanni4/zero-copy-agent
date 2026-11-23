@@ -213,9 +213,15 @@ class ModelRegistry:
                 if await ollama_driver.is_authenticated():
                     raw_models = await ollama_driver.list_models()
                     if raw_models:
-                        ollama_connected = True
-                        ollama_models = raw_models
-                        ollama_status = f"Online ({len(ollama_models)} models)"
+                        gen_models = [m for m in raw_models if "embed" not in m.lower()]
+                        if gen_models:
+                            ollama_connected = True
+                            ollama_models = gen_models
+                            ollama_status = f"Online ({len(ollama_models)} models)"
+                        else:
+                            ollama_connected = True
+                            ollama_models = []
+                            ollama_status = "Online (0 generation models)"
                     else:
                         ollama_connected = False
                         ollama_status = "Online (0 models)"
@@ -364,6 +370,8 @@ class ModelRegistry:
         ollama_h = health.get("ollama")
         if ollama_h and ollama_h.connected:
             for m in ollama_h.available_models:
+                if "embed" in m.lower():
+                    continue
                 active_ids.add(m)
                 active_ids.add(f"ollama/{m}")
                 all_catalog.append({
@@ -379,6 +387,7 @@ class ModelRegistry:
 
         # Check active accounts with valid API keys or active browser sessions from subscriptions.yaml
         sub_account_models: Set[str] = set()
+        sub_account_map: Dict[str, str] = {}
         try:
             from core.healer import config_healer
             sub_cfg, _ = config_healer.load_or_create()
@@ -388,6 +397,7 @@ class ModelRegistry:
                         for m in acc.models:
                             if m.status == "active":
                                 sub_account_models.add(m.id)
+                                sub_account_map[m.id] = acc.provider
         except Exception:
             pass
 
@@ -395,12 +405,25 @@ class ModelRegistry:
             ("gemini-advanced", "gemini"),
             ("gemini-4-neon", "gemini"),
             ("gemini-2.5-flash", "gemini"),
+            ("gemini-2.5-pro", "gemini"),
             ("gpt-4o", "chatgpt"),
             ("gpt-4o-mini", "chatgpt"),
             ("chatgpt-plus", "chatgpt"),
             ("claude-3-7-sonnet", "claude"),
             ("claude-pro", "claude"),
+            ("deepseek-chat", "deepseek"),
+            ("deepseek-reasoner", "deepseek"),
+            ("qwen-max", "qwen"),
+            ("qwen-coder", "qwen"),
+            ("qwq", "qwen"),
+            ("grok-3", "grok"),
+            ("grok-3-mini", "grok"),
         ]
+
+        # Dynamically append any configured active models from subscriptions
+        for mid, prov in sub_account_map.items():
+            if not any(k[0] == mid for k in known_browser_catalog):
+                known_browser_catalog.append((mid, prov))
 
         for mid, prov in known_browser_catalog:
             is_conn = (mid in active_browser_models) or (mid in sub_account_models)

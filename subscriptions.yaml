@@ -1,4 +1,17 @@
 schema_version: 2
-updated_at: '2026-11-21T00:00:00'
-accounts: []
+updated_at: '2026-11-23T17:18:31.287969'
+accounts:
+- id: ollama-auto
+  provider: ollama
+  auth_type: local
+  status: active
+  alias: Ollama (Auto-Discovered)
+  api_key: null
+  base_url: null
+  profile_dir: null
+  models:
+  - id: qwen2.5-coder:14b
+    display_name: Qwen2.5-Coder 14B (Local GPU)
+    status: active
+    capabilities: []
 user_aliases: {}

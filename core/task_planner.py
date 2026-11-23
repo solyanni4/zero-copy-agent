@@ -580,9 +580,23 @@ class TaskIntegrator:
         # 1. Run global pytest if available
         test_ok, stdout, stderr = await StepExecutor.run_cmd("pytest", workspace_dir, timeout=60.0)
 
-        # 2. Get git diff
-        diff_ok, diff_out, _ = await StepExecutor.run_cmd("git diff", workspace_dir, timeout=15.0)
-        diff_summary = diff_out[:6000] if diff_ok and diff_out else "(No git diff available)"
+        # 2. Get targeted git diff for modified files (±25 lines context)
+        modified_files = []
+        for s in plan.steps:
+            for tf in s.target_files:
+                if tf and tf not in modified_files:
+                    modified_files.append(tf)
+
+        diff_summary = ""
+        if modified_files:
+            files_arg = " ".join(f'"{f}"' for f in modified_files)
+            diff_ok, diff_out, _ = await StepExecutor.run_cmd(f"git diff -U25 -- {files_arg}", workspace_dir, timeout=15.0)
+            if diff_ok and diff_out.strip():
+                diff_summary = diff_out[:8000]
+
+        if not diff_summary:
+            diff_ok, diff_out, _ = await StepExecutor.run_cmd("git diff -U25", workspace_dir, timeout=15.0)
+            diff_summary = diff_out[:8000] if diff_ok and diff_out else "(No git diff available)"
 
         # 3. Final review with Architect
         audit_report = ""
@@ -590,12 +604,12 @@ class TaskIntegrator:
             prompt = (
                 f"You are the Lead Architect performing a Final Integration Audit.\n"
                 f"TASK GOAL: {plan.goal}\n"
+                f"MODIFIED FILES: {', '.join(modified_files) if modified_files else 'None'}\n"
                 f"ALL STEPS COMPLETED: {len(plan.steps)}/{len(plan.steps)}\n"
                 f"GLOBAL TEST SUITE RESULT: {'PASSED [OK]' if test_ok else 'FAILED [ERROR]'}\n"
                 f"TEST OUTPUT:\n{stdout[:1500]}\n\n"
-                f"GIT DIFF SUMMARY:\n{diff_summary}\n\n"
-                f"Please provide a concise 3-5 bullet architectural verification verdict confirming that "
-                f"all modules integrate cleanly without contract violations or regressions."
+                f"TARGETED UNIFIED DIFF (±25 lines context):\n{diff_summary}\n\n"
+                f"Please verify indentation, attribute matching, asyncio.Lock usage, absence of stubs, and contract integrity."
             )
             try:
                 fn = getattr(orchestrator, "query_role_with_fallback", None)
@@ -676,6 +690,12 @@ async def run_dag_pipeline(
             plan = None
 
     if not plan:
+        old_plan_file = PlanStorage.get_plan_path(ws)
+        if old_plan_file.exists():
+            try:
+                old_plan_file.unlink(missing_ok=True)
+            except Exception:
+                pass
         effective_archs = getattr(orchestrator, "architect_models", None)
         arch_display = "+".join(effective_archs) if (effective_archs and len(effective_archs) >= 2) else architect_model
         notify(f"Decomposing goal via Architect ({arch_display})...")

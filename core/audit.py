@@ -91,6 +91,8 @@ class LocalHardGate:
             return self._validate_yaml(filepath, content)
         elif lower.endswith(".json"):
             return self._validate_json(filepath, content)
+        elif lower.endswith((".js", ".mjs")):
+            return self._validate_javascript(filepath, content)
         elif lower.endswith(".ps1"):
             return self._validate_powershell(filepath, content)
         elif lower.endswith(".sh"):
@@ -105,6 +107,8 @@ class LocalHardGate:
             return self._validate_yaml(filename, content)
         elif l in ("json",):
             return self._validate_json(filename, content)
+        elif l in ("javascript", "js", "mjs"):
+            return self._validate_javascript(filename, content)
         elif l in ("powershell", "ps1", "posh"):
             return self._validate_powershell(filename, content)
         elif l in ("bash", "sh", "shell"):
@@ -161,9 +165,64 @@ class LocalHardGate:
             })
         return issues
 
+    def _validate_javascript(self, filename: str, content: str) -> List[Dict[str, Any]]:
+        issues = []
+        import shutil
+        import subprocess
+        import tempfile
+        import os
+        node_bin = shutil.which("node")
+        if node_bin:
+            tf_path = None
+            try:
+                with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as tf:
+                    tf.write(content)
+                    tf_path = tf.name
+                res = subprocess.run([node_bin, "--check", tf_path], capture_output=True, text=True, timeout=5)
+                if res.returncode != 0:
+                    err_msg = res.stderr.strip() or res.stdout.strip()
+                    issues.append({
+                        "file": filename,
+                        "severity": "critical",
+                        "type": "JavaScriptSyntaxError",
+                        "description": f"Ошибка синтаксиса JavaScript (node --check): {err_msg}",
+                        "fix_instruction": "Исправьте синтаксическую ошибку в коде JavaScript."
+                    })
+            except Exception as e:
+                logger.debug(f"node --check failed: {e}")
+            finally:
+                if tf_path:
+                    try:
+                        os.unlink(tf_path)
+                    except Exception:
+                        pass
+        return issues
+
     def _validate_powershell(self, filename: str, content: str) -> List[Dict[str, Any]]:
         issues = []
         lines = content.splitlines()
+
+        # Bracket parity check (excluding comments and quoted strings)
+        cleaned = re.sub(r'#.*$', '', content, flags=re.MULTILINE)
+        cleaned = re.sub(r'<#[\s\S]*?#>', '', cleaned)
+        cleaned = re.sub(r'"(?:[^"\\]|\\.)*"', '', cleaned)
+        cleaned = re.sub(r"'(?:[^'\\]|\\.)*'", '', cleaned)
+
+        counts = {
+            '(': cleaned.count('(') - cleaned.count(')'),
+            '{': cleaned.count('{') - cleaned.count('}'),
+            '[': cleaned.count('[') - cleaned.count(']'),
+        }
+        for b_open, diff in counts.items():
+            if diff != 0:
+                b_name = "круглых '()'" if b_open == '(' else "фигурных '{}'" if b_open == '{' else "квадратных '[]'"
+                issues.append({
+                    "file": filename,
+                    "severity": "critical",
+                    "type": "PowerShellBracketMismatch",
+                    "description": f"Нарушен баланс {b_name} скобок в PowerShell-скрипте (разница: {diff}).",
+                    "fix_instruction": f"Проверьте парность и закрытие всех {b_name} скобок в скрипте."
+                })
 
         # Check PowerShell strict rule: param(...) must be the first executable statement
         param_line_idx = -1
@@ -271,9 +330,9 @@ class ArchitectAudit:
 
         try:
             parsed = json.loads(candidate)
-            verdict = str(parsed.get("verdict", "PASS")).upper().strip()
+            verdict = str(parsed.get("verdict", "")).upper().strip()
             if verdict not in ("PASS", "REJECT"):
-                verdict = "PASS" if not parsed.get("issues") else "REJECT"
+                verdict = "REJECT"  # Never default to PASS
 
             raw_issues = parsed.get("issues", [])
             valid_issues = []

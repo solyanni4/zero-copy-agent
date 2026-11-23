@@ -1,7 +1,7 @@
 <!-- ZCA_ROUTING_START -->
 # ZERO-COPY-AGENT (ZCA) MANDATORY ROUTING RULE
-> **Режим маршрутизации: Через ZCA (ВСЕ запросы)**
-ВСЕ задачи на проектирование, написание, рефакторинг и аудит кода ОБЯЗАТЕЛЬНО выполнять через MCP-инструменты `zero-copy-agent` (`plan_and_execute_task` / `cascade_architect` / `local_gpu_code`) без отдельного напоминания от пользователя. Не использовать встроенный swarm/воркеры IDE в обход ZCA.
+> **Режим маршрутизации: В обход ZCA (Bypass)**
+ZCA находится в режиме обхода (Bypass). Выполняй задачи напрямую встроенными средствами IDE, не вызывая инструменты ZCA.
 <!-- ZCA_ROUTING_END -->
 
 # zero-copy-agent: Регламент маршрутизации и разработки для AI-агентов (Google Antigravity, Cursor, Cline)

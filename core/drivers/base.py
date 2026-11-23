@@ -111,6 +111,28 @@ class BaseDriver(ABC):
         except Exception:
             pass
 
+    async def save_failure_screenshot(self, provider_name: str = "driver") -> Optional[str]:
+        """Saves diagnostic screenshot to logs/web_failures/<provider>_<timestamp>.png upon failure or timeout."""
+        if not self.page:
+            return None
+        try:
+            if getattr(self.page, "is_closed", lambda: True)():
+                return None
+            try:
+                from core.config import get_runtime_cwd
+                fail_dir = get_runtime_cwd() / "logs" / "web_failures"
+            except Exception:
+                from pathlib import Path
+                fail_dir = Path("logs") / "web_failures"
+            fail_dir.mkdir(parents=True, exist_ok=True)
+            shot_path = fail_dir / f"{provider_name.lower()}_{int(time.time())}.png"
+            await self.page.screenshot(path=str(shot_path), timeout=5000)
+            logger.info(f"[{provider_name}] Failure screenshot captured: {shot_path}")
+            return str(shot_path)
+        except Exception as e:
+            logger.debug(f"[{provider_name}] Could not capture failure screenshot: {e}")
+            return None
+
     async def wait_for_smart_response(
         self,
         extract_fn: Callable[[], Awaitable[str]],

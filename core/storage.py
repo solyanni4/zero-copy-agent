@@ -93,12 +93,31 @@ class AnalyticsStorage:
             conn.commit()
 
     @staticmethod
-    def calculate_savings(model_id: str, prompt_tokens: int, completion_tokens: int) -> float:
-        """Calculates approximate dollars saved based on equivalent official API rates."""
+    def calculate_savings(
+        model_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        raw_prompt_tokens: int = 0,
+        model_routed: str = ""
+    ) -> float:
+        """Calculates approximate dollars saved based on equivalent official API rates.
+        - 100% savings for local GPU (Ollama) and web browser sessions (avoided paying API token rates).
+        - For paid API key accounts: savings is calculated strictly from prompt compression savings (raw_prompt_tokens - prompt_tokens).
+        """
         rates = PRICE_BENCHMARKS.get(model_id.lower(), PRICE_BENCHMARKS["default"])
-        input_cost = (prompt_tokens / 1_000_000) * rates["input"]
-        output_cost = (completion_tokens / 1_000_000) * rates["output"]
-        return round(input_cost + output_cost, 5)
+        actual_raw = raw_prompt_tokens if raw_prompt_tokens > 0 else prompt_tokens
+        routed_str = (model_routed or "").lower()
+
+        is_paid_api = "api_key" in routed_str or "-api" in routed_str or "api:" in routed_str
+
+        if is_paid_api:
+            saved_tokens = max(0, actual_raw - prompt_tokens)
+            saved_usd = (saved_tokens / 1_000_000) * rates["input"]
+            return round(saved_usd, 5)
+        else:
+            input_cost = (actual_raw / 1_000_000) * rates["input"]
+            output_cost = (completion_tokens / 1_000_000) * rates["output"]
+            return round(input_cost + output_cost, 5)
 
     def record_completion(
         self,
@@ -111,7 +130,13 @@ class AnalyticsStorage:
         raw_prompt_tokens: int = 0
     ) -> float:
         """Records an inference event and returns the calculated savings in USD."""
-        cost_saved = self.calculate_savings(model_requested, prompt_tokens, completion_tokens)
+        cost_saved = self.calculate_savings(
+            model_id=model_requested,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            raw_prompt_tokens=raw_prompt_tokens,
+            model_routed=model_routed
+        )
         ts = datetime.now(timezone.utc).isoformat()
         total_tokens = prompt_tokens + completion_tokens
         actual_raw_prompt = raw_prompt_tokens if raw_prompt_tokens > 0 else prompt_tokens

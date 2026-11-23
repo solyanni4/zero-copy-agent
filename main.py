@@ -1,5 +1,5 @@
 """
-zero-copy-agent v1.5.0
+zero-copy-agent v1.6.0
 OpenAI-compatible Sidecar Gateway & Native Model Context Protocol (MCP) Server.
 Routes Web Chat Subscriptions, Local Ollama GPU, and provides tools for Antigravity, Cursor & Claude.
 """
@@ -1591,6 +1591,72 @@ async def create_chat_completion(request: ChatCompletionRequest):
     return JSONResponse(content=payload_dict, headers=headers)
 
 if __name__ == "__main__":
+    if "--daemon" in sys.argv:
+        cmd = [sys.executable, str(Path(__file__).resolve())]
+        extra_args = [a for a in sys.argv[1:] if a != "--daemon"]
+        cmd.extend(extra_args)
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=creationflags,
+            close_fds=True,
+            cwd=str(get_runtime_cwd())
+        )
+        target_port = config.server.port or 8000
+        health_url = f"http://127.0.0.1:{target_port}/health"
+        started = False
+        start_wait = time.time()
+        while time.time() - start_wait < 15.0:
+            try:
+                with httpx.Client(timeout=1.0) as client:
+                    r = client.get(health_url)
+                    if r.status_code == 200:
+                        started = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        if started:
+            print(f"ZCA daemon started (PID {proc.pid})")
+            sys.exit(0)
+        else:
+            print(f"[ERROR] ZCA daemon failed to respond at {health_url} within 15s.")
+            sys.exit(1)
+
+    if "--smoke-test" in sys.argv:
+        import threading
+        bind_host = os.getenv("ZCA_HOST") or getattr(config.server, "host", "127.0.0.1") or "127.0.0.1"
+        target_port = config.server.port or 8000
+        uv_cfg = uvicorn.Config(app, host=bind_host, port=target_port, log_level="warning")
+        srv = uvicorn.Server(uv_cfg)
+        t = threading.Thread(target=srv.run, daemon=True)
+        t.start()
+        health_url = f"http://127.0.0.1:{target_port}/health"
+        status_url = f"http://127.0.0.1:{target_port}/v1/ui/status"
+        success = False
+        start_wait = time.time()
+        while time.time() - start_wait < 10.0:
+            try:
+                with httpx.Client(timeout=1.0) as client:
+                    r_h = client.get(health_url)
+                    r_s = client.get(status_url)
+                    if r_h.status_code == 200 and r_s.status_code == 200:
+                        print(f"[Smoke Test] Health: OK ({r_h.status_code}), UI Status: OK ({r_s.status_code})")
+                        success = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.3)
+        if success:
+            time.sleep(2.0)
+            print("[Smoke Test] PASSED successfully.")
+            sys.exit(0)
+        else:
+            print(f"[Smoke Test] FAILED: server did not respond at {health_url} within 10s.")
+            sys.exit(1)
+
     bind_host = os.getenv("ZCA_HOST") or getattr(config.server, "host", "127.0.0.1") or "127.0.0.1"
     uvicorn.run(
         "main:app",

@@ -2993,7 +2993,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Check URL params for post-update toast
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has('post_update') || urlParams.has('updated')) {
-    const ver = urlParams.get('version') || '1.4.0';
+    const ver = urlParams.get('version') || '1.6.0';
     setTimeout(() => {
       showToast(`Обновлено до версии v${ver}`, 'done', 6000);
     }, 500);

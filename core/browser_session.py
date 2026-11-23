@@ -259,7 +259,13 @@ class BrowserSessionEngine:
                     logger.error(f"[ENGINE] Could not start browser runtime: {pw_err}")
                     return False
 
-            proxy_server = detect_proxy()
+            acc_proxy = getattr(acc, "proxy", "auto") or "auto"
+            if acc_proxy == "direct":
+                proxy_server = None
+            elif acc_proxy == "auto":
+                proxy_server = detect_proxy()
+            else:
+                proxy_server = acc_proxy
             proxy_cfg = {"server": proxy_server} if proxy_server else None
 
             from core.auth import kill_zombie_browser_processes
@@ -393,6 +399,8 @@ class BrowserSessionEngine:
                                 await page.goto("https://gemini.google.com/app", wait_until="domcontentloaded", timeout=20000)
                             elif "chatgpt.com" in page.url:
                                 await page.goto("https://chatgpt.com", wait_until="domcontentloaded", timeout=20000)
+                            elif "claude.ai" in page.url:
+                                await page.goto("https://claude.ai/new", wait_until="domcontentloaded", timeout=20000)
                             elif "deepseek.com" in page.url:
                                 await page.goto("https://chat.deepseek.com", wait_until="domcontentloaded", timeout=20000)
                             elif "qwen.ai" in page.url:
@@ -428,16 +436,20 @@ class BrowserSessionEngine:
                 return await self.mock_driver.send_prompt(prompt)
             raise RuntimeError(f"Для модели '{model_id}' нет настроенной или авторизованной веб-сессии.")
 
+        ready = await self.ensure_account_ready(target_acc)
+        if not ready:
+            logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
+            if model_id == "mock-test":
+                return await self.mock_driver.send_prompt(prompt)
+            raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
+
+        from core.healer import config_healer
+        sub_cfg, _ = config_healer.load_or_create()
+        acc = next((a for a in getattr(sub_cfg, "accounts", []) if a.id == target_acc), None)
+        prov = acc.provider.lower() if acc else ("chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else ("deepseek" if "deepseek" in target_acc.lower() else ("qwen" if "qwen" in target_acc.lower() else ("grok" if "grok" in target_acc.lower() else "gemini")))))
+
         lock = self._get_lock(target_acc)
         async with lock:
-            ready = await self.ensure_account_ready(target_acc)
-            if not ready:
-                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
-                if model_id == "mock-test":
-                    return await self.mock_driver.send_prompt(prompt)
-                raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
-
-            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
             driver = self.get_driver(target_acc)
             if driver != self.mock_driver:
                 try:
@@ -504,18 +516,22 @@ class BrowserSessionEngine:
                 return
             raise RuntimeError(f"Для модели '{model_id}' нет настроенной или авторизованной веб-сессии.")
 
+        ready = await self.ensure_account_ready(target_acc)
+        if not ready:
+            logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
+            if model_id == "mock-test":
+                async for token in self.mock_driver.send_prompt_stream(prompt):
+                    yield token
+                return
+            raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
+
+        from core.healer import config_healer
+        sub_cfg, _ = config_healer.load_or_create()
+        acc = next((a for a in getattr(sub_cfg, "accounts", []) if a.id == target_acc), None)
+        prov = acc.provider.lower() if acc else ("chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else ("deepseek" if "deepseek" in target_acc.lower() else ("qwen" if "qwen" in target_acc.lower() else ("grok" if "grok" in target_acc.lower() else "gemini")))))
+
         lock = self._get_lock(target_acc)
         async with lock:
-            ready = await self.ensure_account_ready(target_acc)
-            if not ready:
-                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
-                if model_id == "mock-test":
-                    async for token in self.mock_driver.send_prompt_stream(prompt):
-                        yield token
-                    return
-                raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
-
-            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
             driver = self.get_driver(target_acc)
             if driver != self.mock_driver:
                 try:

@@ -1,4 +1,4 @@
-version: "1.5.0"
+version: "1.6.0"
 ide_routing_mode: "through_zca"
 
 server:

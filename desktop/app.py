@@ -510,6 +510,98 @@ class ZeroCopyUnifiedApp:
 
 
 def main():
+    if "--daemon" in sys.argv:
+        # Launch detached background process
+        cmd = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            cmd.append(str(Path(__file__).resolve()))
+        extra_args = [a for a in sys.argv[1:] if a != "--daemon"]
+        if "--headless" not in extra_args and "--cli" not in extra_args:
+            extra_args.append("--headless")
+        cmd.extend(extra_args)
+
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+        from core.config import get_runtime_cwd, config
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=creationflags,
+            close_fds=True,
+            cwd=str(get_runtime_cwd())
+        )
+
+        target_port = config.server.port or 8000
+        if "--port" in sys.argv:
+            try:
+                target_port = int(sys.argv[sys.argv.index("--port") + 1])
+            except Exception:
+                pass
+
+        health_url = f"http://127.0.0.1:{target_port}/health"
+        started = False
+        start_wait = time.time()
+        import httpx
+        while time.time() - start_wait < 15.0:
+            try:
+                with httpx.Client(timeout=1.0) as client:
+                    r = client.get(health_url)
+                    if r.status_code == 200:
+                        started = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+        if started:
+            print(f"ZCA daemon started (PID {proc.pid})")
+            sys.exit(0)
+        else:
+            print(f"[ERROR] ZCA daemon failed to respond at {health_url} within 15s.")
+            sys.exit(1)
+
+    if "--smoke-test" in sys.argv:
+        from core.config import config
+        import httpx
+        target_port = 8000
+        if "--port" in sys.argv:
+            try:
+                target_port = int(sys.argv[sys.argv.index("--port") + 1])
+            except Exception:
+                pass
+        else:
+            target_port = config.server.port or 8000
+
+        app_inst = ZeroCopyUnifiedApp(port=target_port, start_hidden=True)
+        srv_thread = threading.Thread(target=app_inst._start_uvicorn, daemon=True)
+        srv_thread.start()
+
+        health_url = f"http://127.0.0.1:{target_port}/health"
+        status_url = f"http://127.0.0.1:{target_port}/v1/ui/status"
+        success = False
+        start_wait = time.time()
+        while time.time() - start_wait < 10.0:
+            try:
+                with httpx.Client(timeout=1.0) as client:
+                    r_h = client.get(health_url)
+                    r_s = client.get(status_url)
+                    if r_h.status_code == 200 and r_s.status_code == 200:
+                        print(f"[Smoke Test] Health: OK ({r_h.status_code}), UI Status: OK ({r_s.status_code})")
+                        success = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.3)
+
+        if success:
+            time.sleep(2.0)
+            print("[Smoke Test] PASSED successfully.")
+            sys.exit(0)
+        else:
+            print(f"[Smoke Test] FAILED: server did not respond at {health_url} within 10s.")
+            sys.exit(1)
+
     if "--auth" in sys.argv:
         provider = "gemini"
         account_id = None

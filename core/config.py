@@ -5,6 +5,12 @@ from typing import List, Optional, Dict
 import yaml
 from pydantic import BaseModel, Field
 
+def __getattr__(name: str):
+    if name in ("AccountSubscription", "SubscriptionsConfig"):
+        import core.healer as _healer
+        return getattr(_healer, name)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 def get_runtime_cwd() -> Path:
     """
     Returns the persistent runtime directory for zero-copy-agent.
@@ -118,7 +124,7 @@ class CascadeConfig(BaseModel):
     )
 
 class AppConfig(BaseModel):
-    version: str = "1.5.0"
+    version: str = "1.6.0"
     show_mcp_badge: bool = True
     ide_routing_mode: str = "through_zca"  # "through_zca" | "bypass"
     server: ServerConfig = Field(default_factory=ServerConfig)

@@ -51,11 +51,18 @@ class ZCAPTransportClient:
         self.reader: Optional[asyncio.StreamReader] = None
         self.writer: Optional[asyncio.StreamWriter] = None
 
-    async def connect(self):
+    async def connect(self, auth_token: Optional[str] = "sk-zero-copy"):
         if self.is_unix:
             self.reader, self.writer = await asyncio.open_unix_connection(path=self.socket_path)
         else:
             self.reader, self.writer = await asyncio.open_connection(host=DEFAULT_TCP_HOST, port=self.port)
+        if auth_token:
+            from core.protocol.types import ChannelType
+            auth_frame = ZCAPFrame(channel=ChannelType.CONTROL, payload=f"AUTH {auth_token}".encode("utf-8"))
+            await self.send(auth_frame)
+            resp = await self.receive()
+            if b"AUTH_OK" not in resp.payload:
+                raise ConnectionError(f"ZCAP authentication failed: {resp.payload.decode('utf-8', errors='ignore')}")
 
     async def send(self, frame: ZCAPFrame):
         if not self.writer:

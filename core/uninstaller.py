@@ -23,6 +23,28 @@ def clean_uninstall_system(keep_backups: bool = False, orchestrator_instance: An
     steps_executed = []
     errors = []
 
+    # 0. Backup subscriptions.yaml to %TEMP%/zca_backup_subscriptions.yaml before deletion
+    try:
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir())
+        backup_sub_path = temp_dir / "zca_backup_subscriptions.yaml"
+        source_sub = None
+        for candidate in [
+            Path.cwd() / "subscriptions.yaml",
+            Path.home() / ".zero-copy-agent" / "subscriptions.yaml",
+            Path("C:/AI/subscriptions.yaml"),
+            Path(__file__).resolve().parent.parent / "subscriptions.yaml"
+        ]:
+            if candidate.exists() and candidate.is_file():
+                source_sub = candidate
+                break
+        if source_sub:
+            shutil.copy2(source_sub, backup_sub_path)
+            logger.info(f"[Uninstaller] Создана резервная копия подписок: {backup_sub_path}")
+            steps_executed.append(f"Резервная копия подписок сохранена: {backup_sub_path}")
+    except Exception as e:
+        logger.warning(f"[Uninstaller] Не удалось создать резервную копию подписок: {e}")
+
     # 1. Rollback all IDE configurations
     try:
         from core.ide_setup import rollback_target_clean
@@ -74,17 +96,26 @@ def clean_uninstall_system(keep_backups: bool = False, orchestrator_instance: An
             except Exception:
                 pass
 
-    # 5. Remove local subscriptions.yaml, database caches and logs in working directory
+    # 5. Remove local subscriptions.yaml, database caches and configs (protected in dev repository)
     try:
+        is_dev_repo = any((Path.cwd() / marker).exists() for marker in (".git", "main.py", "pyproject.toml"))
         sub_paths = [
-            Path.cwd() / "subscriptions.yaml",
-            Path(__file__).resolve().parent.parent / "subscriptions.yaml",
-            Path.home() / ".zero-copy-agent" / "subscriptions.yaml"
+            Path.home() / ".zero-copy-agent" / "subscriptions.yaml",
+            Path.home() / ".zero-copy-agent" / "config.yaml",
         ]
+        if not is_dev_repo:
+            sub_paths.extend([
+                Path.cwd() / "subscriptions.yaml",
+                Path.cwd() / "config.yaml",
+                Path(__file__).resolve().parent.parent / "subscriptions.yaml"
+            ])
+        else:
+            steps_executed.append("Обнаружен репозиторий исходного кода — subscriptions.yaml и config.yaml в текущей папке сохранены")
+
         for sp in sub_paths:
-            if sp.exists():
+            if sp.exists() and sp.is_file():
                 sp.unlink(missing_ok=True)
-                steps_executed.append(f"Удален файл подписок и моделей: {sp.name}")
+                steps_executed.append(f"Удален файл настроек: {sp.name}")
     except Exception as e:
         logger.debug(f"Error removing subscriptions: {e}")
 

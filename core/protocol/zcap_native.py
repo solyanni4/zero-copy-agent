@@ -33,14 +33,58 @@ class ZCAPNativeEngine:
         await self.transport.stop()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """Handles an incoming connection from a bot or IDE agent."""
+        """Handles an incoming connection from a bot or IDE agent with mandatory token authentication."""
+        authenticated = False
+        valid_tokens = {"sk-zero-copy"}
+        try:
+            from core.config import config
+            server_key = getattr(getattr(config, "server", None), "api_key", None)
+            if server_key:
+                valid_tokens.add(server_key)
+        except Exception:
+            pass
+
         try:
             while True:
                 frame = await read_frame(reader)
                 self.watchdog.touch()
 
+                # Mandatory Authentication Check
+                if not authenticated:
+                    if frame.channel == ChannelType.CONTROL:
+                        cmd = frame.payload.decode("utf-8", errors="ignore").strip()
+                        token_candidate = None
+                        if cmd.startswith("AUTH "):
+                            token_candidate = cmd.split(" ", 1)[1].strip()
+                        elif cmd.startswith("Bearer "):
+                            token_candidate = cmd.split(" ", 1)[1].strip()
+                        elif cmd in valid_tokens:
+                            token_candidate = cmd
+
+                        if token_candidate and token_candidate in valid_tokens:
+                            authenticated = True
+                            ok_frame = ZCAPFrame(channel=ChannelType.CONTROL, payload=b"AUTH_OK")
+                            await write_frame(writer, ok_frame)
+                            continue
+                    else:
+                        try:
+                            payload_dict = json.loads(frame.payload.decode("utf-8"))
+                            env_token = payload_dict.get("metadata", {}).get("auth_token") or payload_dict.get("auth_token")
+                            if env_token in valid_tokens:
+                                authenticated = True
+                        except Exception:
+                            pass
+
+                    if not authenticated:
+                        err_frame = ZCAPFrame(
+                            channel=ChannelType.CONTROL,
+                            payload=b"ERROR: Unauthorized. Valid token required (sk-zero-copy)"
+                        )
+                        await write_frame(writer, err_frame)
+                        break
+
                 if frame.channel == ChannelType.CONTROL:
-                    cmd = frame.payload.decode("utf-8", errors="ignore")
+                    cmd = frame.payload.decode("utf-8", errors="ignore").strip()
                     if cmd == ControlOp.PING:
                         pong_frame = ZCAPFrame(channel=ChannelType.CONTROL, payload=ControlOp.PONG.encode("utf-8"))
                         await write_frame(writer, pong_frame)

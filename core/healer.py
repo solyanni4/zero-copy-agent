@@ -60,6 +60,7 @@ class AccountSubscription(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     profile_dir: Optional[str] = None
+    proxy: str = "auto"  # "auto" | "direct" | custom URL e.g. "http://127.0.0.1:7890"
     models: List[SubscriptionModel] = Field(default_factory=list)
 
 class SubscriptionsConfig(BaseModel):

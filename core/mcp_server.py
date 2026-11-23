@@ -172,11 +172,23 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
     if name == "local_gpu_code":
         tool_model = f"ollama/{arguments.get('model', 'qwen2.5-coder:14b')}"
     elif name == "cascade_architect":
-        tool_model = getattr(_orchestrator, "cascade_architect_model", "cascade:architect")
+        cand = getattr(_orchestrator, "architect_model", None)
+        if isinstance(cand, str):
+            tool_model = cand
+        else:
+            tool_model = getattr(_orchestrator, "cascade_architect_model", "cascade:architect")
+            if not isinstance(tool_model, str):
+                tool_model = "cascade:architect"
     elif name == "gemini_deep_analysis":
         tool_model = "gemini-4-neon"
     elif name == "plan_and_execute_task":
-        tool_model = getattr(_orchestrator, "cascade_executor_model", "ollama/qwen2.5-coder:14b")
+        cand = getattr(_orchestrator, "executor_model", None)
+        if isinstance(cand, str):
+            tool_model = cand
+        else:
+            tool_model = getattr(_orchestrator, "cascade_executor_model", "ollama/qwen2.5-coder:14b")
+            if not isinstance(tool_model, str):
+                tool_model = "ollama/qwen2.5-coder:14b"
 
     initial_step = f"Executing {name}..."
     if name == "plan_and_execute_task":

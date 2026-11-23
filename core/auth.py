@@ -63,6 +63,7 @@ def authenticate(provider: str, account_id: str = None):
 
     profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
+    kill_zombie_browser_processes(profile_dir)
 
     proxy_server = detect_proxy()
 
@@ -134,14 +135,51 @@ def authenticate(provider: str, account_id: str = None):
         page = context.new_page() if len(context.pages) == 0 else context.pages[0]
         page.goto(url)
 
-        input("\nPress [ENTER] after you have successfully logged in: ")
+        print("\n[2/3] Ожидание завершения авторизации в браузере (до 300с)...")
+        print("      Войдите в свой аккаунт или закройте окно браузера для сохранения сессии.")
+        start_auth = time.time()
+        while time.time() - start_auth < 300.0:
+            if page.is_closed() or (context and len(context.pages) == 0):
+                break
+            try:
+                has_input = page.locator("textarea, [contenteditable='true'], input[type='text']").count() > 0
+                has_login_btn = page.locator("text='Sign in', text='Log in', text='Войти'").count() > 0
+                if has_input and not has_login_btn:
+                    time.sleep(2)
+                    break
+            except Exception:
+                pass
+            time.sleep(2.0)
 
-        print("\n[2/3] Saving cookies and persistent storage state...")
+        print("\n[2/3] Сохранение cookies и состояния сессии...")
         time.sleep(2)
-        context.close()
+        try:
+            context.close()
+        except Exception:
+            pass
 
-    print("[3/3] [OK] Session profile successfully saved!")
-    print(f"      You can now start the daemon: .\\start.ps1\n")
+    print("[3/3] [OK] Профиль сессии успешно сохранен!")
+    try:
+        from core.healer import config_healer
+        if prov == "chatgpt":
+            alias_name = "ChatGPT Free / Plus (Веб-сессия)"
+        elif prov == "deepseek":
+            alias_name = "DeepSeek Chat / Reasoner (Веб-сессия)"
+        elif prov == "qwen":
+            alias_name = "Qwen Max / Coder (Веб-сессия)"
+        elif prov == "grok":
+            alias_name = "xAI Grok 3 (Веб-сессия)"
+        else:
+            alias_name = f"{prov.upper()} Web Session ({account_id})"
+        acc, mods = config_healer.register_web_session(
+            provider=prov,
+            account_id=account_id,
+            alias=alias_name,
+            profile_dir=f"browser_profiles/{account_id}"
+        )
+        print(f"      Сессия зарегистрирована в subscriptions.yaml (id={acc.id})\n")
+    except Exception as e:
+        print(f"      Предупреждение при регистрации в subscriptions: {e}\n")
 
 def kill_zombie_browser_processes(profile_path: Path):
     """Terminates stale Chrome/Edge processes holding this specific profile directory on Windows."""
@@ -180,6 +218,7 @@ def authenticate_desktop(provider: str, account_id: str = None):
 
     profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
+    kill_zombie_browser_processes(profile_dir)
 
     # Release any lingering zombie Chrome/Edge processes holding this profile
     kill_zombie_browser_processes(profile_dir)

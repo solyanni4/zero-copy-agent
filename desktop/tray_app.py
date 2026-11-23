@@ -130,75 +130,13 @@ def check_gui_available() -> bool:
 from desktop.app_icon import create_default_icon, ensure_icon_file
 from core.config import config
 
-def run_desktop_auth(provider: str):
-    """Окно авторизации для десктопной версии (поддерживает Chrome/Edge и диалог сохранения)."""
-    from core.auth import PROVIDER_URLS, detect_proxy
-    url = PROVIDER_URLS.get(provider.lower(), "https://gemini.google.com/app")
-    profile_dir = Path(config.browser.user_data_dir).resolve()
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    proxy_server = detect_proxy()
-    proxy_cfg = {"server": proxy_server} if proxy_server else None
-
-    print(f"[Auth Assistant] Launching browser for {provider.upper()} at {url}...")
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        context = None
-        for channel in ["chrome", "msedge", None]:
-            try:
-                kwargs = {
-                    "user_data_dir": str(profile_dir),
-                    "headless": False,
-                    "viewport": {"width": 1280, "height": 800},
-                    "args": [
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-first-run",
-                        "--no-default-browser-check"
-                    ],
-                    "ignore_default_args": ["--enable-automation"]
-                }
-                if channel:
-                    kwargs["channel"] = channel
-                if proxy_cfg:
-                    kwargs["proxy"] = proxy_cfg
-                context = p.chromium.launch_persistent_context(**kwargs)
-                break
-            except Exception:
-                if channel:
-                    continue
-                raise
-
-        page = context.new_page() if len(context.pages) == 0 else context.pages[0]
-        page.goto(url)
-
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(
-                0,
-                f"Открыт браузер для авторизации в {provider.upper()}.\n\n"
-                f"1. Войдите в свой аккаунт в окне браузера.\n"
-                f"2. Дождитесь загрузки веб-интерфейса чата.\n"
-                f"3. Нажмите 'ОК' в этом окне, чтобы сохранить профиль сессии.",
-                f"zero-copy-agent | Авторизация {provider.upper()}",
-                0x40 | 0x0
-            )
-        else:
-            try:
-                page.wait_for_event("close", timeout=300000)
-            except Exception:
-                pass
-
-        time.sleep(1)
-        context.close()
-        print(f"[Auth Assistant] Session successfully saved for {provider}!")
-
-        # Автоматически регистрируем активную веб-сессию в subscriptions.yaml
-        try:
-            from core.healer import config_healer
-            alias_name = "ChatGPT Free / Plus (Веб-сессия)" if provider.lower() == "chatgpt" else f"{provider.upper()} (Веб-сессия)"
-            config_healer.register_web_session(provider=provider, alias=alias_name)
-            print(f"[Auth Assistant] Registered {provider} in subscriptions.yaml")
-        except Exception as e:
-            print(f"[Auth Assistant] Error registering in subscriptions: {e}")
+def run_desktop_auth(provider: str, account_id: Optional[str] = None):
+    """Окно авторизации для десктопной версии (сохраняет сессию в изолированную подпапку browser_profiles/<account_id>)."""
+    from core.auth import authenticate
+    try:
+        authenticate(provider, account_id=account_id)
+    except Exception as e:
+        print(f"[Auth Assistant] Error during authorization of {provider}: {e}")
 
 class ZeroCopyDesktopApp:
     def __init__(self):

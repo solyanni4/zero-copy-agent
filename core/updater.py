@@ -19,7 +19,7 @@ try:
     from core.version import __version__
     CURRENT_VERSION = __version__
 except Exception:
-    CURRENT_VERSION = "1.4.0"
+    CURRENT_VERSION = "1.6.0"
 GITHUB_REPO = "solyanni4/zero-copy-agent"
 
 
@@ -29,6 +29,12 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
     Respects HTTPS_PROXY or HTTP_PROXY environment variables if present, or uses direct connection.
     """
     proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
+    if not proxy_url:
+        try:
+            from core.auth import detect_proxy
+            proxy_url = detect_proxy()
+        except Exception:
+            proxy_url = None
     
     repos = [GITHUB_REPO]
     latest_release = None
@@ -80,7 +86,14 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
 
     download_url = html_url
     for asset in latest_release.get("assets", []):
-        if asset.get("name", "").endswith(".exe"):
+        asset_name = asset.get("name", "").lower()
+        if sys.platform == "win32" and asset_name.endswith(".exe"):
+            download_url = asset.get("browser_download_url", html_url)
+            break
+        elif sys.platform.startswith("linux") and ("linux" in asset_name or asset_name.endswith(".tar.gz")):
+            download_url = asset.get("browser_download_url", html_url)
+            break
+        elif sys.platform == "darwin" and ("darwin" in asset_name or "macos" in asset_name):
             download_url = asset.get("browser_download_url", html_url)
             break
 
@@ -274,6 +287,12 @@ def _run_update_worker(download_url: str = None):
 
         # 3. Download via proxy if present
         proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
+        if not proxy_url:
+            try:
+                from core.auth import detect_proxy
+                proxy_url = detect_proxy()
+            except Exception:
+                proxy_url = None
         handlers = []
         if proxy_url:
             handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))

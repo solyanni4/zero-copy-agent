@@ -128,12 +128,16 @@ class DLPShield:
                 continue
 
             def replacer(match):
-                # If pattern has capturing groups (e.g. password="secret" or ://user:pass@), mask the secret group
+                # If pattern has capturing groups (e.g. password="secret" or ://user:pass@), mask only the secret value
+                # Preserves prefixes (password=, secret:) and opening/closing quotes for Python/YAML/JSON syntax
                 if match.groups():
-                    full_str = match.group(0)
-                    secret_val = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                    target_group = 2 if len(match.groups()) > 1 and match.group(2) else 1
+                    secret_val = match.group(target_group)
                     placeholder = vault.add(secret_val, secret_type)
-                    return full_str.replace(secret_val, placeholder, 1)
+                    full_str = match.group(0)
+                    start = match.start(target_group) - match.start(0)
+                    end = match.end(target_group) - match.start(0)
+                    return full_str[:start] + placeholder + full_str[end:]
                 else:
                     secret_val = match.group(0)
                     return vault.add(secret_val, secret_type)

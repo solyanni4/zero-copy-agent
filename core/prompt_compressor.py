@@ -93,14 +93,32 @@ class PromptCompressorManager:
 
         self._drafts[draft_id] = draft
         self._events[draft_id] = asyncio.Event()
+        self.cleanup_old_drafts()
         logger.info(f"[CompressorManager] Created draft '{draft_id}': {orig_tokens}->{comp_tokens} tokens ({savings}% saved)")
         return draft
+
+    def cleanup_old_drafts(self, max_age_seconds: float = 1800.0) -> int:
+        """Prunes completed, approved or cancelled drafts older than max_age_seconds (default: 30 mins)."""
+        now = time.time()
+        to_delete = [
+            d_id for d_id, d in self._drafts.items()
+            if d.status in ("approved", "cancelled", "timeout_auto_approved")
+            and (now - d.created_at) > max_age_seconds
+        ]
+        for d_id in to_delete:
+            self._drafts.pop(d_id, None)
+            self._events.pop(d_id, None)
+            self._results.pop(d_id, None)
+        if to_delete:
+            logger.debug(f"[CompressorManager] Cleaned up {len(to_delete)} old drafts (> {max_age_seconds}s)")
+        return len(to_delete)
 
     def get_draft(self, draft_id: str) -> Optional[CompressionDraft]:
         return self._drafts.get(draft_id)
 
     def get_pending_drafts(self) -> List[Dict[str, Any]]:
         """Returns list of all drafts awaiting user approval."""
+        self.cleanup_old_drafts()
         return [
             d.to_dict()
             for d in sorted(self._drafts.values(), key=lambda x: x.created_at, reverse=True)

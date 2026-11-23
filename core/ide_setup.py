@@ -52,6 +52,7 @@ class HistoryManager:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_name = original_path.name.replace(".", "_")
         backup_filename = f"{target}_{safe_name}_{ts}.bak"
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = self.backup_dir / backup_filename
 
         if original_path.exists():

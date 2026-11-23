@@ -24,6 +24,9 @@ class GrokDriver(BaseDriver):
 
             # Wait for SPA hydration in a loop up to 8s (1s step)
             for _ in range(8):
+                # Fail-fast check for login redirect or captcha
+                await self.check_fast_auth_or_captcha("Grok")
+
                 if any(x in self.page.url for x in ("/login", "/signin", "/auth")):
                     return False
 
@@ -56,26 +59,14 @@ class GrokDriver(BaseDriver):
 
         if "grok.com" not in self.page.url:
             await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
+        else:
+            # Reusing warm tab: reset to new chat to prevent context bloat
+            await self.reset_to_new_chat()
 
-        # Suppress cookie/announcement overlays if present
-        try:
-            await self.page.evaluate('''() => {
-                const buttons = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
-                for (const b of buttons) {
-                    const txt = (b.innerText || '').toLowerCase().trim();
-                    if (txt === 'accept all' || txt === 'принять все' || txt === 'accept' || 
-                        txt === 'got it' || txt === 'close' || txt === 'dismiss' || txt === 'закрыть') {
-                        b.click();
-                    }
-                }
-                const closeBtns = document.querySelectorAll('button[aria-label="Close"], button.close');
-                for (const cb of closeBtns) {
-                    cb.click();
-                }
-            }''')
-        except Exception:
-            pass
+        # Fail-fast check and popup dismissal
+        await self.check_fast_auth_or_captcha("Grok")
+        await self.dismiss_popups()
 
         input_selectors = [
             'textarea[placeholder*="Grok"]',
@@ -93,6 +84,7 @@ class GrokDriver(BaseDriver):
                 continue
 
         if not input_elem:
+            await self.check_fast_auth_or_captcha("Grok")
             raise RuntimeError("Could not locate Grok prompt area. Please ensure you are logged in.")
 
         try:
@@ -142,26 +134,42 @@ class GrokDriver(BaseDriver):
         if not clicked:
             await self.page.keyboard.press("Enter")
 
-        # Wait for generation to complete with bounded wall-clock timeout
-        await asyncio.sleep(2)
-        max_wait = 55.0
-        start_time = time.monotonic()
-        last_text = ""
-        while (time.monotonic() - start_time) < max_wait:
-            await asyncio.sleep(1)
-            elapsed = time.monotonic() - start_time
-
+        # Smart response waiting with TTFT cut-off and stability detection
+        async def is_generating_fn() -> bool:
             stop_btn = await self.page.query_selector(
-                'button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"]'
+                'button[aria-label*="Stop"], div[role="button"][aria-label*="Stop"], button[class*="stop"]'
             )
-            if not stop_btn and elapsed > 3.0:
-                current_text = await self._extract_last_response()
-                if current_text and current_text == last_text:
-                    return current_text
-                last_text = current_text
+            return bool(stop_btn)
 
-        final_text = await self._extract_last_response()
-        return final_text or last_text or "[zero-copy-agent] Ответ от Grok получен, но не удалось извлечь DOM разметку."
+        try:
+            response_text = await self.wait_for_smart_response(
+                extract_fn=self._extract_last_response,
+                is_generating_fn=is_generating_fn,
+                ttft_timeout=25.0,
+                max_generation_time=120.0,
+                stability_window=3.5
+            )
+            return response_text or "[zero-copy-agent] Ответ от Grok получен, но не удалось извлечь DOM разметку."
+        except Exception as e:
+            await self.save_failure_screenshot("Grok")
+            raise
+
+    async def reset_to_new_chat(self):
+        """Resets Grok tab to a fresh conversation to avoid context accumulation."""
+        if not self.page or getattr(self.page, "is_closed", lambda: True)():
+            return
+        try:
+            new_btn = await self.page.query_selector(
+                'a[href="/"], button[aria-label*="New chat"], button:has-text("New chat"), button:has-text("Новый чат")'
+            )
+            if new_btn:
+                await new_btn.click()
+                await asyncio.sleep(0.5)
+            else:
+                if "/chat/" in self.page.url or "grok.com" not in self.page.url:
+                    await self.page.goto(self.URL, wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass
 
     async def send_prompt_stream(self, prompt: str) -> AsyncGenerator[str, None]:
         full_response = await self.send_prompt(prompt)

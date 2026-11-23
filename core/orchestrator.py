@@ -504,6 +504,8 @@ class HybridOrchestrator:
         else:
             is_browser_ready = getattr(self.browser_engine, "is_ready", False)
             resp = await self.browser_engine.query(compressed_prompt, target)
+            if is_standby_response(resp) and target != "mock-test":
+                raise RuntimeError(f"No active API keys or web sessions available for '{target}'. Mock response forbidden in cascade/live mode.")
             if inject_signature:
                 if not is_browser_ready and target != "mock-test":
                     badge = format_badge("mock-test", role="Демо-симулятор (Сессия не подключена)")
@@ -1567,9 +1569,9 @@ class HybridOrchestrator:
             workspace_dir=ws_path,
             orchestrator=self,
             resume=resume,
-            architect_model=getattr(self, "cascade_architect_model", "gemini-4-neon"),
-            executor_model=getattr(self, "cascade_executor_model", "ollama/qwen2.5-coder:14b"),
-            reviewer_model=getattr(self, "cascade_reviewer_model", "gemini-4-neon")
+            architect_model=getattr(self, "architect_model", "gemini-4-neon"),
+            executor_model=getattr(self, "executor_model", "ollama/qwen2.5-coder:14b"),
+            reviewer_model=getattr(self, "reviewer_model", "gemini-4-neon")
         )
 
         status_icon = "[OK]" if res["status"] == "completed" else "[FAILED]"
