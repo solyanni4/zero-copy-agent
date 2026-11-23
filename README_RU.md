@@ -7,7 +7,7 @@
 ### Локальный LLM-шлюз и каскадный оркестратор для редакторов кода. Экономит токены, прячет пароли и подключается к IDE в один клик.
 
 [![Version: 1.6.0](https://img.shields.io/badge/Release-v1.6.0-brightgreen.svg)](https://github.com/solyanni4/zero-copy-agent/releases/latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](./LICENSE)
 [![API: OpenAI + MCP](https://img.shields.io/badge/API-OpenAI%20%2B%20MCP-orange.svg)](#)
 [![Ollama: Local GPU](https://img.shields.io/badge/Ollama-0%20Token%20Cost-black?logo=ollama)](#)
 [![Security: Data Shield](https://img.shields.io/badge/Security-Data%20Shield-green.svg)](#)
@@ -169,8 +169,12 @@ docker compose up -d
 
 ## Лицензия
 
-Распространяется под свободной лицензией **MIT**.  
+Проект распространяется под свободной лицензией **GNU Affero General Public License v3.0 (AGPL-3.0)**.  
 Автор: **Сергей Солянников ([Solyanni4](https://github.com/solyanni4))**
+
+* **Свободное использование и модификация:** вы можете бесплатно использовать, изучать и изменять исходный код проекта.
+* **Сохранение авторства и копилефт:** при любом распространении, модификации или сетевом развертывании (включая предоставление доступа через сеть / SaaS) необходимо сохранять уведомление об авторстве и открывать полный исходный код производных работ под той же лицензией AGPL-3.0.
+* **Коммерческое лицензирование:** для использования компонентов в закрытых коммерческих продуктах без открытия исходного кода требуется отдельная коммерческая лицензия автора.
 
 ---
 

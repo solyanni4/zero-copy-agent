@@ -7,7 +7,7 @@
 ### Local LLM gateway and cascading orchestrator for code editors. Saves tokens, strips secrets, and connects to your IDE in one click.
 
 [![Version: 1.6.0](https://img.shields.io/badge/Release-v1.6.0-brightgreen.svg)](https://github.com/solyanni4/zero-copy-agent/releases/latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](./LICENSE)
 [![API: OpenAI + MCP](https://img.shields.io/badge/API-OpenAI%20%2B%20MCP-orange.svg)](#)
 [![Ollama: Local GPU](https://img.shields.io/badge/Ollama-0%20Token%20Cost-black?logo=ollama)](#)
 [![Security: Data Shield](https://img.shields.io/badge/Security-Data%20Shield-green.svg)](#)
@@ -135,5 +135,9 @@ Found a bug or have an optimization idea?
 
 ## License
 
-Open-source under the **MIT** license.  
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.  
 Author: **Sergey Solyannikov ([Solyanni4](https://github.com/solyanni4))**
+
+* **Free Use and Modification:** You are free to run, study, and modify the code.
+* **Copyleft & Attribution:** Any redistribution, modification, or network deployment (including hosting it as a network service or SaaS) must preserve authorship notices and disclose the complete source code of modified works under the AGPL-3.0 license.
+* **Commercial Licensing:** Using zero-copy-agent components in proprietary closed-source solutions requires a separate commercial license from the author.

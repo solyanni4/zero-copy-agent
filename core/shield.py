@@ -5,6 +5,8 @@ BEFORE prompts are transmitted to external web subscriptions or cloud models.
 Replaces sensitive strings with reversible placeholders (__SEC_xx_TYPE__) and seamlessly
 restores them in the model's response.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
 
 import re
 import ipaddress

@@ -3,6 +3,9 @@ zero-copy-agent Unified Desktop Application (v1.0-beta)
 All-in-One Desktop Window + System Tray.
 Runs FastAPI/Uvicorn, WebView2 native desktop window, and System Tray in a single unified process.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
+
 import os
 import sys
 import socket

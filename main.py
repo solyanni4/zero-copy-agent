@@ -3,6 +3,9 @@ zero-copy-agent v1.6.0
 OpenAI-compatible Sidecar Gateway & Native Model Context Protocol (MCP) Server.
 Routes Web Chat Subscriptions, Local Ollama GPU, and provides tools for Antigravity, Cursor & Claude.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
+
 import asyncio
 import json
 import time

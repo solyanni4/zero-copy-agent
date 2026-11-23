@@ -2,6 +2,9 @@
 DAG Task Planner, Local Worker with AST/Test-gates, and Final Integrator.
 Implements autonomous multi-step problem solving for zero-copy-agent.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
+
 import os
 import re
 import ast

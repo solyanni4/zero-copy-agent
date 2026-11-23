@@ -3,6 +3,9 @@ Hybrid Orchestrator & Dynamic Aliases Engine for zero-copy-agent.
 Routes requests across Local GPU/Ollama, Cloud API Pools, Web Sessions,
 executes the 2-Step 'Architect' Cascade, and tracks Token Economics via SQLite WAL.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
+
 import time
 import asyncio
 import logging

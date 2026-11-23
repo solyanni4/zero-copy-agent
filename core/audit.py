@@ -5,6 +5,8 @@ Implements:
 2. Architect Audit (diff-based): semantic validation of implementation against architectural blueprint via JSON contract.
 3. Rework Loop Control: automated rework iterations with safety escalation on retry exhaustion.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
 
 import ast
 import re

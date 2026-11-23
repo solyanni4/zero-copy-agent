@@ -3,6 +3,9 @@ Browser Session Engine for zero-copy-agent.
 Manages headless persistent contexts, driver lifecycle, stealth, proxy routing,
 session keep-alive daemon (SKD), and LRU multi-account isolation.
 """
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
+
 import asyncio
 import os
 import sys
