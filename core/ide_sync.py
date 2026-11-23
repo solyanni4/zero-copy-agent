@@ -59,7 +59,7 @@ def apply_rule_to_file(file_path: Path, rule_block: str) -> bool:
                 re.DOTALL
             )
             if pattern.search(content):
-                new_content = pattern.sub(rule_block, content)
+                new_content = pattern.sub(lambda _: rule_block, content)
             else:
                 new_content = f"{rule_block}\n\n{content}".strip() + "\n"
         else:
