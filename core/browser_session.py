@@ -113,6 +113,7 @@ class BrowserSessionEngine:
         self.is_ready = False
         self.mock_driver = MockDriver()
         self.keepalive_task = None
+        self.warmup_task = None
 
     @property
     def context(self):
@@ -162,9 +163,40 @@ class BrowserSessionEngine:
             self.is_ready = True
             logger.info("[ENGINE] Browser runtime ready in lazy multi-account standby mode.")
             self.keepalive_task = asyncio.create_task(self._keepalive_loop())
+            self.warmup_task = asyncio.create_task(self.warmup_active_accounts())
         except Exception as e:
             logger.warning(f"[ENGINE-WARN] Could not initialize Browser runtime ({e}). Running in Standby mode.")
             self.is_ready = False
+
+    async def warmup_active_accounts(self):
+        """Pre-warms active browser_session profiles in the background on startup."""
+        try:
+            await asyncio.sleep(1.0)
+            from core.healer import config_healer
+            sub_cfg, _ = config_healer.load_or_create()
+            active_accs = [
+                a for a in sub_cfg.accounts
+                if a.auth_type == "browser_session" and a.status == "active"
+            ]
+            if not active_accs:
+                logger.info("[ENGINE] No active browser_session accounts to warm up.")
+                return
+
+            logger.info(f"[ENGINE] Starting background warmup for {len(active_accs)} browser session(s)...")
+            for acc in active_accs:
+                try:
+                    logger.info(f"[ENGINE] Warming up browser profile for account '{acc.id}' ({acc.provider})...")
+                    ready = await self.ensure_account_ready(acc.id)
+                    if ready:
+                        logger.info(f"[ENGINE] Browser profile for account '{acc.id}' is warm and ready.")
+                    else:
+                        logger.warning(f"[ENGINE] Warmup for account '{acc.id}' did not complete ready state.")
+                except Exception as ex:
+                    logger.warning(f"[ENGINE] Background warmup error for account '{acc.id}': {ex}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"[ENGINE] Background browser warmup task failed: {e}")
 
     async def close_account(self, account_id: str):
         """Cleanly closes browser context for a specific account without affecting others."""
@@ -376,6 +408,8 @@ class BrowserSessionEngine:
         """Gracefully closes all browser contexts and stops playwright runtime."""
         if self.keepalive_task:
             self.keepalive_task.cancel()
+        if self.warmup_task and not self.warmup_task.done():
+            self.warmup_task.cancel()
         for aid in list(self._contexts.keys()):
             await self.close_account(aid)
         if self.playwright:
@@ -390,14 +424,18 @@ class BrowserSessionEngine:
         """Executes query through selected account driver with automatic fallback."""
         target_acc = self.resolve_target_account(model_id, account_id)
         if not target_acc:
-            return await self.mock_driver.send_prompt(prompt)
+            if model_id == "mock-test":
+                return await self.mock_driver.send_prompt(prompt)
+            raise RuntimeError(f"Для модели '{model_id}' нет настроенной или авторизованной веб-сессии.")
 
         lock = self._get_lock(target_acc)
         async with lock:
             ready = await self.ensure_account_ready(target_acc)
             if not ready:
-                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready. Serving Mock.")
-                return await self.mock_driver.send_prompt(prompt)
+                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
+                if model_id == "mock-test":
+                    return await self.mock_driver.send_prompt(prompt)
+                raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
 
             prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
             driver = self.get_driver(target_acc)
@@ -452,24 +490,30 @@ class BrowserSessionEngine:
                         pass
                     raise
 
-            return await self.mock_driver.send_prompt(prompt)
+            if model_id == "mock-test":
+                return await self.mock_driver.send_prompt(prompt)
+            raise RuntimeError(f"Все попытки вызова веб-сессии для модели '{model_id}' завершились сбоем.")
 
     async def query_stream(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams response tokens from web session."""
         target_acc = self.resolve_target_account(model_id, account_id)
         if not target_acc:
-            async for token in self.mock_driver.send_prompt_stream(prompt):
-                yield token
-            return
+            if model_id == "mock-test":
+                async for token in self.mock_driver.send_prompt_stream(prompt):
+                    yield token
+                return
+            raise RuntimeError(f"Для модели '{model_id}' нет настроенной или авторизованной веб-сессии.")
 
         lock = self._get_lock(target_acc)
         async with lock:
             ready = await self.ensure_account_ready(target_acc)
             if not ready:
-                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready. Serving Mock stream.")
-                async for token in self.mock_driver.send_prompt_stream(prompt):
-                    yield token
-                return
+                logger.warning(f"[ENGINE-WARN] Account '{target_acc}' is not ready.")
+                if model_id == "mock-test":
+                    async for token in self.mock_driver.send_prompt_stream(prompt):
+                        yield token
+                    return
+                raise RuntimeError(f"Веб-сессия для аккаунта '{target_acc}' не готова к работе.")
 
             prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else "gemini")
             driver = self.get_driver(target_acc)
@@ -526,7 +570,10 @@ class BrowserSessionEngine:
                         pass
                     raise
 
-            async for token in self.mock_driver.send_prompt_stream(prompt):
-                yield token
+            if model_id == "mock-test":
+                async for token in self.mock_driver.send_prompt_stream(prompt):
+                    yield token
+                return
+            raise RuntimeError(f"Все попытки стриминга веб-сессии для модели '{model_id}' завершились сбоем.")
 
 engine = BrowserSessionEngine()

@@ -242,10 +242,21 @@ class ArchitectAudit:
         """Constructs concise prompt containing only plan and diff/code."""
         return self.AUDIT_PROMPT_TEMPLATE.format(plan=plan, code=code)
 
+    def is_valid_audit_response(self, raw_response: str) -> bool:
+        """Returns True only if response can be parsed into valid audit JSON with PASS or REJECT verdict."""
+        if not raw_response or not isinstance(raw_response, str):
+            return False
+        try:
+            parsed = self.parse_audit_response(raw_response)
+            return parsed.get("verdict") in ("PASS", "REJECT")
+        except Exception:
+            return False
+
     def parse_audit_response(self, raw_response: str) -> Dict[str, Any]:
         """
         Robust JSON extractor that handles markdown code fences, comments, or raw JSON.
         Returns: {"verdict": "PASS"|"REJECT", "issues": List[Dict]}
+        Raises ValueError if output cannot be parsed into a valid JSON audit structure.
         """
         text = raw_response.strip()
 
@@ -282,15 +293,4 @@ class ArchitectAudit:
             }
         except Exception as e:
             logger.warning(f"[Audit] Failed to parse auditor JSON: {e}. Raw snippet: {text[:200]}")
-            # If the auditor wrote plain text indicating PASS or OK
-            if "PASS" in text.upper() and "REJECT" not in text.upper():
-                return {"verdict": "PASS", "issues": []}
-            return {
-                "verdict": "PASS",
-                "issues": [{
-                    "file": "audit_parser",
-                    "severity": "warning",
-                    "description": f"Аудитор вернул неструктурированный ответ: {text[:150]}",
-                    "fix_instruction": "Убедитесь в соответствии архитектурному плану."
-                }]
-            }
+            raise ValueError(f"Failed to parse auditor JSON: {e}")

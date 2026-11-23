@@ -6,7 +6,7 @@ executes the 2-Step 'Architect' Cascade, and tracks Token Economics via SQLite W
 import time
 import asyncio
 import logging
-from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any
+from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any, Callable
 from core.drivers.ollama import OllamaDriver
 from core.drivers.mock import MockDriver
 from core.models import ModelCard
@@ -26,6 +26,32 @@ from core.mesh import mesh
 from core.config import config
 
 logger = logging.getLogger("zcao.orchestrator")
+
+
+def is_standby_response(res: Any) -> bool:
+    """Checks whether the response is a Mock/Standby fallback stub rather than actual LLM output."""
+    if not res:
+        return True
+    if isinstance(res, dict):
+        text_content = res.get("text") or res.get("response") or res.get("content") or ""
+        if text_content:
+            res = text_content
+        else:
+            return False
+    elif not isinstance(res, str):
+        return False
+
+    standby_markers = (
+        "[ENGINE-STANDBY]",
+        "[STANDBY]",
+        "Session not authenticated",
+        "Could not locate",
+        "IDE связь установлена успешно",
+        "Standby / Demo",
+        "Режим: Standby",
+        "Режим: Standalone",
+    )
+    return any(marker in res for marker in standby_markers)
 
 DEFAULT_ALIASES = {
     "tier:local-fast": "ollama/qwen2.5-coder:14b",
@@ -697,7 +723,7 @@ class HybridOrchestrator:
             if active_web:
                 try:
                     res = await self.browser_engine.query(prompt, resolved_id, account_id=active_web)
-                    if res and not any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated")):
+                    if res and not is_standby_response(res):
                         return res
                 except Exception as e:
                     logger.warning(f"[Orchestrator] Web session query failed for '{provider}' ({e}).")
@@ -712,7 +738,9 @@ class HybridOrchestrator:
 
         # 4. Fallback to browser session if ready
         if browser_is_ready is True:
-            return await self.browser_engine.query(prompt, resolved_id)
+            res = await self.browser_engine.query(prompt, resolved_id)
+            if not is_standby_response(res):
+                return res
 
         # 5. Check global fallback order for any active key matching the provider
         cascade_cfg = getattr(config, "cascade", None)
@@ -722,7 +750,10 @@ class HybridOrchestrator:
                 if mesh.get_active_key(p):
                     return await self._query_api_provider(p, resolved_id, prompt)
 
-        return await self.browser_engine.query(prompt, resolved_id)
+        res = await self.browser_engine.query(prompt, resolved_id)
+        if is_standby_response(res):
+            raise RuntimeError(f"Candidate '{model_id}' returned Standby / Mock response.")
+        return res
 
     async def _query_model_stream(self, model_id: str, prompt: str) -> AsyncGenerator[str, None]:
         """Streams prompt response via QuotaMesh API, Ollama GPU, or Browser Engine."""
@@ -785,11 +816,52 @@ class HybridOrchestrator:
         async for chunk in self.browser_engine.query_stream(prompt, model_id):
             yield chunk
 
+    def _is_candidate_configured(self, candidate: str) -> bool:
+        """Checks if a model candidate has a real configured account (API key, web session, or local Ollama)."""
+        if not candidate:
+            return False
+
+        # Support test mock engines and synthetic test models
+        if candidate.startswith(("mock-", "test-", "model-", "slow-", "fast-")):
+            return True
+        if self.browser_engine and type(self.browser_engine).__name__ == "MockEngine":
+            return True
+
+        cand_low = candidate.lower()
+        # Ollama / local weights
+        if cand_low.startswith("ollama/") or "coder" in cand_low or cand_low in ("tier:local-fast", "ollama"):
+            return True
+        # Detected provider
+        prov = self._detect_provider(candidate)
+        if prov:
+            # Check QuotaMesh accounts
+            accounts = mesh.get_candidate_accounts(prov, model_id=candidate)
+            if accounts:
+                return True
+            # Check active API key in mesh
+            if mesh.get_active_key(prov):
+                return True
+            # Check subscriptions.yaml for active browser session or API key
+            try:
+                sub_cfg, _ = config_healer.load_or_create()
+                for acc in sub_cfg.accounts:
+                    if acc.status == "active" and acc.provider == prov:
+                        if acc.auth_type == "api_key" and acc.api_key:
+                            return True
+                        if acc.auth_type == "browser_session":
+                            for m in acc.models:
+                                if m.status == "active" and (m.id == candidate or candidate in m.id):
+                                    return True
+            except Exception:
+                pass
+        return False
+
     async def query_role_with_fallback(
         self,
         role: str,
         prompt: str,
-        req_id: str = ""
+        req_id: str = "",
+        validator: Optional[Callable[[str], bool]] = None
     ) -> Tuple[str, str]:
         """
         Executes prompt for a cascade role (planner, coder, reviewer) with automatic
@@ -827,11 +899,22 @@ class HybridOrchestrator:
             if g and g not in candidates:
                 candidates.append(g)
 
+        # Filter candidates: strictly keep only those with configured accounts or local Ollama
+        valid_candidates = [c for c in candidates if self._is_candidate_configured(c)]
+        if not valid_candidates:
+            valid_candidates = ["qwen2.5-coder:14b"]
+        candidates = valid_candidates
+
         candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
         last_error = None
         for i, candidate in enumerate(candidates):
             try:
-                return await self._query_candidate_for_role(role, candidate, prompt, req_id=req_id)
+                res, used_cand = await self._query_candidate_for_role(role, candidate, prompt, req_id=req_id)
+                if is_standby_response(res):
+                    raise RuntimeError(f"Candidate '{candidate}' returned Standby / Mock response.")
+                if validator and not validator(res):
+                    raise ValueError(f"Candidate '{candidate}' response failed format validation.")
+                return res, used_cand
             except Exception as e:
                 last_error = e
                 logger.warning(f"[Cascade] Candidate '{candidate}' failed for role '{role}': {e}. Switching to next fallback...")
@@ -917,7 +1000,7 @@ class HybridOrchestrator:
                         )
 
                     # Check for Standby response or unauthenticated fallback
-                    if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                    if is_standby_response(res):
                         logger.warning(
                             f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
                             f"returned Standby/Unauthenticated response. Failing over to next account..."
@@ -978,7 +1061,7 @@ class HybridOrchestrator:
                     timeout=candidate_timeout
                 )
 
-                if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                if is_standby_response(res):
                     logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response.")
                     if prov:
                         mesh.record_web_failure(prov, resolved_candidate)
@@ -1302,11 +1385,26 @@ class HybridOrchestrator:
                     model=rev_model
                 )
                 audit_prompt = self.auditor.build_audit_prompt(plan, current_code)
-                raw_audit, used_reviewer = await self.query_role_with_fallback("reviewer", audit_prompt, req_id=req_id)
-                audit_res = self.auditor.parse_audit_response(raw_audit)
-                verdict = audit_res.get("verdict", "PASS")
-                audit_issues = audit_res.get("issues", [])
-                critical_issues = [i for i in audit_issues if i.get("severity") == "critical"]
+                try:
+                    raw_audit, used_reviewer = await self.query_role_with_fallback(
+                        "reviewer", audit_prompt, req_id=req_id, validator=self.auditor.is_valid_audit_response
+                    )
+                    audit_res = self.auditor.parse_audit_response(raw_audit)
+                    verdict = audit_res.get("verdict", "PASS")
+                    audit_issues = audit_res.get("issues", [])
+                    critical_issues = [i for i in audit_issues if i.get("severity") == "critical"]
+                except Exception as e:
+                    logger.warning(f"[Cascade] Architect Audit candidate failed or returned non-JSON verdict (iteration {iteration_num}): {e}")
+                    verdict = "REJECT"
+                    used_reviewer = "unresolved_reviewer"
+                    audit_issues = [{
+                        "file": "audit",
+                        "severity": "critical",
+                        "description": f"Аудиторы не смогли проверить решение или вернули невалидный вердикт: {e}",
+                        "fix_instruction": "Проверьте реализацию и формат ответа аудитора."
+                    }]
+                    critical_issues = audit_issues
+                    audit_res = {"verdict": "REJECT", "issues": audit_issues}
 
                 if req_id:
                     analytics.record_event(req_id, "architect_audit", used_reviewer, f"Architect Audit verdict: {verdict} ({len(audit_issues)} issues)", audit_res)
