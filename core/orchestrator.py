@@ -614,19 +614,12 @@ class HybridOrchestrator:
                     logger.warning(f"[ORCHESTRATOR] API stream for '{target}' failed: {e}. Checking web session fallback...")
                     web_streamed = False
                     try:
-                        from core.healer import config_healer
-                        cfg, _ = config_healer.load_or_create()
-                        has_web = any(
-                            a.provider.lower() == provider.lower()
-                            and getattr(a, "auth_type", "") in ("browser_session", "web")
-                            and getattr(a, "status", "") == "active"
-                            for a in cfg.accounts
-                        )
-                        if has_web and hasattr(self.browser_engine, "query_stream"):
-                            logger.info(f"[ORCHESTRATOR] Falling back to web session for provider '{provider}'")
+                        active_web = mesh.get_active_web_account(provider)
+                        if active_web and mesh.is_available(active_web) and hasattr(self.browser_engine, "query_stream"):
+                            logger.info(f"[ORCHESTRATOR] Falling back to web session '{active_web}' for provider '{provider}'")
                             if inject_signature:
                                 yield format_badge(target, role="Web Session Fallback")
-                            async for tok in self.browser_engine.query_stream(compressed_prompt, target):
+                            async for tok in self.browser_engine.query_stream(compressed_prompt, target, account_id=active_web):
                                 yield tok
                             web_streamed = True
                     except Exception as web_err:
@@ -722,7 +715,7 @@ class HybridOrchestrator:
         # 2. Active Web Session in browser engine (Secondary Fallback)
         if browser_is_ready is True and provider:
             active_web = mesh.get_active_web_account(provider)
-            if active_web:
+            if active_web and mesh.is_available(active_web):
                 try:
                     res = await self.browser_engine.query(prompt, resolved_id, account_id=active_web)
                     if res and not is_standby_response(res):
@@ -784,7 +777,7 @@ class HybridOrchestrator:
         # 2. Active Web Session in browser engine (Secondary Fallback)
         if browser_is_ready is True and provider:
             active_web = mesh.get_active_web_account(provider)
-            if active_web:
+            if active_web and mesh.is_available(active_web):
                 async for chunk in self.browser_engine.query_stream(prompt, resolved_id, account_id=active_web):
                     yield chunk
                 return
@@ -814,9 +807,7 @@ class HybridOrchestrator:
 
         async for chunk in self.browser_engine.query_stream(prompt, resolved_id):
             yield chunk
-
-        async for chunk in self.browser_engine.query_stream(prompt, model_id):
-            yield chunk
+        return
 
     def _is_candidate_configured(self, candidate: str) -> bool:
         """Checks if a model candidate has a real configured account (API key, web session, or local Ollama)."""

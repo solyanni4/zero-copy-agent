@@ -11,7 +11,7 @@ import copy
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from core.config import get_runtime_cwd
@@ -141,7 +141,7 @@ class PresetsManager:
             for p in self._presets.values()
         ]
         payload = {
-            "version": "1.3.0",
+            "version": "1.6.0",
             "active_preset": self._active_preset_id,
             "presets": presets_data
         }

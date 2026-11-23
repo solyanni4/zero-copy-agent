@@ -11,6 +11,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from typing import Optional
 
 # Добавляем корень проекта в путь (безопасно для PyInstaller)
 if getattr(sys, "frozen", False):
@@ -202,9 +203,10 @@ class ZeroCopyDesktopApp:
     def copy_mcp_url_to_clipboard(self):
         """Копирует SSE MCP URL в буфер обмена."""
         mcp_url = f"http://{self.client_host}:{self.port}/sse"
-        if HAS_PYPERCLIP:
+        try:
+            import pyperclip
             pyperclip.copy(mcp_url)
-        else:
+        except ImportError:
             if sys.platform == "win32":
                 subprocess.run(f"echo {mcp_url}|clip", shell=True)
             elif sys.platform == "darwin":

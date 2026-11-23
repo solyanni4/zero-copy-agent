@@ -1,5 +1,5 @@
 /**
- * zero-copy-agent · v0.3.2 Production Operations Controller
+ * zero-copy-agent · v1.6.0 Production Operations Controller
  * Connected directly to FastAPI Sidecar Gateway & Native MCP Server
  */
 

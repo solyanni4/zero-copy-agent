@@ -574,8 +574,7 @@ def main():
             target_port = config.server.port or 8000
 
         app_inst = ZeroCopyUnifiedApp(port=target_port, start_hidden=True)
-        srv_thread = threading.Thread(target=app_inst._start_uvicorn, daemon=True)
-        srv_thread.start()
+        app_inst.start_api_server()
 
         health_url = f"http://127.0.0.1:{target_port}/health"
         status_url = f"http://127.0.0.1:{target_port}/v1/ui/status"
@@ -638,6 +637,8 @@ def main():
         print("  zero-copy-agent [ОПЦИИ]")
         print("\nОпции:")
         print("  --cli, --headless   Запуск в консольном/фоновом режиме без окна")
+        print("  --daemon            Запуск демона в фоне с проверкой готовности")
+        print("  --smoke-test        Быстрая проверка работоспособности сервера и выход")
         print("  --minimized         Запуск сразу в системном трее (без открытия окна)")
         print("  --auth <provider>   Запуск помощника авторизации (gemini, chatgpt, claude)")
         print("  --port <port>       Указать порт сервера (по умолчанию 8000)")
