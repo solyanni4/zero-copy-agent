@@ -18,6 +18,14 @@ class ActivityState:
     step: Optional[str] = None
     model: Optional[str] = None
     started_at: Optional[float] = None
+    stage: Optional[str] = None         # "planning" | "coding" | "audit" | "consensus"
+    stage_label: Optional[str] = None   # "Планирование" | "Кодинг" | "Аудит" | "Синтез"
+    source: Optional[str] = None        # "API Key" | "Web" | "Local GPU"
+    account: Optional[str] = None       # e.g. "gemini-2"
+    fallback_active: bool = False
+    fallback_reason: Optional[str] = None
+    parallel_architects: Optional[list] = None
+    task_summary: Optional[str] = None
     last_completed: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -31,6 +39,14 @@ class ActivityState:
             "model": self.model,
             "started_at": self.started_at,
             "elapsed_seconds": elapsed,
+            "stage": self.stage,
+            "stage_label": self.stage_label,
+            "source": self.source,
+            "account": self.account,
+            "fallback_active": self.fallback_active,
+            "fallback_reason": self.fallback_reason,
+            "parallel_architects": self.parallel_architects,
+            "task_summary": self.task_summary,
             "last_completed": self.last_completed,
         }
 
@@ -50,7 +66,11 @@ class ActivityTracker:
         tool: str,
         model: Optional[str] = None,
         step: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        stage: Optional[str] = None,
+        stage_label: Optional[str] = None,
+        source: Optional[str] = None,
+        account: Optional[str] = None
     ):
         """Marks agent as working on a specific tool/task and notifies listeners."""
         async with self._lock:
@@ -58,8 +78,16 @@ class ActivityTracker:
             self._state.state = "working"
             self._state.tool = tool
             self._state.model = model
-            self._state.step = step or "Initializing..."
+            self._state.step = step or "Инициализация..."
             self._state.started_at = now
+            self._state.stage = stage or (details.get("stage") if details else None)
+            self._state.stage_label = stage_label or (details.get("stage_label") if details else None)
+            self._state.source = source or (details.get("source") if details else None)
+            self._state.account = account or (details.get("account") if details else None)
+            self._state.fallback_active = False
+            self._state.fallback_reason = None
+            if details and "parallel_architects" in details:
+                self._state.parallel_architects = details["parallel_architects"]
             event_data = self._state.to_dict()
             if details:
                 event_data["details"] = details
@@ -74,13 +102,46 @@ class ActivityTracker:
         self,
         step: str,
         model: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        stage: Optional[str] = None,
+        stage_label: Optional[str] = None,
+        source: Optional[str] = None,
+        account: Optional[str] = None,
+        fallback_active: Optional[bool] = None,
+        fallback_reason: Optional[str] = None
     ):
         """Updates progress step during multi-step tasks."""
         async with self._lock:
             self._state.step = step
             if model:
                 self._state.model = model
+            if stage:
+                self._state.stage = stage
+            elif details and "stage" in details:
+                self._state.stage = details["stage"]
+            if stage_label:
+                self._state.stage_label = stage_label
+            elif details and "stage_label" in details:
+                self._state.stage_label = details["stage_label"]
+            if source:
+                self._state.source = source
+            elif details and "source" in details:
+                self._state.source = details["source"]
+            if account:
+                self._state.account = account
+            elif details and "account" in details:
+                self._state.account = details["account"]
+            if fallback_active is not None:
+                self._state.fallback_active = fallback_active
+            elif details and "fallback_active" in details:
+                self._state.fallback_active = details["fallback_active"]
+            if fallback_reason is not None:
+                self._state.fallback_reason = fallback_reason
+            elif details and "fallback_reason" in details:
+                self._state.fallback_reason = details["fallback_reason"]
+            if details and "parallel_architects" in details:
+                self._state.parallel_architects = details["parallel_architects"]
+
             event_data = self._state.to_dict()
             if details:
                 event_data["details"] = details

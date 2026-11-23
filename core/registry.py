@@ -14,6 +14,137 @@ from core.attribution import get_display_name
 
 logger = logging.getLogger("zcao.registry")
 
+
+def classify_model(model_id: str, provider: str = "") -> Dict[str, Any]:
+    """
+    Classifies model power and speed tier with human badges:
+    - '🔥 Сильная': flagship/reasoning models (pro, opus, reasoner, o1, o3, max, neon, advanced, r1).
+    - '⚡ Быстрая': fast models (flash, sonnet, mini, haiku, turbo, plus).
+    - '🪶 Базовая': lightweight/small models (lite, nano, 3b, 7b, small).
+    - '🖥️ Локальная GPU': local Ollama models (14b and higher: '🔥 Сильная · Локальная GPU').
+    """
+    import re
+    low = (model_id or "").lower()
+    prov_low = (provider or "").lower()
+    is_ollama = prov_low == "ollama" or low.startswith("ollama/") or any(k in low for k in ("coder:14b", "coder:32b", ":7b", ":14b", ":32b"))
+
+    tokens = set(re.split(r"[-_:\.\s/]+", low))
+    strong_keywords = ["pro", "opus", "reasoner", "o1", "o3", "max", "neon", "advanced", "r1"]
+    fast_keywords = ["flash", "sonnet", "mini", "haiku", "turbo", "plus"]
+    base_keywords = ["lite", "nano", "3b", "7b", "small"]
+
+    def has_kw(k_list):
+        for k in k_list:
+            if k in tokens:
+                return True
+            if any(t.startswith(k) or t.endswith(k) for t in tokens if t != "gemini"):
+                return True
+        return False
+
+    if is_ollama:
+        is_large = any(s in low for s in ("14b", "32b", "70b", "r1-14b", "r1-32b", "r1-70b"))
+        if is_large or "coder:14b" in low or "coder:32b" in low:
+            return {
+                "tier": "strong_local",
+                "badge": "🔥 Сильная · Локальная GPU",
+                "short_badge": "🔥 Сильная · Локальная GPU",
+                "is_local": True,
+                "icon": "🖥️"
+            }
+        return {
+            "tier": "local",
+            "badge": "🖥️ Локальная GPU",
+            "short_badge": "🖥️ Локальная GPU",
+            "is_local": True,
+            "icon": "🖥️"
+        }
+
+    if has_kw(strong_keywords):
+        return {
+            "tier": "strong",
+            "badge": "🔥 Сильная",
+            "short_badge": "🔥 Сильная",
+            "is_local": False,
+            "icon": "🔥"
+        }
+    if has_kw(fast_keywords):
+        return {
+            "tier": "fast",
+            "badge": "⚡ Быстрая",
+            "short_badge": "⚡ Быстрая",
+            "is_local": False,
+            "icon": "⚡"
+        }
+    if has_kw(base_keywords):
+        return {
+            "tier": "base",
+            "badge": "🪶 Базовая",
+            "short_badge": "🪶 Базовая",
+            "is_local": False,
+            "icon": "🪶"
+        }
+
+    return {
+        "tier": "fast",
+        "badge": "⚡ Быстрая",
+        "short_badge": "⚡ Быстрая",
+        "is_local": False,
+        "icon": "⚡"
+    }
+
+
+def format_model_with_badge(model_id: str, provider: str = "") -> str:
+    """Formats model name with readable class badge, e.g. 'Gemini 3.8 Flash [⚡ Быстрая]'."""
+    info = classify_model(model_id, provider)
+    display = get_display_name(model_id)
+    return f"{display} [{info['short_badge']}]"
+
+
+def get_best_replacement_model(missing_model: str, role: str, available_models: List[str]) -> Optional[str]:
+    """
+    Selects the best available replacement model when a chosen model becomes unavailable.
+    - For architect / reviewer: prefers '🔥 Сильная', then '⚡ Быстрая'.
+    - For executor / coder: prefers '🖥️ Локальная GPU', then '⚡ Быстрая'.
+    """
+    if not available_models:
+        return None
+
+    role_low = (role or "").lower()
+    is_architect_like = any(r in role_low for r in ("arch", "plan", "rev", "audit"))
+
+    scored = []
+    for m in available_models:
+        info = classify_model(m)
+        tier = info["tier"]
+        score = 0
+        if is_architect_like:
+            if tier == "strong":
+                score = 100
+            elif tier == "strong_local":
+                score = 80
+            elif tier == "fast":
+                score = 60
+            elif tier == "local":
+                score = 40
+            else:
+                score = 20
+        else:
+            # executor / coder
+            if tier == "strong_local":
+                score = 100
+            elif tier == "local":
+                score = 85
+            elif tier == "fast":
+                score = 70
+            elif tier == "strong":
+                score = 50
+            else:
+                score = 20
+        scored.append((score, m))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[0][1] if scored else available_models[0]
+
 class ProviderHealth(BaseModel):
     name: str
     connected: bool
@@ -333,11 +464,21 @@ class ModelRegistry:
                 continue
             seen_ids.add(mid)
 
+            prov = item.get("provider", "core")
+            c_info = classify_model(mid, prov)
+            is_conn = item.get("connected", False) or mid in active_ids
+
             card = ModelCard(
                 id=mid,
                 object="model",
                 created=int(now),
-                owned_by=f"zero-copy-agent:{item.get('provider', 'core')}"
+                owned_by=f"zero-copy-agent:{prov}",
+                tier=c_info["tier"],
+                badge=c_info["badge"],
+                short_badge=c_info["short_badge"],
+                status="active" if is_conn else "disabled",
+                display_name=format_model_with_badge(mid, prov),
+                is_local=c_info["is_local"]
             )
 
             all_cards.append(card)

@@ -34,6 +34,7 @@ class PolicyUpdateRequest(BaseModel):
     max_rework_iterations: Optional[int] = None
     active_model: Optional[str] = None
     architect_model: Optional[str] = None
+    architect_models: Optional[List[str]] = None
     executor_model: Optional[str] = None
     reviewer_model: Optional[str] = None
 
@@ -68,6 +69,7 @@ async def get_ui_system_status(request: Request):
         "max_rework_iterations": getattr(orchestrator, "max_rework_iterations", getattr(config.cascade, "max_rework_iterations", 2)) if orchestrator else getattr(config.cascade, "max_rework_iterations", 2),
         "active_model": getattr(orchestrator, "active_model", "cascade:architect") if orchestrator else "cascade:architect",
         "architect_model": getattr(orchestrator, "architect_model", getattr(config.cascade, "architect_model", "gemini-4-neon")) if orchestrator else getattr(config.cascade, "architect_model", "gemini-4-neon"),
+        "architect_models": getattr(orchestrator, "architect_models", getattr(config.cascade, "architect_models", [getattr(config.cascade, "architect_model", "gemini-4-neon")])) if orchestrator else getattr(config.cascade, "architect_models", ["gemini-4-neon"]),
         "executor_model": getattr(orchestrator, "executor_model", getattr(config.cascade, "coder_model", "qwen2.5-coder:14b")) if orchestrator else getattr(config.cascade, "coder_model", "qwen2.5-coder:14b"),
         "reviewer_model": getattr(orchestrator, "reviewer_model", getattr(config.cascade, "auditor_model", "gemini-4-neon")) if orchestrator else getattr(config.cascade, "auditor_model", "gemini-4-neon")
     }
@@ -112,6 +114,14 @@ async def update_ui_policies(request: Request, body: PolicyUpdateRequest):
         orchestrator.active_model = body.active_model
     if body.architect_model is not None:
         orchestrator.architect_model = body.architect_model
+        if not body.architect_models:
+            orchestrator.architect_models = [body.architect_model]
+    if body.architect_models is not None:
+        orchestrator.architect_models = list(body.architect_models)
+        if body.architect_models:
+            orchestrator.architect_model = body.architect_models[0]
+        if hasattr(config, "cascade") and config.cascade:
+            config.cascade.architect_models = list(body.architect_models)
     if body.executor_model is not None:
         orchestrator.executor_model = body.executor_model
     if body.reviewer_model is not None:
@@ -128,6 +138,7 @@ async def update_ui_policies(request: Request, body: PolicyUpdateRequest):
             "max_rework_iterations": orchestrator.max_rework_iterations,
             "active_model": orchestrator.active_model,
             "architect_model": orchestrator.architect_model,
+            "architect_models": getattr(orchestrator, "architect_models", [orchestrator.architect_model]),
             "executor_model": orchestrator.executor_model,
             "reviewer_model": orchestrator.reviewer_model
         }

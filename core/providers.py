@@ -104,10 +104,33 @@ def list_presets() -> List[Dict[str, Any]]:
     return list(API_PRESETS.values())
 
 
+NON_TEXT_PATTERNS = [
+    "tts", "image", "embedding", "lyria", "aqa", "audio", "live", "robotics", "computer-use", "imagen", "dall-e", "whisper"
+]
+
+
+def clean_and_filter_model_id(raw_id: str) -> Optional[str]:
+    """
+    Cleans model identifier and filters out non-text/specialized multi-modal models.
+    Strips 'models/' prefix if present (e.g. from Google /v1beta/openai/models).
+    """
+    if not raw_id or not isinstance(raw_id, str):
+        return None
+    mid = raw_id.strip()
+    if mid.startswith("models/"):
+        mid = mid[len("models/"):]
+    low = mid.lower()
+    for pat in NON_TEXT_PATTERNS:
+        if pat in low:
+            return None
+    return mid
+
+
 async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: float = 8.0) -> List[str]:
     """
     Attempts to discover active models from an OpenAI-compatible /v1/models endpoint.
-    Returns list of model IDs or empty list if discovery endpoint is unsupported.
+    Returns filtered list of text model IDs (without 'models/' prefix, excluding non-text models)
+    or empty list if discovery endpoint is unsupported.
     """
     if not base_url:
         return []
@@ -128,12 +151,13 @@ async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: f
                 raw_models = data.get("data", [])
                 result = []
                 for m in raw_models:
-                    if isinstance(m, dict) and "id" in m:
-                        result.append(m["id"])
-                    elif isinstance(m, str):
-                        result.append(m)
-                logger.info(f"[Providers] Discovered {len(result)} models from {clean_base}")
-                return sorted(result)
+                    raw_id = m.get("id") if isinstance(m, dict) else (m if isinstance(m, str) else None)
+                    clean_id = clean_and_filter_model_id(raw_id)
+                    if clean_id:
+                        result.append(clean_id)
+                deduped = sorted(list(set(result)))
+                logger.info(f"[Providers] Discovered {len(deduped)} models from {clean_base}")
+                return deduped
             else:
                 logger.debug(f"[Providers] /models returned {resp.status_code} for {clean_base}")
     except Exception as e:

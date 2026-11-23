@@ -58,7 +58,7 @@
         <i data-lucide="cpu" class="w-4 h-4 text-cobalt shrink-0"></i>
         <span class="font-semibold text-[13px] text-ink truncate">zero-copy-agent</span>
       </div>
-      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.4.0</span>
+      <span class="font-mono text-[11px] text-muted bg-surface border border-hairline px-1.5 py-0.5 rounded shrink-0">v1.5.0</span>
     </div>
 
     <!-- Primary Navigation -->
@@ -283,6 +283,27 @@
 
       <!-- Right Inspector Panel (340px on desktop) -->
       <aside class="w-full lg:w-[340px] shrink-0 border-t lg:border-t-0 lg:border-l border-hairline bg-panel flex flex-col max-h-[260px] lg:max-h-none overflow-y-auto">
+        <!-- Live Orchestrator Card (Real-Time Status) -->
+        <div id="orchestrator-live-card" class="p-3 border-b border-hairline bg-surface transition-all duration-200">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-muted flex items-center gap-1.5">
+              <span id="orch-card-pulse" class="w-2 h-2 rounded-full bg-emerald shrink-0"></span>
+              <span id="orch-card-title">Оркестратор готов</span>
+            </span>
+            <span id="orch-card-timer" class="font-mono text-[10px] text-muted hidden">0.0s</span>
+          </div>
+          <div id="orch-card-body" class="mt-1.5 text-[12px] text-ink font-medium flex items-center justify-between gap-2">
+            <span id="orch-card-stage" class="truncate">🟢 Готов к задачам (IDLE)</span>
+            <span id="orch-card-source-badge" class="font-mono text-[10px] px-1.5 py-0.5 rounded border border-hairline bg-panel text-muted shrink-0 hidden"></span>
+          </div>
+          <div id="orch-card-details" class="mt-1 text-[11px] text-muted truncate">
+            <span id="orch-card-last-summary">Ожидание входящих запросов...</span>
+          </div>
+          <div id="orch-card-multi-arch" class="mt-1.5 pt-1.5 border-t border-hairline text-[10px] font-mono text-muted hidden flex flex-wrap gap-1">
+            <!-- Parallel architect chips -->
+          </div>
+        </div>
+
         <!-- DAG Stages Section -->
         <div class="px-3.5 py-2.5 border-b border-hairline bg-surface flex items-center justify-between">
           <h2 class="text-[12px] font-semibold text-ink uppercase">DAG-Конвейер</h2>
@@ -894,36 +915,31 @@
         </div>
         <form onsubmit="saveOrchestrationForm(event)" class="p-5 space-y-4">
           <div>
-            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Архитектора / Planner (Blueprint & спецификация)</label>
-            <select id="orch-architect-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
-              <option value="gemini-4-neon">Gemini 4 Neon (Deeper Analysis)</option>
-              <option value="deepseek-reasoner">DeepSeek R1 (DeepThink / Reasoner)</option>
-              <option value="gemini-advanced">Gemini Argon (Web)</option>
-              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet (Thinking)</option>
-              <option value="qwen-max">Qwen Max (Flagship)</option>
-              <option value="grok-3">xAI Grok 3 (Reasoning)</option>
-              <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local)</option>
-            </select>
+            <div class="flex items-center justify-between mb-1">
+              <label class="block text-[11px] font-semibold text-muted uppercase">1. Архитектор / Planner (Мультивыбор для параллельного анализа)</label>
+              <span class="text-[10px] text-cobalt font-medium">Выберите 2+ для Мульти-Архитектора</span>
+            </div>
+            <div id="orch-architect-multiselect" class="p-2 border border-hairline rounded bg-panel space-y-1.5 max-h-36 overflow-y-auto">
+              <!-- Dynamically populated checkboxes -->
+            </div>
+            <input type="hidden" id="orch-architect-model" value="gemini-4-neon" />
           </div>
           <div>
-            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Исполнителя / Coder (Кодогенерация)</label>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">2. Исполнитель / Coder (Кодогенерация)</label>
             <select id="orch-coder-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
-              <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B (Local GPU)</option>
-              <option value="qwen-coder">Qwen 2.5 Coder (Cloud / Web)</option>
-              <option value="deepseek-chat">DeepSeek V3 (Chat / Coder)</option>
-              <option value="gpt-4o">OpenAI GPT-4o</option>
-              <option value="grok-3-mini">xAI Grok 3 Mini</option>
-              <option value="gemini-4-neon">Gemini 4 Neon (Cloud)</option>
+              <option value="qwen2.5-coder:14b">Qwen2.5-Coder 14B [🔥 Сильная · Локальная GPU]</option>
+              <option value="deepseek-chat">DeepSeek V3 [⚡ Быстрая]</option>
+              <option value="gpt-4o">OpenAI GPT-4o [⚡ Быстрая]</option>
+              <option value="gemini-4-neon">Gemini 4 Neon [🔥 Сильная]</option>
             </select>
           </div>
           <div>
-            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">Модель Аудитора / Reviewer (Кросс-ревью и семантический аудит)</label>
+            <label class="block text-[11px] font-semibold text-muted uppercase mb-1">3. Аудитор / Reviewer (Кросс-ревью и семантический аудит)</label>
             <select id="orch-reviewer-model" class="w-full h-8 px-2 font-mono text-[12px] bg-panel border border-hairline rounded focus:outline-none focus:border-cobalt">
-              <option value="gemini-4-neon">Gemini 4 Neon (Deeper Analysis)</option>
-              <option value="chatgpt-plus">ChatGPT Plus / GPT-4o</option>
-              <option value="grok-3">xAI Grok 3</option>
-              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
-              <option value="deepseek-reasoner">DeepSeek R1</option>
+              <option value="gemini-4-neon">Gemini 4 Neon [🔥 Сильная]</option>
+              <option value="claude-3-7-sonnet">Claude 3.7 Sonnet [⚡ Быстрая]</option>
+              <option value="deepseek-reasoner">DeepSeek R1 [🔥 Сильная]</option>
+              <option value="chatgpt-plus">ChatGPT Plus / GPT-4o [⚡ Быстрая]</option>
             </select>
           </div>
           <div>

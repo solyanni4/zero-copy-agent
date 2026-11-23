@@ -258,11 +258,15 @@ class TaskPlanner:
         plan_data = None
         if orchestrator:
             try:
-                fn = getattr(orchestrator, "query_role_with_fallback", None)
-                if callable(fn) and inspect.iscoroutinefunction(fn):
-                    raw_resp, _ = await fn("planner", prompt)
+                arch_models = getattr(orchestrator, "architect_models", None)
+                if arch_models and len(arch_models) >= 2 and hasattr(orchestrator, "_run_multi_architect_analysis"):
+                    raw_resp, _ = await orchestrator._run_multi_architect_analysis(arch_models, prompt)
                 else:
-                    raw_resp = await orchestrator.query(prompt, architect_model, inject_signature=False)
+                    fn = getattr(orchestrator, "query_role_with_fallback", None)
+                    if callable(fn) and inspect.iscoroutinefunction(fn):
+                        raw_resp, _ = await fn("planner", prompt)
+                    else:
+                        raw_resp = await orchestrator.query(prompt, architect_model, inject_signature=False)
                 # Extract JSON block
                 clean_json = raw_resp.strip()
                 if "```json" in clean_json:
@@ -672,10 +676,12 @@ async def run_dag_pipeline(
             plan = None
 
     if not plan:
-        notify(f"Decomposing goal via Architect ({architect_model})...")
+        effective_archs = getattr(orchestrator, "architect_models", None)
+        arch_display = "+".join(effective_archs) if (effective_archs and len(effective_archs) >= 2) else architect_model
+        notify(f"Decomposing goal via Architect ({arch_display})...")
         try:
             from core.activity_tracker import activity_tracker
-            await activity_tracker.update_step(step=f"Decomposing goal via Architect ({architect_model})...", model=architect_model)
+            await activity_tracker.update_step(step=f"Decomposing goal via Architect ({arch_display})...", model=arch_display)
         except Exception:
             pass
         plan = await TaskPlanner.create_plan(

@@ -88,6 +88,7 @@ class CascadeConfig(BaseModel):
     require_compression_approval: bool = True
     active_preset: str = "auto"
     architect_model: str = "gemini-4-neon"
+    architect_models: List[str] = Field(default_factory=lambda: ["gemini-4-neon"])
     coder_model: str = "qwen2.5-coder:14b"
     auditor_model: str = "gemini-4-neon"
     executor_model: Optional[str] = None
@@ -117,7 +118,7 @@ class CascadeConfig(BaseModel):
     )
 
 class AppConfig(BaseModel):
-    version: str = "1.4.0"
+    version: str = "1.5.0"
     show_mcp_badge: bool = True
     server: ServerConfig = Field(default_factory=ServerConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)

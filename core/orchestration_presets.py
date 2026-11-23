@@ -25,6 +25,7 @@ class OrchestrationPreset(BaseModel):
     description: str
     is_builtin: bool = False
     planner_model: str = "gemini-4-neon"
+    architect_models: List[str] = Field(default_factory=lambda: ["gemini-4-neon"])
     coder_model: str = "qwen2.5-coder:14b"
     reviewer_models: List[str] = Field(default_factory=lambda: ["gemini-4-neon"])
     use_solutions_db: bool = True
@@ -42,6 +43,7 @@ BUILTIN_PRESETS: List[OrchestrationPreset] = [
         description="Умный балансировщик: оценивает сложность задачи и распределяет нагрузку между локальным GPU и пулом облачных квот.",
         is_builtin=True,
         planner_model="gemini-4-neon",
+        architect_models=["gemini-4-neon"],
         coder_model="qwen2.5-coder:14b",
         reviewer_models=["gemini-4-neon"],
         use_solutions_db=True,
@@ -57,6 +59,7 @@ BUILTIN_PRESETS: List[OrchestrationPreset] = [
         description="Быстрый универсальный режим для ответов на вопросы и точечных правок кода: короткая цепочка без глубокой декомпозиции и ревью.",
         is_builtin=True,
         planner_model="gemini-4-neon",
+        architect_models=["gemini-4-neon"],
         coder_model="qwen2.5-coder:14b",
         reviewer_models=["gemini-4-neon"],
         use_solutions_db=False,
@@ -72,6 +75,7 @@ BUILTIN_PRESETS: List[OrchestrationPreset] = [
         description="Режим максимальной мощности: подключает Базу решений Архитектора, полную DAG-декомпозицию, кросс-ревью всеми облачными моделями и строгие AST-гейты.",
         is_builtin=True,
         planner_model="deepseek-reasoner",
+        architect_models=["deepseek-reasoner", "gemini-4-neon"],
         coder_model="qwen2.5-coder:14b",
         reviewer_models=["gemini-4-neon", "claude-3-7-sonnet", "grok-3"],
         use_solutions_db=True,

@@ -266,18 +266,30 @@ class ConfigHealer:
     def sync_discovered_models(
         self,
         provider: str,
-        active_model_ids: List[str]
+        active_model_ids: List[str],
+        target_account_id: Optional[str] = None
     ) -> List[str]:
         """
         Dynamically synchronizes newly discovered models into the config:
         - Appends new models with status='active'
+        - Strictly binds remote API discovered models to api_key accounts, NOT web sessions
         - Marks removed models as status='expired' (never silently drops user models)
         """
         config, _ = self.load_or_create()
         modifications: List[str] = []
 
-        # Find matching account
-        acc = next((a for a in config.accounts if a.provider == provider), None)
+        # Find matching account: prioritize specific target_account_id or api_key account
+        acc = None
+        if target_account_id:
+            acc = next((a for a in config.accounts if a.id == target_account_id), None)
+        if not acc:
+            if provider == "ollama":
+                acc = next((a for a in config.accounts if a.provider == provider), None)
+            else:
+                acc = next((a for a in config.accounts if a.provider == provider and a.auth_type == "api_key"), None)
+                if not acc:
+                    acc = next((a for a in config.accounts if a.provider == provider and a.auth_type != "browser_session"), None)
+
         if not acc:
             # Create new account for discovered provider
             acc = AccountSubscription(

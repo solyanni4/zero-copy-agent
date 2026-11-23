@@ -453,11 +453,32 @@ async function syncConnectedModels() {
     state.connectedModels = realModels.map(m => {
       const id = m.id || m;
       const owner = m.owned_by || '';
-      const isLocal = id.includes('ollama') || id.includes('local') || owner.includes('ollama');
+      const isLocal = m.is_local || id.includes('ollama') || id.includes('local') || owner.includes('ollama');
+      let badge = m.badge || m.short_badge || '';
+      if (!badge) {
+        const low = id.toLowerCase();
+        if (isLocal) {
+          badge = (low.includes('14b') || low.includes('32b')) ? '🔥 Сильная · Локальная GPU' : '🖥️ Локальная GPU';
+        } else if (['pro', 'opus', 'reasoner', 'o1', 'o3', 'max', 'neon', 'advanced', 'r1'].some(k => low.includes(k))) {
+          badge = '🔥 Сильная';
+        } else if (['flash', 'sonnet', 'mini', 'haiku', 'turbo', 'plus'].some(k => low.includes(k))) {
+          badge = '⚡ Быстрая';
+        } else if (['lite', 'nano', '3b', '7b', 'small'].some(k => low.includes(k))) {
+          badge = '🪶 Базовая';
+        } else {
+          badge = '⚡ Быстрая';
+        }
+      }
+      const rawName = getModelDisplayName(id);
+      const displayName = m.display_name || `${rawName} [${badge}]`;
       return {
         id: id,
-        name: getModelDisplayName(id),
-        local: isLocal
+        name: displayName,
+        rawName: rawName,
+        badge: badge,
+        tier: m.tier || '',
+        local: isLocal,
+        status: m.status || 'active'
       };
     });
 
@@ -467,19 +488,32 @@ async function syncConnectedModels() {
       state.dagStages[1].model = '';
       state.dagStages[3].model = '';
     } else {
-      if (!state.connectedModels.some(m => m.id === state.globalModel)) {
+      const availIds = state.connectedModels.map(m => m.id);
+      if (!availIds.includes(state.globalModel)) {
         state.globalModel = state.connectedModels[0].id;
       }
-      if (!state.dagStages[0].model || !state.connectedModels.some(m => m.id === state.dagStages[0].model)) {
-        const cloudM = state.connectedModels.find(m => !m.local);
-        state.dagStages[0].model = cloudM ? cloudM.id : state.connectedModels[0].id;
+      // Auto-adaptation for Architect (Stage 0):
+      if (!state.dagStages[0].model || !availIds.includes(state.dagStages[0].model)) {
+        const oldM = state.dagStages[0].model;
+        const strong = state.connectedModels.find(m => m.badge && m.badge.includes('Сильная')) || state.connectedModels.find(m => !m.local) || state.connectedModels[0];
+        state.dagStages[0].model = strong.id;
+        if (oldM && oldM !== strong.id) {
+          showBanner(`Модель Архитектора '${oldM}' недоступна. Автозамена на: ${strong.name}`, 'info', 'text-amber');
+        }
       }
-      if (!state.dagStages[1].model || !state.connectedModels.some(m => m.id === state.dagStages[1].model)) {
-        const localM = state.connectedModels.find(m => m.local);
-        state.dagStages[1].model = localM ? localM.id : state.connectedModels[0].id;
+      // Auto-adaptation for Executor (Stage 1):
+      if (!state.dagStages[1].model || !availIds.includes(state.dagStages[1].model)) {
+        const oldM = state.dagStages[1].model;
+        const localOrFast = state.connectedModels.find(m => m.local) || state.connectedModels.find(m => m.badge && m.badge.includes('Быстрая')) || state.connectedModels[0];
+        state.dagStages[1].model = localOrFast.id;
+        if (oldM && oldM !== localOrFast.id) {
+          showBanner(`Модель Исполнителя '${oldM}' недоступна. Автозамена на: ${localOrFast.name}`, 'info', 'text-amber');
+        }
       }
-      if (!state.dagStages[3].model || !state.connectedModels.some(m => m.id === state.dagStages[3].model)) {
-        state.dagStages[3].model = state.dagStages[0].model;
+      // Auto-adaptation for Reviewer (Stage 3):
+      if (!state.dagStages[3].model || !availIds.includes(state.dagStages[3].model)) {
+        const strong = state.connectedModels.find(m => m.badge && m.badge.includes('Сильная')) || state.connectedModels.find(m => !m.local) || state.connectedModels[0];
+        state.dagStages[3].model = strong.id;
       }
     }
 
@@ -537,14 +571,22 @@ function renderDagInspector() {
       `;
     }
 
+    const isRunning = stage.status === 'running';
+    const containerClass = isRunning
+      ? 'px-3.5 py-2 space-y-1.5 transition-all duration-200 ring-1 ring-cobalt/60 bg-cobalt/5 animate-pulse rounded'
+      : 'px-3.5 py-2 space-y-1.5';
+    const statusLabel = isRunning
+      ? '<span class="font-mono text-[10px] uppercase font-semibold text-cobalt shrink-0">WORKING</span>'
+      : `<span class="font-mono text-[10px] uppercase text-muted shrink-0">${stage.status}</span>`;
+
     return `
-      <div class="px-3.5 py-2 space-y-1.5">
+      <div class="${containerClass}">
         <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-2 min-w-0">
             <span class="w-2 h-2 rounded-full ${dotClass} shrink-0"></span>
             <span class="text-[12px] font-medium text-ink truncate">${stage.label}</span>
           </div>
-          <span class="font-mono text-[10px] uppercase text-muted shrink-0">${stage.status}</span>
+          ${statusLabel}
         </div>
         <div>${controlHtml}</div>
       </div>
@@ -1731,12 +1773,29 @@ async function loadOrchestrationConfig() {
     const data = await res.json();
     const cfg = data.config || {};
     const archEl = document.getElementById('orch-architect-model');
+    const multiContainer = document.getElementById('orch-architect-multiselect');
     const coderEl = document.getElementById('orch-coder-model');
     const reviewerEl = document.getElementById('orch-reviewer-model');
     const fallbackEl = document.getElementById('orch-fallback-order');
     const gateEl = document.getElementById('orch-gate-cmd');
     const rwEl = document.getElementById('orch-max-rework');
     const modeEl = document.getElementById('orch-mode');
+
+    // Populate Multi-Architect multiselect
+    if (multiContainer) {
+      const selectedArchs = cfg.architect_models || (cfg.architect_model ? [cfg.architect_model] : ['gemini-4-neon']);
+      const modelsToShow = state.connectedModels.filter(m => !m.local || (m.badge && m.badge.includes('Сильная')));
+      const list = modelsToShow.length ? modelsToShow : state.connectedModels;
+      multiContainer.innerHTML = list.map(m => {
+        const isChecked = selectedArchs.includes(m.id);
+        return `
+          <label class="flex items-center gap-2 text-[12px] text-ink cursor-pointer hover:bg-surface/50 p-1 rounded">
+            <input type="checkbox" name="orch-architect-model-cb" value="${m.id}" ${isChecked ? 'checked' : ''} class="rounded border-hairline accent-cobalt text-cobalt" />
+            <span class="font-mono text-[11px] truncate">${m.name}</span>
+          </label>
+        `;
+      }).join('') || '<div class="text-[11px] text-muted p-1">— Нет подключённых моделей —</div>';
+    }
 
     if (archEl && (cfg.architect_model || cfg.planner?.primary)) {
       archEl.value = cfg.planner?.primary || cfg.architect_model;
@@ -1758,7 +1817,8 @@ async function loadOrchestrationConfig() {
 
 async function saveOrchestrationForm(e) {
   if (e) e.preventDefault();
-  const arch = document.getElementById('orch-architect-model')?.value;
+  const selectedArchs = Array.from(document.querySelectorAll('input[name="orch-architect-model-cb"]:checked')).map(cb => cb.value);
+  const arch = selectedArchs.length ? selectedArchs[0] : (document.getElementById('orch-architect-model')?.value || 'gemini-4-neon');
   const coder = document.getElementById('orch-coder-model')?.value;
   const reviewer = document.getElementById('orch-reviewer-model')?.value;
   const fallbackRaw = document.getElementById('orch-fallback-order')?.value;
@@ -1774,6 +1834,7 @@ async function saveOrchestrationForm(e) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         architect_model: arch,
+        architect_models: selectedArchs.length ? selectedArchs : [arch],
         coder_model: coder,
         auditor_model: reviewer,
         planner: arch ? { primary: arch, fallback: [] } : undefined,
@@ -1794,7 +1855,9 @@ async function saveOrchestrationForm(e) {
       if (reworkDisp) reworkDisp.textContent = state.maxRework;
     }
     renderDagInspector();
-    showBanner(d.message || 'Настройки оркестрации сохранены', 'check-circle-2', 'text-emerald');
+    const countArchs = selectedArchs.length;
+    const archMsg = countArchs > 1 ? `Мульти-Архитектор активирован (${countArchs} моделей)` : `Архитектор: ${arch}`;
+    showBanner(`Настройки сохранены. ${archMsg}`, 'check-circle-2', 'text-emerald');
     closeOrchestrationModal();
   } catch (err) {
     showBanner('Ошибка сохранения настроек: ' + err, 'alert-triangle', 'text-crimson');
@@ -2593,47 +2656,168 @@ function updateActivityUI(data) {
   const bar = document.getElementById('activity-status-bar');
   const textEl = document.getElementById('activity-status-text');
   const timerEl = document.getElementById('activity-status-timer');
-  if (!bar || !textEl || !timerEl) return;
+
+  // Live Card Elements
+  const card = document.getElementById('orchestrator-live-card');
+  const cardPulse = document.getElementById('orch-card-pulse');
+  const cardTitle = document.getElementById('orch-card-title');
+  const cardTimer = document.getElementById('orch-card-timer');
+  const cardStage = document.getElementById('orch-card-stage');
+  const cardSource = document.getElementById('orch-card-source-badge');
+  const cardDetails = document.getElementById('orch-card-last-summary');
+  const cardMulti = document.getElementById('orch-card-multi-arch');
 
   if (data.state === 'working') {
-    bar.className = 'activity-bar working flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
+    // 1. Header Bar
+    if (bar) bar.className = 'activity-bar working flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
     
-    let display = `⚡ WORKING: ${data.tool || 'ZCA'}`;
-    if (data.step) display += ` · ${data.step}`;
-    if (data.model) display += ` (${data.model})`;
-    textEl.textContent = display;
-    bar.title = display;
+    const stagePrefix = data.stage_label || (data.stage ? data.stage.toUpperCase() : (data.tool || 'ZCA'));
+    let display = `⚡ ${stagePrefix}`;
+    if (data.model) display += `: ${data.model}`;
+    if (data.source) display += ` [${data.source}]`;
+    if (textEl) textEl.textContent = display;
+    if (bar) bar.title = display;
 
-    timerEl.classList.remove('hidden');
+    if (timerEl) timerEl.classList.remove('hidden');
     if (data.started_at) {
       activityStartedAt = data.started_at;
       if (!activityTimerInterval) {
         activityTimerInterval = setInterval(() => {
           if (!activityStartedAt) return;
           const secs = Math.floor(Date.now() / 1000 - activityStartedAt);
-          timerEl.textContent = `${Math.max(0, secs)}s`;
+          const formatted = `${Math.max(0, secs)}s`;
+          if (timerEl) timerEl.textContent = formatted;
+          if (cardTimer) cardTimer.textContent = `${Math.max(0, secs)}.0s`;
         }, 1000);
       }
       const initialSecs = Math.floor(Date.now() / 1000 - activityStartedAt);
-      timerEl.textContent = `${Math.max(0, initialSecs)}s`;
+      if (timerEl) timerEl.textContent = `${Math.max(0, initialSecs)}s`;
+      if (cardTimer) cardTimer.textContent = `${Math.max(0, initialSecs)}.0s`;
     }
+
+    // 2. Live Card
+    if (card) {
+      card.className = 'p-3 border-b border-cobalt/40 bg-cobalt/5 transition-all duration-200 animate-pulse';
+    }
+    if (cardPulse) {
+      cardPulse.className = 'w-2 h-2 rounded-full bg-cobalt animate-ping shrink-0';
+    }
+    if (cardTitle) {
+      cardTitle.textContent = data.stage_label || 'Оркестратор выполняет задачу';
+    }
+    if (cardTimer) {
+      cardTimer.classList.remove('hidden');
+    }
+    if (cardStage) {
+      let stageText = `⚡ ${data.step || 'Выполнение шага...'}`;
+      if (data.model) stageText += ` (${data.model})`;
+      cardStage.textContent = stageText;
+    }
+    if (cardSource) {
+      if (data.source || data.account) {
+        cardSource.textContent = data.source ? `${data.source}${data.account ? ' · ' + data.account : ''}` : data.account;
+        cardSource.classList.remove('hidden');
+      } else {
+        cardSource.classList.add('hidden');
+      }
+    }
+    if (cardDetails) {
+      if (data.fallback_active) {
+        cardDetails.innerHTML = `<span class="text-amber font-semibold">⚠️ Резервный фолбэк: ${data.fallback_reason || 'переключение'}</span>`;
+      } else if (data.task_summary) {
+        cardDetails.textContent = `Задача: ${data.task_summary}`;
+      } else {
+        cardDetails.textContent = data.step || 'Обработка запроса...';
+      }
+    }
+
+    // Multi-Architect parallel indicators
+    if (cardMulti) {
+      if (data.parallel_architects && data.parallel_architects.length > 0) {
+        cardMulti.innerHTML = data.parallel_architects.map(pa => {
+          const color = pa.status === 'done' ? 'text-emerald border-emerald/30 bg-emerald/10' :
+                        pa.status === 'failed' ? 'text-crimson border-crimson/30 bg-crimson/10' :
+                        'text-cobalt border-cobalt/30 bg-cobalt/10 animate-pulse';
+          return `<span class="px-1.5 py-0.5 rounded border text-[10px] ${color}">${pa.label || pa.model}</span>`;
+        }).join('');
+        cardMulti.classList.remove('hidden');
+      } else {
+        cardMulti.classList.add('hidden');
+      }
+    }
+
+    // 3. Highlight DAG Stage
+    const stageKey = (data.stage || '').toLowerCase();
+    if (stageKey.includes('plan') || stageKey.includes('architect') || stageKey.includes('consensus')) {
+      state.dagStages[0].status = 'running';
+      state.dagStages[1].status = 'idle';
+      state.dagStages[2].status = 'idle';
+      state.dagStages[3].status = 'idle';
+    } else if (stageKey.includes('cod') || stageKey.includes('exec')) {
+      state.dagStages[0].status = 'pass';
+      state.dagStages[1].status = 'running';
+      state.dagStages[2].status = 'idle';
+      state.dagStages[3].status = 'idle';
+    } else if (stageKey.includes('gate')) {
+      state.dagStages[0].status = 'pass';
+      state.dagStages[1].status = 'pass';
+      state.dagStages[2].status = 'running';
+      state.dagStages[3].status = 'idle';
+    } else if (stageKey.includes('audit') || stageKey.includes('rev')) {
+      state.dagStages[0].status = 'pass';
+      state.dagStages[1].status = 'pass';
+      state.dagStages[2].status = 'pass';
+      state.dagStages[3].status = 'running';
+    }
+    renderDagInspector();
+
   } else {
     // idle
-    bar.className = 'activity-bar idle flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
-    textEl.textContent = '🟢 IDLE';
-    timerEl.classList.add('hidden');
+    if (bar) bar.className = 'activity-bar idle flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-mono cursor-default transition-all duration-200 select-none max-w-[320px] truncate';
+    if (textEl) textEl.textContent = '🟢 Оркестратор готов (IDLE)';
+    if (timerEl) timerEl.classList.add('hidden');
     if (activityTimerInterval) {
       clearInterval(activityTimerInterval);
       activityTimerInterval = null;
     }
     activityStartedAt = null;
 
+    if (card) {
+      card.className = 'p-3 border-b border-hairline bg-surface transition-all duration-200';
+    }
+    if (cardPulse) {
+      cardPulse.className = 'w-2 h-2 rounded-full bg-emerald shrink-0';
+    }
+    if (cardTitle) {
+      cardTitle.textContent = '🟢 Оркестратор готов (IDLE)';
+    }
+    if (cardTimer) {
+      cardTimer.classList.add('hidden');
+    }
+    if (cardStage) {
+      cardStage.textContent = 'Готов к выполнению задач (IDLE)';
+    }
+    if (cardSource) {
+      cardSource.classList.add('hidden');
+    }
+    if (cardMulti) {
+      cardMulti.classList.add('hidden');
+    }
+
     if (data.last_completed) {
       const lc = data.last_completed;
-      bar.title = `Последний вызов: ${lc.tool || 'ZCA'} (${lc.model || 'локально'}) — ${lc.elapsed_seconds}с`;
+      const statusTitle = `Последний вызов: ${lc.tool || 'ZCA'} (${lc.model || 'локально'}) — ${lc.elapsed_seconds}с`;
+      if (bar) bar.title = statusTitle;
+      if (cardDetails) cardDetails.textContent = `Последний запуск: ${lc.summary || (lc.success ? 'Успешно' : 'Ошибка')} (${lc.elapsed_seconds}s)`;
     } else {
-      bar.title = 'ZCA в простое, готов к выполнению задач';
+      if (bar) bar.title = 'Оркестратор готов к выполнению задач';
+      if (cardDetails) cardDetails.textContent = 'Ожидание входящих запросов...';
     }
+
+    state.dagStages.forEach(st => {
+      if (st.status === 'running') st.status = 'idle';
+    });
+    renderDagInspector();
   }
 }
 

@@ -17,6 +17,8 @@ from core.attribution import format_badge, format_cascade_badge, get_display_nam
 from core.registry import model_registry
 from core.healer import config_healer
 from core.audit import LocalHardGate, ArchitectAudit
+from core.log_stream import log_orchestrator_start, log_orchestrator_stage, log_orchestrator_done
+from core.activity_tracker import activity_tracker
 import json
 import httpx
 from pathlib import Path
@@ -57,6 +59,7 @@ class HybridOrchestrator:
         self.active_model: str = "cascade:architect"
         cascade_cfg = getattr(config, "cascade", None)
         self.architect_model: str = getattr(cascade_cfg, "architect_model", "gemini-advanced") or "gemini-advanced"
+        self.architect_models: List[str] = getattr(cascade_cfg, "architect_models", None) or [self.architect_model]
         self.executor_model: str = getattr(cascade_cfg, "executor_model", None) or getattr(cascade_cfg, "coder_model", "tier:local-fast") or "tier:local-fast"
         self.reviewer_model: str = getattr(cascade_cfg, "reviewer_model", None) or getattr(cascade_cfg, "auditor_model", "gemini-4-neon") or "gemini-4-neon"
 
@@ -66,6 +69,11 @@ class HybridOrchestrator:
             return
         if hasattr(preset, "planner_model") and preset.planner_model:
             self.architect_model = preset.planner_model
+            self.architect_models = [preset.planner_model]
+        if hasattr(preset, "architect_models") and preset.architect_models:
+            self.architect_models = list(preset.architect_models)
+            if self.architect_models:
+                self.architect_model = self.architect_models[0]
         if hasattr(preset, "coder_model") and preset.coder_model:
             self.executor_model = preset.coder_model
         if hasattr(preset, "reviewer_models") and preset.reviewer_models:
@@ -346,7 +354,7 @@ class HybridOrchestrator:
                     if b_url:
                         discovered = await discover_remote_models(b_url, acc.api_key)
                         if discovered:
-                            config_healer.sync_discovered_models(acc.provider, discovered)
+                            config_healer.sync_discovered_models(acc.provider, discovered, target_account_id=acc.id)
         except Exception as disc_err:
             logger.debug(f"[Orchestrator] Remote API model discovery warning: {disc_err}")
 
@@ -570,8 +578,45 @@ class HybridOrchestrator:
             elif has_mesh_key:
                 if inject_signature:
                     yield format_badge(target, role=f"API Pool · {provider.capitalize()}")
-                async for tok in self._query_api_provider_stream(provider, target, compressed_prompt):
-                    yield tok
+                try:
+                    async for tok in self._query_api_provider_stream(provider, target, compressed_prompt):
+                        yield tok
+                except RuntimeError as e:
+                    logger.warning(f"[ORCHESTRATOR] API stream for '{target}' failed: {e}. Checking web session fallback...")
+                    web_streamed = False
+                    try:
+                        from core.healer import config_healer
+                        cfg, _ = config_healer.load_or_create()
+                        has_web = any(
+                            a.provider.lower() == provider.lower()
+                            and getattr(a, "auth_type", "") in ("browser_session", "web")
+                            and getattr(a, "status", "") == "active"
+                            for a in cfg.accounts
+                        )
+                        if has_web and hasattr(self.browser_engine, "query_stream"):
+                            logger.info(f"[ORCHESTRATOR] Falling back to web session for provider '{provider}'")
+                            if inject_signature:
+                                yield format_badge(target, role="Web Session Fallback")
+                            async for tok in self.browser_engine.query_stream(compressed_prompt, target):
+                                yield tok
+                            web_streamed = True
+                    except Exception as web_err:
+                        logger.warning(f"[ORCHESTRATOR] Web fallback failed: {web_err}")
+
+                    if not web_streamed:
+                        logger.warning("[ORCHESTRATOR] API quota exhausted (429) -> fallback to local Ollama")
+                        ollama_model = "qwen2.5-coder:14b"
+                        try:
+                            installed = await self.ollama.list_models()
+                            if ollama_model not in installed and installed:
+                                coder_models = [m for m in installed if "coder" in m or "qwen" in m]
+                                ollama_model = coder_models[0] if coder_models else installed[0]
+                        except Exception:
+                            pass
+                        if inject_signature:
+                            yield format_badge(ollama_model, role="Local GPU Fallback")
+                        async for tok in self.ollama.send_prompt_stream(compressed_prompt, model=ollama_model):
+                            yield tok
             elif target.startswith("ollama/") or (target in await self.ollama.list_models()):
                 try:
                     if inject_signature:
@@ -784,131 +829,238 @@ class HybridOrchestrator:
         candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
         last_error = None
         for candidate in candidates:
-            resolved_candidate = candidate
-            if candidate in DEFAULT_PROVIDER_MODELS:
-                resolved_candidate = DEFAULT_PROVIDER_MODELS[candidate][0]
+            try:
+                return await self._query_candidate_for_role(role, candidate, prompt, req_id=req_id)
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[Cascade] Candidate '{candidate}' failed for role '{role}': {e}. Switching to next fallback...")
+                continue
 
-            prov = self._detect_provider(resolved_candidate)
-            accounts = mesh.get_candidate_accounts(prov, model_id=resolved_candidate) if prov else []
+        raise RuntimeError(f"Все кандидаты в каскаде для роли '{role}' ({candidates}) исчерпали квоту или недоступны: {last_error}")
 
-            if accounts:
-                for acc in accounts:
-                    if acc.auth_type == "api_key":
-                        acc_timeout = 90.0
-                    elif acc.auth_type == "browser_session":
-                        acc_timeout = 45.0
-                    else:
-                        acc_timeout = candidate_timeout
+    async def _query_candidate_for_role(
+        self,
+        role: str,
+        candidate: str,
+        prompt: str,
+        req_id: str = ""
+    ) -> Tuple[str, str]:
+        """Queries a single candidate model/provider for a specific role across its available accounts."""
+        from core.healer import DEFAULT_PROVIDER_MODELS
+        from core.config import config
+        resolved_candidate = candidate
+        if candidate in DEFAULT_PROVIDER_MODELS:
+            resolved_candidate = DEFAULT_PROVIDER_MODELS[candidate][0]
 
-                    logger.info(
-                        f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' "
-                        f"(account={acc.account_id}, type={acc.auth_type}, timeout={int(acc_timeout)}s)..."
-                    )
+        cascade_cfg = getattr(getattr(self, "config", None), "cascade", None) or getattr(config, "cascade", None)
+        candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
 
-                    try:
-                        if acc.auth_type == "api_key":
-                            res = await asyncio.wait_for(
-                                self._query_single_api_account(
-                                    prov, acc.account_id, acc.key, resolved_candidate, prompt, timeout_sec=acc_timeout
-                                ),
-                                timeout=acc_timeout
-                            )
-                        elif acc.auth_type == "browser_session":
-                            res = await asyncio.wait_for(
-                                self.browser_engine.query(prompt, resolved_candidate, account_id=acc.account_id),
-                                timeout=acc_timeout
-                            )
-                        else:
-                            res = await asyncio.wait_for(
-                                self._query_model(resolved_candidate, prompt),
-                                timeout=acc_timeout
-                            )
+        prov = self._detect_provider(resolved_candidate)
+        accounts = mesh.get_candidate_accounts(prov, model_id=resolved_candidate) if prov else []
 
-                        # Check for Standby response or unauthenticated fallback
-                        if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
-                            logger.warning(
-                                f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
-                                f"returned Standby/Unauthenticated response. Failing over to next account..."
-                            )
-                            acc.trip(cooldown_seconds=120.0)
-                            mesh.record_web_failure(prov, acc.account_id)
-                            continue
+        if accounts:
+            for acc in accounts:
+                if acc.auth_type == "api_key":
+                    acc_timeout = 90.0
+                elif acc.auth_type == "browser_session":
+                    acc_timeout = 45.0
+                else:
+                    acc_timeout = candidate_timeout
 
-                        logger.info(
-                            f"[Cascade] Role '{role}' succeeded via candidate '{resolved_candidate}' "
-                            f"(account={acc.account_id}, type={acc.auth_type})"
-                        )
-                        if acc.auth_type == "api_key":
-                            mesh.record_success(prov, acc.key)
-                        elif acc.auth_type == "browser_session":
-                            mesh.record_web_success(prov, acc.account_id)
-                        return res, resolved_candidate
+                logger.info(
+                    f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' "
+                    f"(account={acc.account_id}, type={acc.auth_type}, timeout={int(acc_timeout)}s)..."
+                )
 
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
-                            f"timed out after {int(acc_timeout)}s -> switching to next account"
-                        )
-                        acc.trip(cooldown_seconds=120.0)
-                        if acc.auth_type == "api_key":
-                            mesh.record_failure(prov, acc.key, 504)
-                        else:
-                            mesh.record_web_failure(prov, acc.account_id)
-                        continue
-
-                    except Exception as e:
-                        last_error = e
-                        status_code = 500
-                        if "HTTP " in str(e):
-                            try:
-                                status_code = int(str(e).split("HTTP ")[1].split(" ")[0].rstrip(":"))
-                            except Exception:
-                                status_code = 500
-                        acc.trip(cooldown_seconds=120.0)
-                        if acc.auth_type == "api_key":
-                            mesh.record_failure(prov, acc.key, status_code)
-                        else:
-                            mesh.record_web_failure(prov, acc.account_id)
-                        logger.warning(
-                            f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
-                            f"failed: {e}. Failing over to next account..."
-                        )
-                        continue
-
-                logger.warning(f"[Cascade] All accounts for candidate '{resolved_candidate}' exhausted. Switching to next fallback...")
-            else:
-                # Direct query for candidate without mesh accounts (e.g. mock or local)
-                logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' (timeout={candidate_timeout}s)...")
                 try:
-                    res = await asyncio.wait_for(
-                        self._query_model(resolved_candidate, prompt),
-                        timeout=candidate_timeout
-                    )
+                    if acc.auth_type == "api_key":
+                        res = await asyncio.wait_for(
+                            self._query_single_api_account(
+                                prov, acc.account_id, acc.key, resolved_candidate, prompt, timeout_sec=acc_timeout
+                            ),
+                            timeout=acc_timeout
+                        )
+                    elif acc.auth_type == "browser_session":
+                        res = await asyncio.wait_for(
+                            self.browser_engine.query(prompt, resolved_candidate, account_id=acc.account_id),
+                            timeout=acc_timeout
+                        )
+                    else:
+                        res = await asyncio.wait_for(
+                            self._query_model(resolved_candidate, prompt),
+                            timeout=acc_timeout
+                        )
 
                     # Check for Standby response or unauthenticated fallback
                     if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
-                        logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response. Failing over...")
-                        if prov:
-                            mesh.record_web_failure(prov, resolved_candidate)
+                        logger.warning(
+                            f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                            f"returned Standby/Unauthenticated response. Failing over to next account..."
+                        )
+                        acc.trip(cooldown_seconds=120.0)
+                        mesh.record_web_failure(prov, acc.account_id)
                         continue
 
-                    logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
+                    logger.info(
+                        f"[Cascade] Role '{role}' succeeded via candidate '{resolved_candidate}' "
+                        f"(account={acc.account_id}, type={acc.auth_type})"
+                    )
+                    if acc.auth_type == "api_key":
+                        mesh.record_success(prov, acc.key)
+                    elif acc.auth_type == "browser_session":
+                        mesh.record_web_success(prov, acc.account_id)
                     return res, resolved_candidate
+
                 except asyncio.TimeoutError:
-                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' timed out after {int(candidate_timeout)}s -> switching to next fallback")
-                    if prov:
-                        mesh.record_web_failure(prov, resolved_candidate)
-                    continue
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' failed for role '{role}': {e}. Failing over...")
-                    if prov:
-                        key = mesh.get_active_key(prov)
-                        if key:
-                            mesh.record_failure(prov, key, 500)
+                    logger.warning(
+                        f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                        f"timed out after {int(acc_timeout)}s -> switching to next account"
+                    )
+                    acc.trip(cooldown_seconds=120.0)
+                    if acc.auth_type == "api_key":
+                        mesh.record_failure(prov, acc.key, 504)
+                    else:
+                        mesh.record_web_failure(prov, acc.account_id)
                     continue
 
-        raise RuntimeError(f"Все кандидаты в каскаде для роли '{role}' ({candidates}) исчерпали квоту или недоступны: {last_error}")
+                except Exception as e:
+                    status_code = 500
+                    if "HTTP " in str(e):
+                        try:
+                            status_code = int(str(e).split("HTTP ")[1].split(" ")[0].rstrip(":"))
+                        except Exception:
+                            status_code = 500
+                    acc.trip(cooldown_seconds=120.0)
+                    if acc.auth_type == "api_key":
+                        mesh.record_failure(prov, acc.key, status_code)
+                    else:
+                        mesh.record_web_failure(prov, acc.account_id)
+                    logger.warning(
+                        f"[Cascade] Candidate '{resolved_candidate}' (account={acc.account_id}, type={acc.auth_type}) "
+                        f"failed: {e}. Failing over to next account..."
+                    )
+                    continue
+
+            raise RuntimeError(f"All accounts for candidate '{resolved_candidate}' exhausted.")
+        else:
+            # Direct query for candidate without mesh accounts (e.g. mock or local)
+            logger.info(f"[Cascade] Trying role '{role}' via candidate '{resolved_candidate}' (timeout={candidate_timeout}s)...")
+            try:
+                res = await asyncio.wait_for(
+                    self._query_model(resolved_candidate, prompt),
+                    timeout=candidate_timeout
+                )
+
+                if not res or any(kw in res for kw in ("[ENGINE-STANDBY]", "[STANDBY]", "Session not authenticated", "Could not locate")):
+                    logger.warning(f"[Cascade] Candidate '{resolved_candidate}' returned Standby/Unauthenticated response.")
+                    if prov:
+                        mesh.record_web_failure(prov, resolved_candidate)
+                    raise RuntimeError(f"Candidate '{resolved_candidate}' returned Standby.")
+
+                logger.info(f"[Cascade] Role '{role}' succeeded via '{resolved_candidate}'")
+                return res, resolved_candidate
+            except asyncio.TimeoutError:
+                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' timed out after {int(candidate_timeout)}s")
+                if prov:
+                    mesh.record_web_failure(prov, resolved_candidate)
+                raise
+            except Exception as e:
+                logger.warning(f"[Cascade] Candidate '{resolved_candidate}' failed for role '{role}': {e}")
+                if prov:
+                    key = mesh.get_active_key(prov)
+                    if key:
+                        mesh.record_failure(prov, key, 500)
+                raise
+
+    async def _run_multi_architect_analysis(
+        self,
+        architect_models: List[str],
+        prompt: str,
+        req_id: str = ""
+    ) -> Tuple[str, str]:
+        """
+        Runs parallel analysis across 2+ architect models via asyncio.gather.
+        If >= 2 succeed, performs Consensus Synthesis step.
+        If 1 succeeds, uses its plan.
+        If 0 succeed, falls back to default planner cascade.
+        """
+        log_orchestrator_stage("multi_architect", "+".join(architect_models), status=f"Параллельный запуск ({len(architect_models)} моделей)...")
+        initial_architects_info = [
+            {"model": m, "status": "working", "label": f"{m}: ⏳"}
+            for m in architect_models
+        ]
+        await activity_tracker.update_step(
+            step=f"Мульти-Архитектор: параллельный анализ ({', '.join(architect_models)})",
+            stage="planning",
+            stage_label="Мульти-Архитектор",
+            model="+".join(architect_models),
+            details={"parallel_architects": initial_architects_info}
+        )
+
+        async def _query_single(m: str):
+            start_m = time.time()
+            try:
+                plan_text, used_m = await self._query_candidate_for_role("planner", m, prompt, req_id=req_id)
+                dur = round(time.time() - start_m, 1)
+                return {"model": m, "used": used_m, "plan": plan_text, "success": True, "duration": dur}
+            except Exception as err:
+                dur = round(time.time() - start_m, 1)
+                logger.warning(f"[Multi-Architect] Model '{m}' failed after {dur}s: {err}")
+                return {"model": m, "used": m, "plan": None, "success": False, "duration": dur, "error": str(err)}
+
+        results = await asyncio.gather(*[_query_single(m) for m in architect_models], return_exceptions=False)
+
+        updated_architects_info = [
+            {
+                "model": r["model"],
+                "status": "done" if r["success"] else "failed",
+                "label": f"{r['model']}: {'✅' if r['success'] else '❌'} {r['duration']}s"
+            }
+            for r in results
+        ]
+        successful = [r for r in results if r["success"] and r["plan"]]
+
+        if len(successful) >= 2:
+            log_orchestrator_stage("consensus", "+".join(s["model"] for s in successful), status="Синтез консенсуса...")
+            await activity_tracker.update_step(
+                step="Синтез консенсуса архитектурных решений",
+                stage="consensus",
+                stage_label="Консенсус",
+                model="+".join(s["model"] for s in successful),
+                details={"parallel_architects": updated_architects_info}
+            )
+
+            plans_section = "\n\n".join([
+                f"### План архитектора #{idx + 1} ({s['model']}):\n{s['plan']}"
+                for idx, s in enumerate(successful)
+            ])
+            consensus_prompt = (
+                f"Ты — ведущий системный координатор и главный архитектор проекта.\n"
+                f"Несколько независимых моделей предложили свои архитектурные решения для одной задачи:\n\n"
+                f"{plans_section}\n\n"
+                f"Твоя задача — выполнить СИНТЕЗ КОНСЕНСУСА:\n"
+                f"1. Объедини сильнейшие технические решения каждого архитектора.\n"
+                f"2. Устрани любые противоречия и выбери максимально чистый и надежный путь.\n"
+                f"3. Сформируй единый, непротиворечивый финальный архитектурный чертёж и пошаговый план для разработчика."
+            )
+            try:
+                synth_plan, _ = await self.query_role_with_fallback("planner", consensus_prompt, req_id=req_id)
+                used_label = f"multi-architect({'+'.join(s['model'] for s in successful)})"
+                return synth_plan, used_label
+            except Exception as synth_err:
+                logger.warning(f"[Multi-Architect] Consensus synthesis failed: {synth_err}. Using first plan.")
+                return successful[0]["plan"], successful[0]["model"]
+
+        elif len(successful) == 1:
+            logger.info(f"[Multi-Architect] Only 1 model succeeded ({successful[0]['model']}). Using its plan.")
+            await activity_tracker.update_step(
+                step=f"Использован план от {successful[0]['model']} (остальные завершились ошибкой)",
+                details={"parallel_architects": updated_architects_info}
+            )
+            return successful[0]["plan"], successful[0]["model"]
+        else:
+            logger.warning("[Multi-Architect] All selected models failed. Falling back to default cascade planner.")
+            return await self.query_role_with_fallback("planner", prompt, req_id=req_id)
 
     async def _run_cascade_architect(
         self,
@@ -928,6 +1080,16 @@ class HybridOrchestrator:
         arch_model = getattr(self, "architect_model", "gemini-advanced")
         rev_model = getattr(self, "reviewer_model", "gemini-advanced")
         coder_target = getattr(self, "executor_model", None)
+
+        t_cascade_start = time.time()
+        log_orchestrator_start(mode="Каскад", task=user_prompt[:80])
+        await activity_tracker.start_activity(
+            tool="cascade_architect",
+            stage="planning",
+            stage_label="Планирование",
+            step="Анализ архитектуры и формирование спецификации",
+            details={"task_summary": user_prompt[:80]}
+        )
 
         if existing_plan:
             plan = existing_plan
@@ -959,7 +1121,13 @@ class HybridOrchestrator:
                     f"Ты — ведущий системный архитектор. Сформируй краткий структурированный технический план "
                     f"и архитектурный чертёж для задачи:\n\n{user_prompt}"
                 )
-            plan, used_arch = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
+
+            arch_models = getattr(self, "architect_models", None) or [arch_model]
+            if len(arch_models) >= 2:
+                plan, used_arch = await self._run_multi_architect_analysis(arch_models, plan_prompt, req_id=req_id)
+            else:
+                log_orchestrator_stage("architect", arch_model, status="формирование чертежа...")
+                plan, used_arch = await self.query_role_with_fallback("planner", plan_prompt, req_id=req_id)
 
         # Breakpoint verification
         if self.breakpoint_enabled:
@@ -967,6 +1135,10 @@ class HybridOrchestrator:
             if req_id:
                 analytics.record_event(req_id, "cascade_breakpoint", used_arch, "Cascade paused at breakpoint after architectural plan")
             badge = format_cascade_badge(used_arch, "pending", status="PAUSED", iterations=0) if inject_signature else ""
+            await activity_tracker.finish_activity(
+                success=True,
+                summary="Архитектурный план сформирован (ожидает подтверждения)"
+            )
             return (
                 f"{badge}"
                 f"### [Breakpoint] Архитектурный план сформирован (Ожидает подтверждения):\n{plan}\n\n"
@@ -1025,6 +1197,14 @@ class HybridOrchestrator:
             iteration_num = iteration + 1
             if iteration == 0:
                 logger.info(f"[Cascade] Step 2: Implementation via local/fast engine (attempt {iteration_num})...")
+                log_orchestrator_stage("executor", coder_target or "Local GPU", status="генерация кода...")
+                await activity_tracker.update_step(
+                    step=f"Генерация кода (попытка {iteration_num})",
+                    stage="coding",
+                    stage_label="Кодинг",
+                    model=coder_target or "qwen2.5-coder:14b",
+                    source="Local GPU" if ("qwen" in str(coder_target or "").lower() or "ollama" in str(coder_target or "").lower()) else "API"
+                )
                 if req_id:
                     analytics.record_event(req_id, "cascade_step2", "executor", f"Generating code implementation (attempt {iteration_num})")
                 code_prompt = (
@@ -1033,6 +1213,13 @@ class HybridOrchestrator:
                 )
             else:
                 logger.info(f"[Cascade] Rework Iteration {iteration}/{max_rework}...")
+                log_orchestrator_stage("executor", coder_target or "Local GPU", status=f"доработка кода ({iteration}/{max_rework})...")
+                await activity_tracker.update_step(
+                    step=f"Доработка кода (итерация {iteration}/{max_rework})",
+                    stage="coding",
+                    stage_label="Кодинг",
+                    model=coder_target or "qwen2.5-coder:14b"
+                )
                 if req_id:
                     analytics.record_event(req_id, "rework_iteration", "executor", f"Rework iteration {iteration}/{max_rework}", {"issues": last_audit_issues})
 
@@ -1056,6 +1243,12 @@ class HybridOrchestrator:
 
             # --- 1. LOCAL HARD GATE (0 tokens) ---
             if self.enable_local_gate:
+                log_orchestrator_stage("gate", "LocalHardGate", status="синтаксическая валидация...")
+                await activity_tracker.update_step(
+                    step="Hard Gate: 0-token проверка AST / JSON / YAML",
+                    stage="gate",
+                    stage_label="Hard Gate"
+                )
                 gate_passed, gate_issues = self.gate.validate_code(current_code)
                 if not gate_passed:
                     logger.warning(f"[Cascade] Local Hard Gate REJECTED implementation (iteration {iteration_num}): {len(gate_issues)} issues")
@@ -1074,6 +1267,13 @@ class HybridOrchestrator:
             # --- 2. ARCHITECT AUDIT (semantic diff-based check) ---
             if self.enable_architect_audit:
                 logger.info(f"[Cascade] Step 3: Architect Audit (iteration {iteration_num})...")
+                log_orchestrator_stage("reviewer", rev_model, status="семантический аудит...")
+                await activity_tracker.update_step(
+                    step="Семантический аудит решения",
+                    stage="audit",
+                    stage_label="Аудит",
+                    model=rev_model
+                )
                 audit_prompt = self.auditor.build_audit_prompt(plan, current_code)
                 raw_audit, used_reviewer = await self.query_role_with_fallback("reviewer", audit_prompt, req_id=req_id)
                 audit_res = self.auditor.parse_audit_response(raw_audit)
@@ -1118,6 +1318,15 @@ class HybridOrchestrator:
             else:
                 final_status = "PASS"
                 break
+
+        t_cascade_end = time.time()
+        elapsed_cascade = round(t_cascade_end - t_cascade_start, 1)
+        savings = 62.0 if any(k in str(executor_id).lower() for k in ("local", "ollama", "qwen")) else 0.0
+        log_orchestrator_done(elapsed_cascade, savings_pct=savings, summary=f"Статус: {final_status}")
+        await activity_tracker.finish_activity(
+            success=(final_status == "PASS"),
+            summary=f"Каскад завершен ({final_status}) за {elapsed_cascade}s"
+        )
 
         if final_status == "ESCALATED":
             if req_id:

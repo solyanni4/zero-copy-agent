@@ -1,5 +1,5 @@
 """
-zero-copy-agent v0.3.0
+zero-copy-agent v1.5.0
 OpenAI-compatible Sidecar Gateway & Native Model Context Protocol (MCP) Server.
 Routes Web Chat Subscriptions, Local Ollama GPU, and provides tools for Antigravity, Cursor & Claude.
 """
@@ -82,6 +82,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger("zca.main").debug(f"[IDE Auto-Sync] Warning: {e}")
 
+    # Suppress noisy background poll logs
+    try:
+        from core.log_stream import BackgroundPollFilter
+        for l_name in ("uvicorn.access", "uvicorn", "uvicorn.error", "zca.main", "zcao.orchestrator", ""):
+            logging.getLogger(l_name).addFilter(BackgroundPollFilter())
+    except Exception:
+        pass
+
     # Load and apply active orchestration preset
     try:
         from core.orchestration_presets import presets_manager
@@ -118,7 +126,6 @@ async def lifespan(app: FastAPI):
     await engine.initialize()
 
     if "--post-update" in sys.argv:
-        import asyncio
         async def _main_post_update_watcher():
             import webbrowser
             log_file = get_runtime_cwd() / "update.log"
@@ -767,6 +774,7 @@ async def api_get_orchestration_config():
         "status": "ok",
         "config": {
             "architect_model": getattr(config.cascade, "architect_model", "gemini-4-neon"),
+            "architect_models": getattr(config.cascade, "architect_models", [getattr(config.cascade, "architect_model", "gemini-4-neon")]),
             "coder_model": getattr(config.cascade, "coder_model", "qwen2.5-coder:14b"),
             "auditor_model": getattr(config.cascade, "auditor_model", "gemini-4-neon"),
             "hard_gate_cmd": getattr(config.cascade, "hard_gate_cmd", "python -m py_compile"),
@@ -788,6 +796,15 @@ async def api_save_orchestration_config(payload: dict = Body(...)):
     if "architect_model" in payload:
         config.cascade.architect_model = payload["architect_model"]
         orchestrator.architect_model = payload["architect_model"]
+        if "architect_models" not in payload:
+            config.cascade.architect_models = [payload["architect_model"]]
+            orchestrator.architect_models = [payload["architect_model"]]
+    if "architect_models" in payload and isinstance(payload["architect_models"], list):
+        config.cascade.architect_models = payload["architect_models"]
+        orchestrator.architect_models = payload["architect_models"]
+        if payload["architect_models"]:
+            config.cascade.architect_model = payload["architect_models"][0]
+            orchestrator.architect_model = payload["architect_models"][0]
     if "coder_model" in payload:
         config.cascade.coder_model = payload["coder_model"]
         orchestrator.executor_model = payload["coder_model"]
@@ -1467,26 +1484,38 @@ async def create_chat_completion(request: ChatCompletionRequest):
             )
             yield f"data: {json.dumps(first_chunk.dict(), ensure_ascii=False)}\n\n"
 
-            async for token in orchestrator.query_stream(
-                last_msg,
-                model_id,
-                req_id=req_id,
-                inject_signature=inject_sig
-            ):
-                chunk = ChatCompletionStreamResponse(
+            try:
+                async for token in orchestrator.query_stream(
+                    last_msg,
+                    model_id,
+                    req_id=req_id,
+                    inject_signature=inject_sig
+                ):
+                    chunk = ChatCompletionStreamResponse(
+                        id=req_id,
+                        model=model_id,
+                        choices=[StreamChoice(index=0, delta=DeltaMessage(content=token))]
+                    )
+                    yield f"data: {json.dumps(chunk.dict(), ensure_ascii=False)}\n\n"
+
+                done_chunk = ChatCompletionStreamResponse(
                     id=req_id,
                     model=model_id,
-                    choices=[StreamChoice(index=0, delta=DeltaMessage(content=token))]
+                    choices=[StreamChoice(index=0, delta=DeltaMessage(), finish_reason="stop")]
                 )
-                yield f"data: {json.dumps(chunk.dict(), ensure_ascii=False)}\n\n"
-
-            done_chunk = ChatCompletionStreamResponse(
-                id=req_id,
-                model=model_id,
-                choices=[StreamChoice(index=0, delta=DeltaMessage(), finish_reason="stop")]
-            )
-            yield f"data: {json.dumps(done_chunk.dict(), ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
+                yield f"data: {json.dumps(done_chunk.dict(), ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logging.getLogger("zcao.main").error(f"[ORCHESTRATOR] Stream generation error: {e}")
+                err_chunk = {
+                    "error": {
+                        "message": str(e),
+                        "type": "orchestrator_stream_error",
+                        "code": 500
+                    }
+                }
+                yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream", headers=headers)
 

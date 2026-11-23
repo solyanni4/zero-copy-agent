@@ -77,6 +77,12 @@ class ModelCard(BaseModel):
     object: str = "model"
     created: int = 1731500000
     owned_by: str = "zero-copy-agent"
+    tier: Optional[str] = "fast"
+    badge: Optional[str] = "⚡ Быстрая"
+    short_badge: Optional[str] = "⚡ Быстрая"
+    status: Optional[str] = "active"
+    display_name: Optional[str] = None
+    is_local: Optional[bool] = False
 
 class ModelListResponse(BaseModel):
     object: str = "list"
