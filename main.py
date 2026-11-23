@@ -82,6 +82,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logging.getLogger("zca.main").debug(f"[IDE Auto-Sync] Warning: {e}")
 
+    # Sync IDE routing rules (through_zca vs bypass)
+    try:
+        from core.ide_sync import sync_routing_rules
+        routing_mode = getattr(config, "ide_routing_mode", "through_zca")
+        res_sync = sync_routing_rules(routing_mode)
+        print(f"  [IDE Routing] Режим маршрутизации: {routing_mode} (обновлено файлов: {len(res_sync.get('updated', []))})")
+    except Exception as e:
+        logging.getLogger("zca.main").debug(f"[IDE Routing] Sync warning: {e}")
+
     # Suppress noisy background poll logs
     try:
         from core.log_stream import BackgroundPollFilter
@@ -1452,6 +1461,40 @@ async def get_activity_stream(request: Request):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@app.get("/api/routing-mode")
+async def api_get_routing_mode():
+    """Returns current IDE routing mode ('through_zca' or 'bypass')."""
+    return {
+        "status": "ok",
+        "mode": getattr(config, "ide_routing_mode", "through_zca")
+    }
+
+
+@app.post("/api/routing-mode")
+async def api_set_routing_mode(payload: Dict[str, Any] = Body(...)):
+    """
+    Switches IDE routing mode ('through_zca' or 'bypass')
+    and synchronizes rules in ~/.gemini/GEMINI.md, ~/.cursorrules, and workspace files.
+    """
+    mode = str(payload.get("mode", "")).strip()
+    if mode not in ("through_zca", "bypass"):
+        raise HTTPException(status_code=400, detail="Режим должен быть 'through_zca' или 'bypass'")
+
+    from core.config import save_config
+    config.ide_routing_mode = mode
+    save_config(config)
+
+    from core.ide_sync import sync_routing_rules
+    sync_result = sync_routing_rules(mode)
+
+    return {
+        "status": "ok",
+        "mode": mode,
+        "sync": sync_result,
+        "message": f"Режим маршрутизации переключен на '{mode}'"
+    }
 
 
 @app.post("/v1/chat/completions")

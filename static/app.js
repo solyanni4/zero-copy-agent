@@ -2819,6 +2819,83 @@ function updateActivityUI(data) {
     });
     renderDagInspector();
   }
+
+  // 4. Update Live Task Activity Feed
+  const feedList = document.getElementById('task-live-feed-list');
+  const feedCount = document.getElementById('task-live-feed-count');
+  if (feedList && data.history) {
+    if (feedCount) feedCount.textContent = `${data.history.length} событий`;
+    if (data.history.length === 0) {
+      feedList.innerHTML = '<div class="text-muted text-[10px] italic">Событий пока нет</div>';
+    } else {
+      feedList.innerHTML = data.history.map(item => {
+        let color = 'text-ink';
+        if (item.type === 'fallback') color = 'text-amber font-semibold';
+        else if (item.type === 'done') color = 'text-emerald font-semibold';
+        else if (item.type === 'error') color = 'text-crimson font-semibold';
+        else if (item.type === 'planning') color = 'text-cobalt';
+        else if (item.type === 'coding') color = 'text-purple-400';
+        else if (item.type === 'audit') color = 'text-sky-400';
+        return `<div class="flex items-start gap-1 py-0.5 leading-tight"><span class="text-muted text-[10px] shrink-0 font-sans">[${escapeHtml(item.time || '')}]</span><span class="${color} break-words">${escapeHtml(item.message || '')}</span></div>`;
+      }).join('');
+      feedList.scrollTop = feedList.scrollHeight;
+    }
+  }
+}
+
+// ------------------------------------------------------------------------
+// IDE Routing Mode (through_zca vs bypass)
+let currentIdeRoutingMode = 'through_zca';
+
+async function fetchIdeRoutingMode() {
+  try {
+    const res = await fetch('/api/routing-mode');
+    const data = await res.json();
+    if (data.mode) {
+      currentIdeRoutingMode = data.mode;
+      renderIdeRoutingModeUI(currentIdeRoutingMode);
+    }
+  } catch (err) {
+    console.debug('[Routing] Failed to fetch mode:', err);
+  }
+}
+
+function renderIdeRoutingModeUI(mode) {
+  const btn = document.getElementById('ide-routing-toggle');
+  const icon = document.getElementById('ide-routing-icon');
+  const text = document.getElementById('ide-routing-text');
+  if (!btn) return;
+  if (mode === 'through_zca') {
+    btn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-medium transition-all duration-200 select-none cursor-pointer bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20';
+    btn.title = 'Режим ZCA активен: ВСЕ задачи идут через zero-copy-agent. Нажмите для переключения в режим обхода.';
+    if (icon) icon.textContent = '⚡';
+    if (text) text.textContent = 'Через ZCA (ВСЕ запросы)';
+  } else {
+    btn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-medium transition-all duration-200 select-none cursor-pointer bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20';
+    btn.title = 'Режим обхода: задачи идут напрямую в IDE. Нажмите для включения маршрутизации через ZCA.';
+    if (icon) icon.textContent = '⏭️';
+    if (text) text.textContent = 'В обход ZCA (Прямой IDE)';
+  }
+}
+
+async function toggleIdeRoutingMode() {
+  const nextMode = currentIdeRoutingMode === 'through_zca' ? 'bypass' : 'through_zca';
+  try {
+    const res = await fetch('/api/routing-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: nextMode })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      currentIdeRoutingMode = data.mode;
+      renderIdeRoutingModeUI(currentIdeRoutingMode);
+      const label = currentIdeRoutingMode === 'through_zca' ? 'Через ZCA (ВСЕ запросы)' : 'В обход ZCA (Прямой IDE)';
+      showToast(`Маршрутизация: ${label}`, 'info');
+    }
+  } catch (err) {
+    showToast('Ошибка переключения режима: ' + err.message, 'error');
+  }
 }
 
 function initActivityTrackerSSE() {
@@ -2908,6 +2985,7 @@ window.addEventListener('DOMContentLoaded', () => {
   fetchRealHistoryIntoTraces();
   loadOrchestrationConfig();
   fetchPresets();
+  fetchIdeRoutingMode();
 
   // Initialize Activity Tracker SSE
   initActivityTrackerSSE();

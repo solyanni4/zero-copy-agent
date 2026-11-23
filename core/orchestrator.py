@@ -828,12 +828,25 @@ class HybridOrchestrator:
 
         candidate_timeout = float(getattr(cascade_cfg, "candidate_timeout_sec", 60.0) or 60.0)
         last_error = None
-        for candidate in candidates:
+        for i, candidate in enumerate(candidates):
             try:
                 return await self._query_candidate_for_role(role, candidate, prompt, req_id=req_id)
             except Exception as e:
                 last_error = e
                 logger.warning(f"[Cascade] Candidate '{candidate}' failed for role '{role}': {e}. Switching to next fallback...")
+                if i + 1 < len(candidates):
+                    next_candidate = candidates[i + 1]
+                    err_msg = str(e)
+                    if "429" in err_msg or "quota" in err_msg.lower():
+                        reason = "429"
+                    elif "timeout" in err_msg.lower() or "timed out" in err_msg.lower():
+                        reason = "таймаут"
+                    else:
+                        reason = "ошибка"
+                    try:
+                        await activity_tracker.record_fallback(failed_model=candidate, next_model=next_candidate, reason=reason)
+                    except Exception:
+                        pass
                 continue
 
         raise RuntimeError(f"Все кандидаты в каскаде для роли '{role}' ({candidates}) исчерпали квоту или недоступны: {last_error}")

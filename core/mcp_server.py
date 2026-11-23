@@ -158,6 +158,11 @@ def _get_active_preset_name() -> str:
 
 async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
     """Executes the requested tool and returns the text response."""
+    from core.config import config
+    if getattr(config, "ide_routing_mode", "through_zca") == "bypass":
+        logger.info(f"[MCP] Routing mode is 'bypass' -> declining tool '{name}'")
+        return "[⏭️ ZCA Bypass] Режим обхода активен — выполни задачу напрямую в IDE."
+
     global _orchestrator
     if not _orchestrator:
         return "[ERROR] Ошибка: Оркестратор шлюза не инициализирован."
@@ -346,7 +351,13 @@ async def execute_tool(name: str, arguments: Dict[str, Any]) -> str:
                 except Exception:
                     pass
 
-            badge = f"[⚡ ZCA | Tool: {name} | Preset: {active_preset} | Model: {tool_model}{steps_info} | Local tokens: {local_tokens} | Time: {elapsed:.1f}s]"
+            from core.activity_tracker import activity_tracker
+            trace_str = activity_tracker.get_trace(as_badge=True)
+            if name in ("cascade_architect", "plan_and_execute_task") and trace_str and " → " in trace_str:
+                badge = f"[⚡ ZCA | {trace_str} | Time: {elapsed:.1f}s]"
+            else:
+                badge = f"[⚡ ZCA | Tool: {name} | Preset: {active_preset} | Model: {tool_model}{steps_info} | Local tokens: {local_tokens} | Time: {elapsed:.1f}s]"
+
             if not result_text.startswith("[⚡ ZCA"):
                 result_text = f"{badge}\n\n{result_text}"
 

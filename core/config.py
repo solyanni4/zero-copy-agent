@@ -120,6 +120,7 @@ class CascadeConfig(BaseModel):
 class AppConfig(BaseModel):
     version: str = "1.5.0"
     show_mcp_badge: bool = True
+    ide_routing_mode: str = "through_zca"  # "through_zca" | "bypass"
     server: ServerConfig = Field(default_factory=ServerConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     models: ModelsGroupConfig = Field(default_factory=ModelsGroupConfig)

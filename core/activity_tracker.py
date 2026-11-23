@@ -6,7 +6,7 @@ import asyncio
 import time
 import logging
 from typing import Optional, Dict, Any, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger("zero-copy-agent.activity")
 
@@ -27,6 +27,8 @@ class ActivityState:
     parallel_architects: Optional[list] = None
     task_summary: Optional[str] = None
     last_completed: Optional[Dict[str, Any]] = None
+    history: list = field(default_factory=list)  # Recent 10 human-friendly transitions
+    trace: str = ""                              # e.g. "Анализ: gemini-4-neon → Код: qwen2.5-coder:14b"
 
     def to_dict(self) -> Dict[str, Any]:
         elapsed = 0.0
@@ -48,6 +50,8 @@ class ActivityState:
             "parallel_architects": self.parallel_architects,
             "task_summary": self.task_summary,
             "last_completed": self.last_completed,
+            "history": list(self.history)[-10:],
+            "trace": self.trace,
         }
 
 
@@ -56,10 +60,59 @@ class ActivityTracker:
         self._state = ActivityState()
         self._listeners: Set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
+        self._trace_map = {"analysis": "", "code": "", "audit": ""}
 
     def get_status(self) -> Dict[str, Any]:
         """Returns snapshot of current state dictionary."""
         return self._state.to_dict()
+
+    def get_trace(self, as_badge: bool = True) -> str:
+        """Returns current accumulated execution trace."""
+        return self._build_trace(as_badge=as_badge)
+
+    def _build_trace(self, as_badge: bool = True) -> str:
+        parts = []
+        arch_label = "Анализ" if as_badge else "Архитектор"
+        if self._trace_map.get("analysis"):
+            parts.append(f"{arch_label}: {self._trace_map['analysis']}")
+        if self._trace_map.get("code"):
+            parts.append(f"Код: {self._trace_map['code']}")
+        if self._trace_map.get("audit"):
+            parts.append(f"Аудит: {self._trace_map['audit']}")
+        return " → ".join(parts)
+
+    def _add_history_entry(self, message: str, event_type: str = "info"):
+        now_str = time.strftime("%H:%M:%S")
+        entry = {
+            "time": now_str,
+            "message": message,
+            "type": event_type
+        }
+        self._state.history.append(entry)
+        if len(self._state.history) > 10:
+            self._state.history = self._state.history[-10:]
+
+    async def record_fallback(
+        self,
+        failed_model: str,
+        next_model: str,
+        reason: str = ""
+    ):
+        """Records a failover/fallback transition in history and broadcasts event."""
+        reason_str = f" ({reason})" if reason else ""
+        msg = f"⚠️ Модель {failed_model} недоступна{reason_str} → переключено на {next_model}"
+        async with self._lock:
+            self._state.fallback_active = True
+            self._state.fallback_reason = reason or "fallback"
+            self._state.model = next_model
+            self._add_history_entry(msg, "fallback")
+            event_data = self._state.to_dict()
+            event = {
+                "event": "fallback",
+                "data": event_data
+            }
+        logger.warning(f"[Activity] Fallback: {msg}")
+        await self._broadcast(event)
 
     async def start_activity(
         self,
@@ -78,9 +131,9 @@ class ActivityTracker:
             self._state.state = "working"
             self._state.tool = tool
             self._state.model = model
-            self._state.step = step or "Инициализация..."
             self._state.started_at = now
-            self._state.stage = stage or (details.get("stage") if details else None)
+            effective_stage = stage or (details.get("stage") if details else None)
+            self._state.stage = effective_stage
             self._state.stage_label = stage_label or (details.get("stage_label") if details else None)
             self._state.source = source or (details.get("source") if details else None)
             self._state.account = account or (details.get("account") if details else None)
@@ -88,6 +141,42 @@ class ActivityTracker:
             self._state.fallback_reason = None
             if details and "parallel_architects" in details:
                 self._state.parallel_architects = details["parallel_architects"]
+
+            # Initialize / update trace map
+            self._trace_map = {"analysis": "", "code": "", "audit": ""}
+
+            # Build human-friendly step & history entry
+            if details and details.get("parallel_architects"):
+                archs = details["parallel_architects"]
+                if isinstance(archs, list):
+                    arch_names = [a.get("model", str(a)) if isinstance(a, dict) else str(a) for a in archs]
+                    archs_str = ", ".join(arch_names)
+                else:
+                    archs_str = str(archs)
+                msg = f"🧠 Параллельный анализ — модели: {archs_str}"
+                self._trace_map["analysis"] = archs_str
+                self._state.step = msg
+                self._add_history_entry(msg, "planning")
+            elif effective_stage == "planning" or tool in ("cascade_architect", "plan_and_execute_task"):
+                m_str = model or "автовыбор"
+                msg = f"🧠 Выполняется анализ запроса — модель: {m_str}"
+                if model:
+                    self._trace_map["analysis"] = model
+                self._state.step = step or msg
+                self._add_history_entry(msg, "planning")
+            elif effective_stage == "coding" or tool == "local_gpu_code":
+                m_str = model or "локальная модель"
+                msg = f"💻 Генерация кода — модель: {m_str}"
+                if model:
+                    self._trace_map["code"] = model
+                self._state.step = step or msg
+                self._add_history_entry(msg, "coding")
+            else:
+                self._state.step = step or "Инициализация..."
+                self._add_history_entry(self._state.step, "start")
+
+            self._state.trace = self._build_trace()
+
             event_data = self._state.to_dict()
             if details:
                 event_data["details"] = details
@@ -112,13 +201,11 @@ class ActivityTracker:
     ):
         """Updates progress step during multi-step tasks."""
         async with self._lock:
-            self._state.step = step
             if model:
                 self._state.model = model
-            if stage:
-                self._state.stage = stage
-            elif details and "stage" in details:
-                self._state.stage = details["stage"]
+            effective_stage = stage or (details.get("stage") if details else self._state.stage)
+            if effective_stage:
+                self._state.stage = effective_stage
             if stage_label:
                 self._state.stage_label = stage_label
             elif details and "stage_label" in details:
@@ -142,6 +229,45 @@ class ActivityTracker:
             if details and "parallel_architects" in details:
                 self._state.parallel_architects = details["parallel_architects"]
 
+            # Map stage to human-friendly Russian messages
+            if details and details.get("parallel_architects"):
+                archs = details["parallel_architects"]
+                if isinstance(archs, list):
+                    arch_names = [a.get("model", str(a)) if isinstance(a, dict) else str(a) for a in archs]
+                    archs_str = ", ".join(arch_names)
+                else:
+                    archs_str = str(archs)
+                msg = f"🧠 Параллельный анализ — модели: {archs_str}"
+                self._trace_map["analysis"] = archs_str
+                self._state.step = msg
+                self._add_history_entry(msg, "planning")
+            elif effective_stage == "planning":
+                curr_model = model or self._state.model or "автовыбор"
+                msg = f"🧠 Выполняется анализ запроса — модель: {curr_model}"
+                if model:
+                    self._trace_map["analysis"] = model
+                self._state.step = step or msg
+                self._add_history_entry(msg, "planning")
+            elif effective_stage == "coding":
+                curr_model = model or self._state.model or "локальная модель"
+                msg = f"💻 Генерация кода — модель: {curr_model}"
+                if model:
+                    self._trace_map["code"] = model
+                self._state.step = step or msg
+                self._add_history_entry(msg, "coding")
+            elif effective_stage == "audit":
+                curr_model = model or self._state.model or "локальная модель"
+                msg = f"🔍 Аудит — модель: {curr_model}"
+                if model:
+                    self._trace_map["audit"] = model
+                self._state.step = step or msg
+                self._add_history_entry(msg, "audit")
+            else:
+                self._state.step = step
+                self._add_history_entry(step, "progress")
+
+            self._state.trace = self._build_trace()
+
             event_data = self._state.to_dict()
             if details:
                 event_data["details"] = details
@@ -149,7 +275,7 @@ class ActivityTracker:
                 "event": "progress",
                 "data": event_data
             }
-        logger.info(f"[Activity] Step: {self._state.tool} -> {step}")
+        logger.info(f"[Activity] Step: {self._state.tool} -> {self._state.step}")
         await self._broadcast(event)
 
     async def finish_activity(
@@ -164,6 +290,16 @@ class ActivityTracker:
             now = time.time()
             started = self._state.started_at or now
             elapsed = round(max(0.0, now - started), 2)
+            trace_desc = self._build_trace(as_badge=False)
+
+            if success:
+                trace_part = f" ({trace_desc})" if trace_desc else ""
+                finish_msg = f"✅ Выполнено за {elapsed}s{trace_part}"
+                self._add_history_entry(finish_msg, "done")
+            else:
+                finish_msg = f"❌ Ошибка: {error or summary or 'Сбой выполнения'}"
+                self._add_history_entry(finish_msg, "error")
+
             last_comp = {
                 "tool": self._state.tool,
                 "model": self._state.model,
@@ -171,9 +307,10 @@ class ActivityTracker:
                 "elapsed_seconds": elapsed,
                 "tokens": tokens,
                 "success": success,
-                "summary": summary or ("Завершено успешно" if success else "Ошибка выполнения"),
+                "summary": summary or finish_msg,
                 "error": error,
-                "completed_at": now
+                "completed_at": now,
+                "trace": trace_desc,
             }
             self._state.last_completed = last_comp
             self._state.state = "idle"

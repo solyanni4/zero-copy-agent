@@ -170,6 +170,12 @@
           <span id="activity-status-text" class="font-medium truncate">🟢 IDLE</span>
           <span id="activity-status-timer" class="text-muted text-[10px] hidden shrink-0 font-sans">0s</span>
         </div>
+
+        <!-- IDE Routing Mode Toggle -->
+        <button id="ide-routing-toggle" onclick="toggleIdeRoutingMode()" class="flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-medium transition-all duration-200 select-none cursor-pointer bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20" title="Переключить режим маршрутизации IDE">
+          <span id="ide-routing-icon">⚡</span>
+          <span id="ide-routing-text">Через ZCA</span>
+        </button>
       </div>
 
       <!-- Right Group: Toggles + Rework Stepper + Action Icons -->
@@ -301,6 +307,20 @@
           </div>
           <div id="orch-card-multi-arch" class="mt-1.5 pt-1.5 border-t border-hairline text-[10px] font-mono text-muted hidden flex flex-wrap gap-1">
             <!-- Parallel architect chips -->
+          </div>
+        </div>
+
+        <!-- Live Task Activity Feed (Recent transitions) -->
+        <div id="task-live-feed-card" class="p-3 border-b border-hairline bg-surface">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-muted flex items-center gap-1.5">
+              <i data-lucide="activity" class="w-3 h-3 text-cobalt"></i>
+              <span>Лента активности</span>
+            </span>
+            <span id="task-live-feed-count" class="font-mono text-[9px] text-muted">0 событий</span>
+          </div>
+          <div id="task-live-feed-list" class="space-y-1 max-h-[130px] overflow-y-auto text-[11px] font-mono select-text pr-1">
+            <div class="text-muted text-[10px] italic">Событий пока нет</div>
           </div>
         </div>
 
