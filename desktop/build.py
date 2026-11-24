@@ -102,6 +102,7 @@ def build():
         "--hidden-import=core.drivers.deepseek",
         "--hidden-import=core.drivers.qwen",
         "--hidden-import=core.drivers.grok",
+        "--hidden-import=core.drivers.claude",
         "--hidden-import=core.mesh",
         "--hidden-import=core.orchestrator",
         "--hidden-import=core.solutions_db",

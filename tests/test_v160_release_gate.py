@@ -675,6 +675,118 @@ def test_cookie_conversion_session_and_host_prefix():
     assert pw_host["url"] == "https://google.com/"
 
 
+def test_load_config_saves_to_runtime_cwd_and_persists_token(tmp_path, monkeypatch):
+    """Verifies that load_config() saves config.yaml to get_runtime_cwd() and persists the token."""
+    import yaml
+    from core.config import load_config
+
+    template_dir = tmp_path / "bundle_template"
+    template_dir.mkdir()
+    template_cfg = template_dir / "config.yaml"
+    template_cfg.write_text("version: '1.6.0'\nshow_mcp_badge: true\n", encoding="utf-8")
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: runtime_dir)
+    monkeypatch.setattr("core.config.get_config_path", lambda: template_cfg)
+    monkeypatch.delenv("CONFIG_PATH", raising=False)
+
+    cfg1 = load_config()
+    saved_runtime_cfg = runtime_dir / "config.yaml"
+    assert saved_runtime_cfg.exists(), "config.yaml must be saved into runtime_cwd"
+
+    raw_saved = yaml.safe_load(saved_runtime_cfg.read_text(encoding="utf-8"))
+    assert "cookie_sync_token" in raw_saved
+    assert raw_saved["cookie_sync_token"] == cfg1.cookie_sync_token
+
+    monkeypatch.setattr("core.config.get_config_path", lambda: saved_runtime_cfg)
+    cfg2 = load_config()
+    assert cfg2.cookie_sync_token == cfg1.cookie_sync_token
+
+
+def test_sync_cookies_rejects_missing_key_auth_cookies(tmp_path, monkeypatch):
+    """Verifies POST /v1/auth/sync-cookies returns ignored when missing key auth cookies."""
+    from starlette.testclient import TestClient
+    from main import app
+    from core.config import config
+
+    fake_runtime = tmp_path / "runtime_ignored"
+    fake_runtime.mkdir()
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: fake_runtime)
+    monkeypatch.setattr("main.get_runtime_cwd", lambda: fake_runtime)
+
+    client = TestClient(app)
+    expected_token = getattr(config, "cookie_sync_token", "default_test_token")
+
+    payload = {
+        "provider": "claude",
+        "account_id": "claude-web-primary",
+        "cookies": [
+            {
+                "name": "test-c",
+                "value": "junk_val_123",
+                "domain": "claude.ai",
+                "path": "/"
+            }
+        ]
+    }
+
+    res = client.post(
+        "/v1/auth/sync-cookies",
+        headers={"X-ZCA-Sync-Token": expected_token},
+        json=payload
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get("status") == "ignored"
+    assert data.get("reason") == "no_auth_cookies"
+
+    prof_dir = fake_runtime / "browser_profiles" / "claude-web-primary"
+    assert not prof_dir.exists(), "Profile dir must not be created for ignored cookie sync"
+
+
+def test_prune_browser_profile_caches(tmp_path):
+    """Verifies prune_browser_profile_caches removes transient caches while preserving cookies."""
+    from core.auth import prune_browser_profile_caches
+
+    profile_dir = tmp_path / "mock_profile"
+    default_dir = profile_dir / "Default"
+    default_dir.mkdir(parents=True)
+
+    (profile_dir / "OptGuideOnDeviceModel").mkdir()
+    (profile_dir / "GrShaderCache").mkdir()
+    (default_dir / "Cache").mkdir()
+    (default_dir / "Code Cache").mkdir()
+    (default_dir / "GPUCache").mkdir()
+
+    network_dir = default_dir / "Network"
+    network_dir.mkdir()
+    cookies_file = network_dir / "Cookies"
+    cookies_file.write_bytes(b"SQLITE_COOKIES_DATABASE_MOCK")
+
+    local_storage = default_dir / "Local Storage"
+    local_storage.mkdir()
+    (local_storage / "leveldb").mkdir()
+
+    preferences_file = default_dir / "Preferences"
+    preferences_file.write_text('{"profile":{"name":"Default"}}', encoding="utf-8")
+
+    prune_browser_profile_caches(profile_dir)
+
+    assert not (profile_dir / "OptGuideOnDeviceModel").exists()
+    assert not (profile_dir / "GrShaderCache").exists()
+    assert not (default_dir / "Cache").exists()
+    assert not (default_dir / "Code Cache").exists()
+    assert not (default_dir / "GPUCache").exists()
+
+    assert cookies_file.exists()
+    assert cookies_file.read_bytes() == b"SQLITE_COOKIES_DATABASE_MOCK"
+    assert local_storage.exists()
+    assert preferences_file.exists()
+
+
+
 
 
 

@@ -137,14 +137,20 @@ class AppConfig(BaseModel):
     cascade: CascadeConfig = Field(default_factory=CascadeConfig)
 
 def load_config() -> AppConfig:
+    runtime_cfg_path = Path(os.getenv("CONFIG_PATH")) if os.getenv("CONFIG_PATH") else (get_runtime_cwd() / "config.yaml")
     cfg_path = get_config_path()
+    data = {}
     if cfg_path.exists():
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             cfg = AppConfig(**data)
-            if not getattr(cfg, "cookie_sync_token", None):
-                cfg.cookie_sync_token = secrets.token_urlsafe(24)
+            needs_save = (
+                (cfg_path.resolve() != runtime_cfg_path.resolve())
+                or (not runtime_cfg_path.exists())
+                or (not data.get("cookie_sync_token"))
+            )
+            if needs_save:
                 save_config(cfg)
             return cfg
         except Exception as e:

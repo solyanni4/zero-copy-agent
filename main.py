@@ -686,6 +686,10 @@ async def sync_cookies_from_extension(request: Request, payload: dict = Body(...
         if pw_c:
             converted_cookies.append(pw_c)
 
+    from core.auth import has_key_auth_cookies
+    if not has_key_auth_cookies(provider, converted_cookies):
+        return {"status": "ignored", "reason": "no_auth_cookies", "provider": provider}
+
     prof_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     prof_dir.mkdir(parents=True, exist_ok=True)
     cookie_path = prof_dir / "synced_cookies.json"

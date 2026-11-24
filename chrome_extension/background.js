@@ -82,6 +82,21 @@ const PROVIDERS = [
   }
 ];
 
+const KEY_AUTH_COOKIES = {
+  gemini: ["__Secure-1PSID", "SID"],
+  chatgpt: ["__Secure-next-auth.session-token", "__Secure-next-auth.session-token.0"],
+  claude: ["sessionKey"],
+  deepseek: ["ds_session_id", "userToken"],
+  qwen: ["token", "login_aliyunid_ticket", "cna"],
+  grok: ["sso", "sso-rw"]
+};
+
+function hasKeyAuthCookies(providerId, cookies) {
+  const keys = KEY_AUTH_COOKIES[providerId];
+  if (!keys || keys.length === 0) return true;
+  return (cookies || []).some(c => keys.includes(c.name));
+}
+
 function computeCookieSignature(cookies) {
   if (!cookies || !cookies.length) return "";
   return cookies
@@ -136,7 +151,7 @@ async function initializeFromDefaults() {
 }
 
 // Perform cookie extraction and synchronization for a single provider
-async function syncProvider(providerId, force = false) {
+async function syncProvider(providerId, force = false, retryOn401 = true) {
   const prov = PROVIDERS.find(p => p.id === providerId);
   if (!prov) return { ok: false, message: "Unknown provider" };
 
@@ -162,11 +177,11 @@ async function syncProvider(providerId, force = false) {
       filtered = allCookies.filter(isGeminiCookieAllowed);
     }
 
-    if (!filtered || filtered.length === 0) {
+    if (!filtered || filtered.length === 0 || !hasKeyAuthCookies(prov.id, filtered)) {
       statuses[prov.id] = {
         status: "no_cookies",
-        message: "Нет активных кук",
-        cookieCount: 0,
+        message: "Не выполнен вход в Chrome",
+        cookieCount: filtered ? filtered.length : 0,
         updatedAt: new Date().toISOString()
       };
       await chrome.storage.local.set({ syncStatuses: statuses });
@@ -195,6 +210,22 @@ async function syncProvider(providerId, force = false) {
         cookies: filtered
       })
     });
+
+    if (response.status === 401 && retryOn401) {
+      try {
+        const defUrl = chrome.runtime.getURL("defaults.json");
+        const defResp = await fetch(defUrl);
+        if (defResp.ok) {
+          const defaults = await defResp.json();
+          if (defaults.syncToken && defaults.syncToken !== syncToken) {
+            await chrome.storage.local.set({ syncToken: defaults.syncToken });
+            return await syncProvider(providerId, force, false);
+          }
+        }
+      } catch (err) {
+        // Ignore fallback errors
+      }
+    }
 
     const resJson = await response.json().catch(() => ({}));
 

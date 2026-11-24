@@ -25,6 +25,65 @@ PROVIDER_URLS = {
     "grok": "https://grok.com"
 }
 
+KEY_AUTH_COOKIES = {
+    "gemini": ["__Secure-1PSID", "SID"],
+    "chatgpt": ["__Secure-next-auth.session-token", "__Secure-next-auth.session-token.0"],
+    "claude": ["sessionKey"],
+    "deepseek": ["ds_session_id", "userToken"],
+    "qwen": ["token", "login_aliyunid_ticket", "cna"],
+    "grok": ["sso", "sso-rw"],
+}
+
+def has_key_auth_cookies(provider: str, cookies: list) -> bool:
+    """Checks whether the cookie list contains at least one key authentication cookie for provider."""
+    required_keys = KEY_AUTH_COOKIES.get((provider or "").strip().lower())
+    if not required_keys:
+        return True
+    return any(c.get("name") in required_keys for c in cookies if isinstance(c, dict))
+
+def prune_browser_profile_caches(profile_dir: Path) -> None:
+    """
+    Safely prunes transient Chrome caches, shader caches, and heavy downloaded models
+    from a browser profile directory to keep its size minimal, while preserving all
+    authentication cookies, session storage, local storage, indexedDB, and preferences.
+    """
+    if not profile_dir or not profile_dir.exists():
+        return
+
+    root_prune = [
+        "GrShaderCache", "GraphiteDawnCache", "ShaderCache", "Crashpad",
+        "OptGuideOnDeviceModel", "AutofillAiModelCache", "ComponentCrxCache",
+        "OptimizationHints", "Safe Browsing", "WidevineCdm", "ZxcvbnData",
+        "OnDeviceHeadSuggestModel", "hyphen-data", "Subresource Filter"
+    ]
+    for item_name in root_prune:
+        p = profile_dir / item_name
+        if p.exists():
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    default_dir = profile_dir / "Default"
+    if default_dir.exists() and default_dir.is_dir():
+        default_prune = [
+            "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
+            "Service Worker/CacheStorage", "Service Worker/ScriptCache"
+        ]
+        for sub_path in default_prune:
+            p = default_dir / sub_path
+            if p.exists():
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
 def is_proxy_alive(proxy_url: Optional[str], timeout: float = 0.4) -> bool:
     """Verifies that proxy_url is not empty/none and host:port accepts a TCP connection."""
     if not proxy_url or proxy_url.strip().lower() in ("", "none", "direct"):
@@ -80,6 +139,7 @@ def authenticate(provider: str, account_id: str = None):
     profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     kill_zombie_browser_processes(profile_dir)
+    prune_browser_profile_caches(profile_dir)
 
     proxy_server = detect_proxy()
     if proxy_server and is_proxy_alive(proxy_server, timeout=0.4):
@@ -252,6 +312,7 @@ def authenticate_desktop(provider: str, account_id: str = None):
     profile_dir = (get_runtime_cwd() / "browser_profiles" / account_id).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     kill_zombie_browser_processes(profile_dir)
+    prune_browser_profile_caches(profile_dir)
 
     account_proxy = getattr(target_acc, "proxy", None) if target_acc else None
     proxy_server = account_proxy or detect_proxy()
@@ -299,7 +360,15 @@ def authenticate_desktop(provider: str, account_id: str = None):
                         "args": [
                             "--disable-blink-features=AutomationControlled",
                             "--no-first-run",
-                            "--no-default-browser-check"
+                            "--no-default-browser-check",
+                            "--disk-cache-size=10485760",
+                            "--media-cache-size=1048576",
+                            "--disable-component-update",
+                            "--disable-background-networking",
+                            "--disable-sync",
+                            "--disable-default-apps",
+                            "--metrics-recording-only",
+                            "--no-pings"
                         ],
                         "ignore_default_args": ["--enable-automation"]
                     }
@@ -401,6 +470,14 @@ def authenticate_desktop(provider: str, account_id: str = None):
             except Exception:
                 pass
             logging.info(f"[Auth Assistant] Сессия для {prov} успешно сохранена!")
+
+            synced_cookie_file = profile_dir / "synced_cookies.json"
+            if synced_cookie_file.exists():
+                try:
+                    synced_cookie_file.unlink()
+                    logging.info(f"[Auth Assistant] Удален устаревший {synced_cookie_file} в пользу свежей ручной сессии")
+                except Exception as e:
+                    logging.warning(f"[Auth Assistant] Не удалось удалить {synced_cookie_file}: {e}")
 
             try:
                 from core.healer import config_healer

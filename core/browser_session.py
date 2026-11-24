@@ -297,14 +297,23 @@ class BrowserSessionEngine:
                 proxy_server = acc_proxy
             proxy_cfg = {"server": proxy_server} if proxy_server else None
 
-            from core.auth import kill_zombie_browser_processes
+            from core.auth import kill_zombie_browser_processes, prune_browser_profile_caches, has_key_auth_cookies
             kill_zombie_browser_processes(profile_path)
+            prune_browser_profile_caches(profile_path)
 
             launch_args = [
                 "--disable-blink-features=AutomationControlled",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--disable-infobars"
+                "--disable-infobars",
+                "--disk-cache-size=10485760",
+                "--media-cache-size=1048576",
+                "--disable-component-update",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-default-apps",
+                "--metrics-recording-only",
+                "--no-pings"
             ]
             is_frozen = getattr(sys, "frozen", False)
             channels = ["chrome", "msedge"] if (is_frozen or sys.platform == "win32") else ["chrome", "msedge", None]
@@ -377,10 +386,12 @@ class BrowserSessionEngine:
                         with open(cookie_file, "r", encoding="utf-8") as f:
                             cdata = json.load(f)
                         cookies_to_add = cdata.get("cookies", [])
-                        if cookies_to_add:
+                        if cookies_to_add and has_key_auth_cookies(provider, cookies_to_add):
                             await context.add_cookies(cookies_to_add)
                             self._cookie_mtimes[acc_id] = mtime
                             logger.info(f"[ENGINE] Applied {len(cookies_to_add)} synced cookies for account '{acc_id}'")
+                        elif cookies_to_add:
+                            logger.info(f"[ENGINE] Skipped applying synced_cookies for '{acc_id}': missing key auth cookies for {provider}")
                 except Exception as ce:
                     logger.warning(f"[ENGINE] Error loading synced cookies for '{acc_id}': {ce}")
 
@@ -404,6 +415,11 @@ class BrowserSessionEngine:
 
     async def inject_synced_cookies(self, account_id: str, provider: str, cookies: list, user_agent: Optional[str] = None):
         """Injects cookies into active browser context and reloads page to apply auth session."""
+        from core.auth import has_key_auth_cookies
+        if not has_key_auth_cookies(provider, cookies):
+            logger.info(f"[ENGINE] Rejected cookie injection for '{account_id}': no key auth cookies for {provider}")
+            return
+
         ctx = self._contexts.get(account_id)
         if ctx and cookies:
             await ctx.add_cookies(cookies)
