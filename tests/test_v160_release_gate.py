@@ -1012,6 +1012,28 @@ def test_system_shutdown_endpoint(monkeypatch):
     assert data["status"] == "shutting_down"
 
 
+@pytest.mark.asyncio
+async def test_browser_engine_rejects_disconnected_provider_when_bridge_active(monkeypatch):
+    """Ensures BrowserEngine does NOT spawn Playwright for disconnected providers when Chrome Bridge is active."""
+    from core.browser_session import engine
+    from core.chrome_bridge import chrome_bridge
+
+    monkeypatch.setattr(chrome_bridge, "is_connected", lambda: True)
+    monkeypatch.setattr(chrome_bridge, "has_provider", lambda prov: prov == "gemini")
+    chrome_bridge.active_providers = {"gemini"}
+
+    # Querying "grok" must immediately raise RuntimeError without starting Playwright
+    with pytest.raises(RuntimeError) as exc_info:
+        await engine.query("test prompt", "grok-3")
+    assert "не подключен в Chrome Bridge" in str(exc_info.value)
+
+    # query_stream must also raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info_stream:
+        async for _ in engine.query_stream("test prompt", "grok-3"):
+            pass
+    assert "не подключен в Chrome Bridge" in str(exc_info_stream.value)
+
+
 
 
 

@@ -101,7 +101,8 @@ class ChromeBridgeManager:
             return
 
         await websocket.accept()
-        logger.info("[ChromeBridge] WS connected")
+        ws_id = id(websocket)
+        logger.info(f"[ChromeBridge] WS connected (ws_id={ws_id})")
 
         async with self._lock:
             if self.active_websocket:
@@ -121,10 +122,14 @@ class ChromeBridgeManager:
                 self.last_seen = time.time()
                 try:
                     data = json.loads(msg_text)
-                except Exception:
+                except Exception as parse_err:
+                    logger.warning(f"[ChromeBridge] Received invalid JSON on WS (ws_id={ws_id}): {parse_err}")
                     continue
 
-                msg_type = data.get("type")
+                msg_type = data.get("type", "unknown")
+                task_id = data.get("task_id", "-")
+                logger.info(f"[ChromeBridge][{task_id}] <- WS recv type={msg_type} (ws_id={ws_id})")
+
                 if msg_type == "hello":
                     await self._handle_hello(data)
                 elif msg_type == "ping":
@@ -135,7 +140,6 @@ class ChromeBridgeManager:
                 elif msg_type == "pong":
                     self.last_seen = time.time()
                 elif msg_type == "status":
-                    task_id = data.get("task_id")
                     stage = data.get("stage", "")
                     detail = data.get("detail", "")
                     logger.info(f"[ChromeBridge][{task_id}] stage={stage} ({detail})")
@@ -146,7 +150,6 @@ class ChromeBridgeManager:
                             "detail": detail
                         })
                 elif msg_type == "chunk":
-                    task_id = data.get("task_id")
                     if task_id in self.tasks:
                         self.tasks[task_id].put_nowait({
                             "type": "chunk",
@@ -154,24 +157,24 @@ class ChromeBridgeManager:
                             "full_text": data.get("full_text", "")
                         })
                 elif msg_type == "done":
-                    task_id = data.get("task_id")
                     if task_id in self.tasks:
                         self.tasks[task_id].put_nowait({
                             "type": "done",
                             "full_text": data.get("full_text", "")
                         })
                 elif msg_type == "error":
-                    task_id = data.get("task_id")
                     if task_id in self.tasks:
                         self.tasks[task_id].put_nowait({
                             "type": "error",
                             "code": data.get("code", "error"),
                             "message": data.get("message", "Unknown bridge error")
                         })
+                else:
+                    logger.warning(f"[ChromeBridge][{task_id}] unhandled message type: {msg_type}")
         except WebSocketDisconnect as ws_disc:
-            logger.info(f"[ChromeBridge] WS disconnected (code={ws_disc.code}, reason={getattr(ws_disc, 'reason', '')})")
+            logger.info(f"[ChromeBridge] WS disconnected (code={ws_disc.code}, reason={getattr(ws_disc, 'reason', '')}, ws_id={ws_id})")
         except Exception as e:
-            logger.warning(f"[ChromeBridge] WS disconnected unexpectedly: {e}")
+            logger.warning(f"[ChromeBridge] WS disconnected unexpectedly: {e} (ws_id={ws_id})")
         finally:
             async with self._lock:
                 if self.active_websocket == websocket:
@@ -179,8 +182,8 @@ class ChromeBridgeManager:
                     if self._ping_task:
                         self._ping_task.cancel()
                         self._ping_task = None
-            # Abort all waiting tasks immediately with ws_disconnected
-            self._abort_tasks("ws_disconnected", "Chrome extension WebSocket disconnected while waiting for response")
+                    # Abort all waiting tasks immediately with ws_disconnected
+                    self._abort_tasks("ws_disconnected", "Chrome extension WebSocket disconnected while waiting for response")
 
     def _abort_tasks(self, code: str = "ws_disconnected", message: str = "WebSocket disconnected"):
         """Aborts all currently waiting tasks with an error message."""
@@ -268,8 +271,10 @@ class ChromeBridgeManager:
         Sends prompt through the Chrome Bridge WebSocket and yields text chunks as they stream.
         Enforces a 25s fail-fast acknowledgement timeout for prompt_sent/generating stages.
         """
-        if not self.is_connected() or not self.active_websocket:
-            raise RuntimeError("Chrome Bridge WebSocket is not connected. Open Google Chrome with the ZCA extension installed.")
+        async with self._lock:
+            ws = self.active_websocket
+            if not ws:
+                raise RuntimeError("Chrome Bridge WebSocket is not connected. Open Google Chrome with the ZCA extension installed.")
 
         clean_prov = (provider or "").strip().lower()
         task_id = f"task_{secrets.token_hex(8)}"
@@ -286,11 +291,12 @@ class ChromeBridgeManager:
             "timeout_sec": int(timeout)
         }
 
+        logger.info(f"[ChromeBridge][{task_id}] -> WS send prompt (provider={clean_prov}, ws_id={id(ws)})")
         try:
-            await self.active_websocket.send_text(json.dumps(req_payload))
+            await ws.send_text(json.dumps(req_payload))
         except Exception as send_err:
             self.tasks.pop(task_id, None)
-            raise RuntimeError(f"Failed to transmit prompt to Chrome Bridge: {send_err}")
+            raise RuntimeError(f"Failed to transmit prompt to Chrome Bridge (ws_id={id(ws)}): {send_err}")
 
         start_time = time.time()
         ack_received = False
@@ -323,7 +329,7 @@ class ChromeBridgeManager:
                     stage = msg.get("stage", "")
                     detail = msg.get("detail", "")
                     last_stage = f"{stage}: {detail}" if detail else stage
-                    if stage in ("prompt_sent", "generating"):
+                    if stage in ("received", "tab_ready", "injected", "prompt_sent", "generating"):
                         ack_received = True
                     continue
                 elif m_type == "chunk":

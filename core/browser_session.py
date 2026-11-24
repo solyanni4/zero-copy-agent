@@ -562,16 +562,22 @@ class BrowserSessionEngine:
             prov = "chatgpt" if ("chatgpt" in m_lower or "gpt" in m_lower) else ("claude" if "claude" in m_lower else ("deepseek" if "deepseek" in m_lower else ("qwen" if "qwen" in m_lower else ("grok" if "grok" in m_lower else ("gemini" if "gemini" in m_lower else None)))))
 
         from core.chrome_bridge import chrome_bridge
-        if prov and chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
-            logger.info(f"[ENGINE] Priority 1: executing prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
-            try:
-                res = await chrome_bridge.execute_prompt(prov, prompt, model=model_id)
-                from core.mesh import mesh
-                mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
-                return res
-            except Exception as bridge_err:
-                logger.error(f"[ENGINE] Chrome Bridge execution for '{prov}' failed: {bridge_err}")
-                raise
+        if chrome_bridge.is_connected():
+            if prov and chrome_bridge.has_provider(prov):
+                logger.info(f"[ENGINE] Priority 1: executing prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
+                try:
+                    res = await chrome_bridge.execute_prompt(prov, prompt, model=model_id)
+                    from core.mesh import mesh
+                    mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
+                    return res
+                except Exception as bridge_err:
+                    logger.error(f"[ENGINE] Chrome Bridge execution for '{prov}' failed: {bridge_err}")
+                    raise
+            elif model_id != "mock-test":
+                connected_list = sorted(list(chrome_bridge.active_providers))
+                err_text = f"Провайдер '{prov}' не подключен в Chrome Bridge (активны: {connected_list}). Войдите в аккаунт в Chrome."
+                logger.warning(f"[ENGINE] {err_text}")
+                raise RuntimeError(err_text)
 
         if not target_acc:
             if model_id == "mock-test":
@@ -659,17 +665,23 @@ class BrowserSessionEngine:
             prov = "chatgpt" if ("chatgpt" in m_lower or "gpt" in m_lower) else ("claude" if "claude" in m_lower else ("deepseek" if "deepseek" in m_lower else ("qwen" if "qwen" in m_lower else ("grok" if "grok" in m_lower else ("gemini" if "gemini" in m_lower else None)))))
 
         from core.chrome_bridge import chrome_bridge
-        if prov and chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
-            logger.info(f"[ENGINE] Priority 1: streaming prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
-            try:
-                async for chunk in chrome_bridge.stream_prompt(prov, prompt, model=model_id):
-                    yield chunk
-                from core.mesh import mesh
-                mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
-                return
-            except Exception as bridge_err:
-                logger.error(f"[ENGINE] Chrome Bridge stream for '{prov}' failed: {bridge_err}")
-                raise
+        if chrome_bridge.is_connected():
+            if prov and chrome_bridge.has_provider(prov):
+                logger.info(f"[ENGINE] Priority 1: streaming prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
+                try:
+                    async for chunk in chrome_bridge.stream_prompt(prov, prompt, model=model_id):
+                        yield chunk
+                    from core.mesh import mesh
+                    mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
+                    return
+                except Exception as bridge_err:
+                    logger.error(f"[ENGINE] Chrome Bridge stream for '{prov}' failed: {bridge_err}")
+                    raise
+            elif model_id != "mock-test":
+                connected_list = sorted(list(chrome_bridge.active_providers))
+                err_text = f"Провайдер '{prov}' не подключен в Chrome Bridge (активны: {connected_list}). Войдите в аккаунт в Chrome."
+                logger.warning(f"[ENGINE] {err_text}")
+                raise RuntimeError(err_text)
 
         if not target_acc:
             if model_id == "mock-test":

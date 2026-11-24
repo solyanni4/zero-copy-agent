@@ -230,6 +230,19 @@ async function connectWebSocket() {
       } else if (msg.type === "pong") {
         await chrome.storage.local.set({ bridgeLastSeen: Date.now() });
       } else if (msg.type === "prompt") {
+        // Immediately acknowledge receipt before any async operations or tab creation
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "status",
+              task_id: msg.task_id,
+              stage: "received",
+              detail: `Processing ${msg.provider || "prompt"} in Chrome Bridge`
+            }));
+          }
+        } catch (ackErr) {
+          console.warn("[ZCA Bridge] Failed to send instant 'received' ack:", ackErr);
+        }
         enqueuePromptTask(msg);
       } else if (msg.type === "cancel") {
         cancelPromptTask(msg.task_id);
@@ -476,6 +489,7 @@ async function executePromptInTab(task) {
 
   return new Promise((resolve) => {
     let port = null;
+    let taskFinished = false;
     try {
       port = chrome.tabs.connect(tab.id, { name: "zca-bridge" });
     } catch (err) {
@@ -507,6 +521,7 @@ async function executePromptInTab(task) {
           full_text: msg.full_text
         });
       } else if (msg.type === "done") {
+        taskFinished = true;
         sendWs({
           type: "done",
           task_id: task.task_id,
@@ -516,6 +531,7 @@ async function executePromptInTab(task) {
         try { port.disconnect(); } catch (e) {}
         resolve();
       } else if (msg.type === "error") {
+        taskFinished = true;
         sendWs({
           type: "error",
           task_id: task.task_id,
@@ -530,6 +546,14 @@ async function executePromptInTab(task) {
 
     port.onDisconnect.addListener(() => {
       delete activeTaskPorts[task.task_id];
+      if (!taskFinished) {
+        sendWs({
+          type: "error",
+          task_id: task.task_id,
+          code: "port_disconnected",
+          message: "Content script port disconnected prematurely"
+        });
+      }
       resolve();
     });
 
@@ -586,6 +610,10 @@ async function initializeFromDefaults() {
 }
 
 async function syncProvider(providerId, force = false, retryOn401 = true) {
+  // Only sync via HTTP when explicitly requested by user in popup UI
+  if (!force) {
+    return { ok: true, status: "auto_sync_disabled" };
+  }
   // If Chrome Bridge is actively connected, skip HTTP cookie pushing
   if (wsConnected && ws && ws.readyState === WebSocket.OPEN) {
     return { ok: true, status: "bridge_active" };
@@ -722,9 +750,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "syncCookiesAlarm") {
-    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
-      syncAllProviders(false);
-    }
+    // Legacy HTTP cookie sync disabled; Chrome Bridge WebSocket handles real-time execution
   } else if (alarm.name === "bridgeKeepAlive") {
     if (!wsConnected && (!ws || ws.readyState !== WebSocket.OPEN)) {
       connectWebSocket();
@@ -750,10 +776,6 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
             providers: activeProviders,
             user_agent: navigator.userAgent
           });
-        }
-      } else {
-        for (const m of matched) {
-          await syncProvider(m.id, false);
         }
       }
     }, 10000);
