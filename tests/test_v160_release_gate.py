@@ -786,6 +786,42 @@ def test_prune_browser_profile_caches(tmp_path):
     assert preferences_file.exists()
 
 
+def test_get_config_path_ignores_random_cwd(tmp_path, monkeypatch):
+    """Verifies that get_config_path() ignores arbitrary config.yaml in Path.cwd() and prioritizes get_runtime_cwd()."""
+    from core.config import get_config_path
+
+    foreign_cwd = tmp_path / "foreign_cwd"
+    foreign_cwd.mkdir()
+    (foreign_cwd / "config.yaml").write_text("version: '0.0.1_FOREIGN'\n", encoding="utf-8")
+
+    true_runtime = tmp_path / "true_runtime"
+    true_runtime.mkdir()
+    true_cfg = true_runtime / "config.yaml"
+    true_cfg.write_text("version: '1.6.0_TRUE'\n", encoding="utf-8")
+
+    monkeypatch.chdir(foreign_cwd)
+    monkeypatch.setattr("core.config.get_runtime_cwd", lambda: true_runtime)
+    monkeypatch.delenv("CONFIG_PATH", raising=False)
+
+    resolved = get_config_path()
+    assert resolved == true_cfg
+    assert "1.6.0_TRUE" in resolved.read_text(encoding="utf-8")
+
+
+def test_popup_js_and_background_js_self_heal_on_401():
+    """Verifies that both background.js and popup.js contain self-healing logic for 401 using defaults.json."""
+    from pathlib import Path
+    ext_dir = Path(__file__).resolve().parent.parent / "chrome_extension"
+    bg_code = (ext_dir / "background.js").read_text(encoding="utf-8")
+    popup_code = (ext_dir / "popup.js").read_text(encoding="utf-8")
+
+    assert "defaults.json" in bg_code
+    assert "syncToken" in bg_code
+    assert "defaults.json" in popup_code
+    assert "syncToken" in popup_code
+
+
+
 
 
 

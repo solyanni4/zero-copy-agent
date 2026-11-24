@@ -81,7 +81,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     btnSync.innerText = "Синхронизация...";
     btnSync.disabled = true;
 
-    chrome.runtime.sendMessage({ action: "syncNow" }, (res) => {
+    chrome.runtime.sendMessage({ action: "syncNow" }, async (res) => {
+      try {
+        const defUrl = chrome.runtime.getURL("defaults.json");
+        const defResp = await fetch(defUrl);
+        if (defResp.ok) {
+          const defaults = await defResp.json();
+          const stored = await chrome.storage.local.get(["syncToken"]);
+          if (defaults.syncToken && defaults.syncToken !== stored.syncToken) {
+            await chrome.storage.local.set({ syncToken: defaults.syncToken });
+            await new Promise(r => chrome.runtime.sendMessage({ action: "syncNow" }, r));
+          }
+        }
+      } catch (e) {}
+
       btnSync.disabled = false;
       btnSync.innerText = "Синхронизировать сейчас";
       loadData();

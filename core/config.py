@@ -29,25 +29,20 @@ def get_config_path() -> Path:
     if env_path:
         return Path(env_path)
 
-    # 1. Custom config in current working directory
-    cwd_path = Path.cwd() / "config.yaml"
-    if cwd_path.exists():
-        return cwd_path
+    # 1. Persistent config in runtime directory (next to .exe for frozen, or repo root for dev)
+    runtime_path = get_runtime_cwd() / "config.yaml"
+    if runtime_path.exists():
+        return runtime_path
 
-    # 2. Config next to executable (for frozen binaries)
+    # 2. Bundled template extracted by PyInstaller (used for initial seed)
     if getattr(sys, "frozen", False):
-        exe_dir_path = Path(sys.executable).parent / "config.yaml"
-        if exe_dir_path.exists():
-            return exe_dir_path
-        
-        # 3. Bundled config extracted by PyInstaller
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             bundle_path = Path(meipass) / "config.yaml"
             if bundle_path.exists():
                 return bundle_path
 
-    return Path("config.yaml")
+    return runtime_path
 
 CONFIG_PATH = get_config_path()
 

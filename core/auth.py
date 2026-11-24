@@ -19,7 +19,7 @@ from core.config import config
 PROVIDER_URLS = {
     "gemini": "https://gemini.google.com/app",
     "chatgpt": "https://chatgpt.com",
-    "claude": "https://claude.ai/chats",
+    "claude": "https://claude.ai",
     "deepseek": "https://chat.deepseek.com",
     "qwen": "https://chat.qwen.ai",
     "grok": "https://grok.com"

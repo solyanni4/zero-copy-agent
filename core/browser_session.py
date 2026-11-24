@@ -431,6 +431,10 @@ class BrowserSessionEngine:
                 try:
                     await page.goto(target_url, wait_until="domcontentloaded", timeout=25000)
                     logger.info(f"[ENGINE] Reloaded page '{target_url}' for account '{account_id}' after cookie injection.")
+                    try:
+                        await page.wait_for_timeout(3000)
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.warning(f"[ENGINE] Reload note after cookie injection: {e}")
 
