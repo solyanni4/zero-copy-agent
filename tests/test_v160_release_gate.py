@@ -1281,6 +1281,112 @@ def test_api_probe_and_import_endpoints(tmp_path: Path, monkeypatch):
     assert found.api_key == "sk-or-v1-secret-preview-test-key"
 
 
+@pytest.mark.asyncio
+async def test_chrome_bridge_first_chunk_timeout_with_generating_heartbeats():
+    """Verifies that empty 'generating' statuses do not prevent first_chunk_timeout from firing."""
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    sent_messages = []
+
+    class DummyWS:
+        def __init__(self):
+            self.closed = False
+        async def send_text(self, text: str):
+            sent_messages.append(text)
+
+    dummy_ws = DummyWS()
+    chrome_bridge.active_websocket = dummy_ws
+    chrome_bridge.active_providers = {"gemini"}
+
+    keep_sending = True
+
+    async def simulate_generating_heartbeats():
+        await asyncio.sleep(0.02)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "status", "stage": "prompt_sent", "detail": "Prompt submitted"})
+        while keep_sending:
+            await asyncio.sleep(0.04)
+            for tid, q in list(chrome_bridge.tasks.items()):
+                await q.put({
+                    "type": "status",
+                    "stage": "generating",
+                    "detail": "responsesCount=1, lastLen=0, isGenerating=true"
+                })
+
+    task = asyncio.create_task(simulate_generating_heartbeats())
+
+    try:
+        with pytest.raises(TimeoutError) as exc_info:
+            async for _ in chrome_bridge.stream_prompt(
+                "gemini", "Hello",
+                timeout=5.0,
+                ack_timeout=2.0,
+                first_chunk_timeout=0.25
+            ):
+                pass
+        assert "fail-fast timeout (0.25s) waiting for first response token" in str(exc_info.value)
+        assert any("cancel" in m for m in sent_messages)
+    finally:
+        keep_sending = False
+        await task
+        chrome_bridge.active_websocket = None
+        chrome_bridge.active_providers = set()
+
+
+@pytest.mark.asyncio
+async def test_chrome_bridge_stream_success_with_chunk_and_done():
+    """Verifies that receiving real chunks followed by done finishes the stream cleanly."""
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    class DummyWS:
+        def __init__(self):
+            self.closed = False
+        async def send_text(self, text: str):
+            pass
+
+    dummy_ws = DummyWS()
+    chrome_bridge.active_websocket = dummy_ws
+    chrome_bridge.active_providers = {"gemini"}
+
+    async def simulate_stream():
+        await asyncio.sleep(0.03)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "status", "stage": "prompt_sent", "detail": "Prompt submitted"})
+        await asyncio.sleep(0.03)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "status", "stage": "generating", "detail": "responsesCount=1, lastLen=0, isGenerating=true"})
+        await asyncio.sleep(0.03)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "chunk", "delta": "Здрав", "full_text": "Здрав"})
+        await asyncio.sleep(0.03)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "chunk", "delta": "ствуйте!", "full_text": "Здравствуйте!"})
+        await asyncio.sleep(0.03)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "done", "full_text": "Здравствуйте!"})
+
+    task = asyncio.create_task(simulate_stream())
+    chunks = []
+
+    try:
+        async for chunk in chrome_bridge.stream_prompt(
+            "gemini", "Привет",
+            timeout=5.0,
+            ack_timeout=2.0,
+            first_chunk_timeout=2.0
+        ):
+            chunks.append(chunk)
+
+        assert "".join(chunks) == "Здравствуйте!"
+        assert chunks == ["Здрав", "ствуйте!"]
+    finally:
+        await task
+        chrome_bridge.active_websocket = None
+        chrome_bridge.active_providers = set()
+
+
 
 
 

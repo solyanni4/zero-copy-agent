@@ -258,6 +258,24 @@ class ChromeBridgeManager:
                 "message": "Orchestration cancelled by user"
             })
 
+    async def cancel_task(self, task_id: str):
+        """Cancels a specific in-flight prompt task across the bridge."""
+        async with self._lock:
+            queue = self.tasks.get(task_id)
+            ws = self.active_websocket
+
+        if ws:
+            try:
+                await ws.send_text(json.dumps({"type": "cancel", "task_id": task_id}))
+            except Exception:
+                pass
+        if queue:
+            queue.put_nowait({
+                "type": "error",
+                "code": "cancelled",
+                "message": f"Task {task_id} was cancelled"
+            })
+
     async def stream_prompt(
         self,
         provider: str,
@@ -351,8 +369,7 @@ class ChromeBridgeManager:
                         ack_received = True
                     if stage == "prompt_sent" and prompt_sent_time is None:
                         prompt_sent_time = time.time()
-                    if stage == "generating":
-                        first_chunk_received = True
+                    # Do not set first_chunk_received on generating heartbeat
                     continue
                 elif m_type == "chunk":
                     ack_received = True
@@ -384,6 +401,14 @@ class ChromeBridgeManager:
                         from core.drivers.base import WebSessionAuthError
                         raise WebSessionAuthError(f"В Chrome требуется авторизация в {clean_prov.upper()}: {err_msg}")
                     raise RuntimeError(f"[{code}] {err_msg} (Last stage: {last_stage})")
+        except asyncio.CancelledError:
+            task_succeeded = False
+            if self.is_connected() and self.active_websocket:
+                try:
+                    await self.active_websocket.send_text(json.dumps({"type": "cancel", "task_id": task_id}))
+                except Exception:
+                    pass
+            raise
         finally:
             self.tasks.pop(task_id, None)
             if not task_succeeded and self.is_connected() and self.active_websocket:

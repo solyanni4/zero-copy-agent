@@ -171,14 +171,29 @@
 
   function isGenerating() {
     const stopBtn = getStopButton();
-    if (stopBtn && stopBtn.offsetParent !== null) {
+    if (stopBtn && (stopBtn.offsetParent !== null || stopBtn.getClientRects().length > 0)) {
       return true;
     }
 
     switch (PROVIDER) {
       case "gemini": {
-        const thinking = document.querySelector('model-thoughts, [aria-busy="true"], .thinking, [class*="thinking"], mat-progress-bar, .loading, [aria-label*="Loading" i]');
-        return Boolean(thinking);
+        const activeThinking = document.querySelector(
+          'model-thoughts[is-thinking="true"], ' +
+          'model-thoughts mat-progress-bar, ' +
+          'mat-progress-bar, ' +
+          'mat-spinner, ' +
+          '[aria-busy="true"], ' +
+          '.sparkle-animation, ' +
+          '.loading, ' +
+          '[aria-label*="Loading" i]'
+        );
+        if (activeThinking) return true;
+
+        const sendBtn = getSendButton();
+        if (sendBtn && !sendBtn.disabled && (sendBtn.offsetParent !== null || sendBtn.getClientRects().length > 0)) {
+          return false;
+        }
+        return false;
       }
       case "claude": {
         const streaming = document.querySelector('div[data-is-streaming="true"]');
@@ -188,6 +203,10 @@
         const busy = document.querySelector('.result-streaming, [data-is-streaming="true"]');
         return Boolean(busy);
       }
+      case "deepseek": {
+        const busy = document.querySelector('.ds-loading, [aria-busy="true"]');
+        return Boolean(busy);
+      }
       default:
         return Boolean(document.querySelector('[aria-busy="true"], .result-streaming, .loading'));
     }
@@ -195,41 +214,108 @@
 
   function getResponseContainers() {
     switch (PROVIDER) {
-      case "gemini":
-        return Array.from(document.querySelectorAll("model-response, message-content, [data-message-author-role='model'], .response-container, .response-container-content, model-response .markdown, model-response .model-response-text, message-content .markdown-main-panel"));
-      case "chatgpt":
-        return Array.from(document.querySelectorAll("div[data-message-author-role='assistant'], .agent-turn, div.markdown"));
-      case "claude":
-        return Array.from(document.querySelectorAll(".font-claude-message, div.grid-cols-1"));
-      case "deepseek":
-        return Array.from(document.querySelectorAll(".ds-markdown, .ds-message-content, div[class*='message-content']"));
-      case "qwen":
-        return Array.from(document.querySelectorAll(".qwen-markdown, .chat-message-content, .message-content"));
-      case "grok":
-        return Array.from(document.querySelectorAll(".message-bubble, .response-message, div[class*='message']"));
+      case "gemini": {
+        const topTurns = Array.from(document.querySelectorAll("model-response, [data-message-author-role='model'], .response-container"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll("message-content, .model-response-text, .response-container-content, div.markdown"));
+      }
+      case "chatgpt": {
+        const topTurns = Array.from(document.querySelectorAll("div[data-message-author-role='assistant'], .agent-turn"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll("div.markdown"));
+      }
+      case "claude": {
+        const topTurns = Array.from(document.querySelectorAll(".font-claude-message, [data-is-streaming]"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll("div.grid-cols-1"));
+      }
+      case "deepseek": {
+        const topTurns = Array.from(document.querySelectorAll(".ds-message-content, div[class*='message-content']"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll(".ds-markdown"));
+      }
+      case "qwen": {
+        const topTurns = Array.from(document.querySelectorAll(".chat-message-content, .message-content"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll(".qwen-markdown"));
+      }
+      case "grok": {
+        const topTurns = Array.from(document.querySelectorAll(".message-bubble, .response-message"));
+        if (topTurns.length > 0) return topTurns;
+        return Array.from(document.querySelectorAll("div[class*='message']"));
+      }
       default:
         return Array.from(document.querySelectorAll("[data-role='assistant'], .message"));
     }
   }
 
-  function extractResponseFromTurn(initialBlockCount) {
-    const containers = getResponseContainers();
-    if (containers.length === 0) return "";
-
-    let target = null;
-    if (containers.length > initialBlockCount) {
-      target = containers[containers.length - 1];
-    } else {
-      target = containers[containers.length - 1];
-    }
-
+  function extractTurnText(target) {
     if (!target) return "";
 
     if (PROVIDER === "gemini") {
-      const md = target.querySelector("message-content .markdown-main-panel, message-content, .markdown, .model-response-text, .response-container .markdown");
+      const md = target.querySelector(
+        "message-content .markdown-main-panel, " +
+        "message-content, " +
+        ".model-response-text, " +
+        ".response-container-content .markdown, " +
+        ".response-container .markdown, " +
+        ".markdown"
+      );
+      const contentElem = md || target;
+
+      const thoughts = contentElem.querySelector("model-thoughts, .thought-container, .thinking-process");
+      if (thoughts && thoughts.parentNode) {
+        try {
+          const clone = contentElem.cloneNode(true);
+          const cThoughts = clone.querySelector("model-thoughts, .thought-container, .thinking-process");
+          if (cThoughts && cThoughts.parentNode) {
+            cThoughts.parentNode.removeChild(cThoughts);
+          }
+          return (clone.innerText || "").trim();
+        } catch (e) {
+          return (contentElem.innerText || "").trim();
+        }
+      }
+      return (contentElem.innerText || "").trim();
+    }
+
+    if (PROVIDER === "chatgpt") {
+      const md = target.querySelector("div.markdown");
       return ((md || target).innerText || "").trim();
     }
+    if (PROVIDER === "deepseek") {
+      const md = target.querySelector(".ds-markdown");
+      return ((md || target).innerText || "").trim();
+    }
+    if (PROVIDER === "qwen") {
+      const md = target.querySelector(".qwen-markdown");
+      return ((md || target).innerText || "").trim();
+    }
+
     return (target.innerText || "").trim();
+  }
+
+  function getCurrentTurnText(beforeCount, beforeLastText) {
+    const containers = getResponseContainers();
+    if (containers.length === 0) return "";
+
+    if (containers.length > beforeCount) {
+      const target = containers[containers.length - 1];
+      return extractTurnText(target);
+    }
+
+    const target = containers[containers.length - 1];
+    const textNow = extractTurnText(target);
+    if (!beforeLastText) {
+      return textNow;
+    }
+    if (textNow === beforeLastText) {
+      return "";
+    }
+    if (textNow.startsWith(beforeLastText)) {
+      return textNow.slice(beforeLastText.length).trim();
+    }
+    return textNow;
   }
 
   function dismissPopups() {
@@ -295,9 +381,13 @@
     }
 
     // Capture initial block count and user turns before prompt submission
-    const initialBlockCount = getResponseContainers().length;
+    const containersBefore = getResponseContainers();
+    const beforeCount = containersBefore.length;
+    let beforeLastText = "";
+    if (beforeCount > 0) {
+      beforeLastText = extractTurnText(containersBefore[beforeCount - 1]);
+    }
     const beforeUserTurns = document.querySelectorAll('user-query, [data-message-author-role="user"]').length;
-    const baselineText = extractResponseFromTurn(initialBlockCount);
 
     // 2. Hydrate input with prompt
     try {
@@ -359,7 +449,7 @@
       const stopBtn = getStopButton();
       const isBusy = isGenerating();
 
-      if (currentInputText.length === 0 || currentUserTurns > beforeUserTurns || currentRespCount > initialBlockCount || (stopBtn && stopBtn.offsetParent !== null) || isBusy) {
+      if (currentInputText.length === 0 || currentUserTurns > beforeUserTurns || currentRespCount > beforeCount || (stopBtn && (stopBtn.offsetParent !== null || stopBtn.getClientRects().length > 0)) || isBusy) {
         verified = true;
         break;
       }
@@ -393,7 +483,7 @@
     // Telemetry: prompt_sent stage reached ONLY after verified submission
     onStatus({ stage: "prompt_sent", detail: "Prompt submitted to chat" });
 
-    // 5. Dual observation (MutationObserver + 400ms polling) with 20s fail-fast
+    // 5. Dual observation (MutationObserver + 300ms polling) with 20s fail-fast
     activeTask = { taskId, cancelled: false };
 
     const startTime = Date.now();
@@ -404,6 +494,8 @@
     let lastChangeTime = Date.now();
     let responseStarted = false;
     let finalDelivered = false;
+    let unchangedTicks = 0;
+    let lastStatusTime = 0;
 
     let pollInterval = null;
     let domObserver = null;
@@ -429,8 +521,8 @@
       const elapsed = Date.now() - startTime;
       if (elapsed > timeoutMs) {
         cleanup();
-        const currentText = extractResponseFromTurn(initialBlockCount);
-        if (currentText && currentText !== baselineText) {
+        const currentText = getCurrentTurnText(beforeCount, beforeLastText);
+        if (currentText && currentText.length > 0) {
           onDone({ full_text: currentText });
         } else {
           onError({ code: "timeout", message: `Превышено время ожидания ответа (${timeoutSec}с)` });
@@ -438,12 +530,15 @@
         return;
       }
 
-      // 20s Fail-fast: if after prompt_sent nothing started generating
+      const currentlyGenerating = isGenerating();
+      const currentContainers = getResponseContainers();
+      const currentCount = currentContainers.length;
+      const currentText = getCurrentTurnText(beforeCount, beforeLastText);
+
+      // 20s Fail-fast: if after prompt_sent nothing started generating and no text appeared
       if (!responseStarted) {
         const timeSinceSent = Date.now() - promptSentTime;
-        const currentlyGenerating = isGenerating();
-        const currentText = extractResponseFromTurn(initialBlockCount);
-        if (timeSinceSent > 20000 && !currentlyGenerating && (!currentText || currentText === baselineText)) {
+        if (timeSinceSent > 20000 && !currentlyGenerating && (!currentText || currentText.length === 0)) {
           cleanup();
           onError({
             code: "no_response_in_dom",
@@ -453,31 +548,43 @@
         }
       }
 
-      const currentlyGenerating = isGenerating();
-      const currentText = extractResponseFromTurn(initialBlockCount);
-
-      if (currentText && currentText !== baselineText) {
+      // Check for incoming response text
+      if (currentText && currentText.length > 0) {
         if (!responseStarted) {
           responseStarted = true;
-          onStatus({ stage: "generating", detail: "First response token received" });
+          onStatus({
+            stage: "generating",
+            detail: `responsesCount=${currentCount}, lastLen=${currentText.length}, isGenerating=${currentlyGenerating}`
+          });
+          lastStatusTime = Date.now();
         }
 
         if (currentText.length > lastSentLength) {
           const delta = currentText.slice(lastSentLength);
           lastSentLength = currentText.length;
           lastChangeTime = Date.now();
+          unchangedTicks = 0;
           onChunk({ delta, full_text: currentText });
+        } else {
+          unchangedTicks++;
         }
-      } else if (currentlyGenerating && !responseStarted) {
-        // Model is thinking or preparing response
-        onStatus({ stage: "generating", detail: "Model is preparing response" });
-        lastChangeTime = Date.now();
+      } else if (currentlyGenerating) {
+        // Model is preparing response (thinking / waiting)
+        const now = Date.now();
+        if (now - lastStatusTime >= 2000) {
+          lastStatusTime = now;
+          onStatus({
+            stage: "generating",
+            detail: `responsesCount=${currentCount}, lastLen=${currentText ? currentText.length : 0}, isGenerating=${currentlyGenerating}`
+          });
+        }
       }
 
-      // Finish only when generation completed AND text has stabilized for 1.5s
+      // Finish only when generation completed AND text has stabilized
       if (responseStarted && !currentlyGenerating) {
         const stabilityMs = Date.now() - lastChangeTime;
-        if (stabilityMs >= 1500 && !finalDelivered) {
+        // Text hasn't changed for >= 1000ms and generation indicators are off, or 3 consecutive unchanged ticks
+        if ((stabilityMs >= 1000 || unchangedTicks >= 3) && !finalDelivered) {
           finalDelivered = true;
           cleanup();
           onDone({ full_text: currentText });
@@ -485,18 +592,18 @@
       }
     }
 
-    // Set up MutationObserver on document.body for instant DOM reaction
+    // Set up MutationObserver on document.body for instant DOM reaction (even in background tabs)
     try {
       domObserver = new MutationObserver(() => {
         checkProgress();
       });
-      domObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+      domObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
     } catch (obsErr) {
       console.warn("[ZCA Bridge] Could not start MutationObserver, relying on polling:", obsErr);
     }
 
-    // Set up 400ms interval polling
-    pollInterval = setInterval(checkProgress, 400);
+    // Set up 300ms interval polling
+    pollInterval = setInterval(checkProgress, 300);
   }
 
   // Handle connection from background service worker
