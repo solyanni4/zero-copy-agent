@@ -91,6 +91,32 @@ class HybridOrchestrator:
         self.architect_models: List[str] = getattr(cascade_cfg, "architect_models", None) or [self.architect_model]
         self.executor_model: str = getattr(cascade_cfg, "executor_model", None) or getattr(cascade_cfg, "coder_model", "tier:local-fast") or "tier:local-fast"
         self.reviewer_model: str = getattr(cascade_cfg, "reviewer_model", None) or getattr(cascade_cfg, "auditor_model", "gemini-4-neon") or "gemini-4-neon"
+        self.active_tasks: Set[asyncio.Task] = set()
+        self.status: str = "IDLE"
+        self.is_cancelled: bool = False
+
+    async def stop(self):
+        """Stops all running orchestration tasks, cancels bridge requests, and resets state to IDLE."""
+        self.is_cancelled = True
+        self.status = "IDLE"
+        cancelled_count = 0
+        for t in list(self.active_tasks):
+            if not t.done():
+                t.cancel()
+                cancelled_count += 1
+        self.active_tasks.clear()
+
+        from core.chrome_bridge import chrome_bridge
+        await chrome_bridge.cancel_all()
+
+        try:
+            from core.activity_tracker import activity_tracker
+            activity_tracker.record("system", "🛑 Оркестрация остановлена пользователем", status="stopped")
+        except Exception:
+            pass
+
+        logger.info(f"[Orchestrator] Stopped {cancelled_count} active tasks and reset status to IDLE.")
+        return {"status": "ok", "cancelled_tasks": cancelled_count}
 
     def apply_preset(self, preset):
         """Applies parameters from an OrchestrationPreset."""
@@ -409,6 +435,26 @@ class HybridOrchestrator:
         inject_signature: bool = True
     ) -> str:
         """Routes non-streaming query to target provider or cascade pipeline with metric logging."""
+        current_task = asyncio.current_task()
+        if current_task:
+            self.active_tasks.add(current_task)
+        self.status = "RUNNING"
+        self.is_cancelled = False
+        try:
+            return await self._execute_query(prompt, model_id, req_id, inject_signature)
+        finally:
+            if current_task:
+                self.active_tasks.discard(current_task)
+            if not self.active_tasks:
+                self.status = "IDLE"
+
+    async def _execute_query(
+        self,
+        prompt: str,
+        model_id: str,
+        req_id: str = "",
+        inject_signature: bool = True
+    ) -> str:
         start_time = time.time()
 
         # 1. DLP Sanitization (Security Shield)
@@ -542,6 +588,27 @@ class HybridOrchestrator:
         inject_signature: bool = True
     ) -> AsyncGenerator[str, None]:
         """Routes streaming query to target provider or cascade pipeline with metric logging."""
+        current_task = asyncio.current_task()
+        if current_task:
+            self.active_tasks.add(current_task)
+        self.status = "RUNNING"
+        self.is_cancelled = False
+        try:
+            async for chunk in self._execute_query_stream(prompt, model_id, req_id, inject_signature):
+                yield chunk
+        finally:
+            if current_task:
+                self.active_tasks.discard(current_task)
+            if not self.active_tasks:
+                self.status = "IDLE"
+
+    async def _execute_query_stream(
+        self,
+        prompt: str,
+        model_id: str,
+        req_id: str = "",
+        inject_signature: bool = True
+    ) -> AsyncGenerator[str, None]:
         start_time = time.time()
 
         # 1. DLP Sanitization

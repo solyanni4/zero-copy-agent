@@ -54,7 +54,7 @@
       const loginBtn = document.querySelector('a[href*="/login"], input[type="email"]');
       if (loginBtn) return true;
     } else if (PROVIDER === "deepseek") {
-      if (bodyText.includes("войти в аккаунт") || bodyText.includes("log in to deepseek")) {
+      if (bodyText.includes("войти в аккаунт") || bodyText.includes("log in to deepseek") || bodyText.includes("sign in")) {
         return true;
       }
     } else if (PROVIDER === "qwen") {
@@ -72,17 +72,17 @@
   function getInputSelector() {
     switch (PROVIDER) {
       case "gemini":
-        return 'div.ql-editor[contenteditable="true"], rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea';
+        return 'div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [role="textbox"][contenteditable="true"], rich-textarea div[contenteditable="true"], textarea';
       case "chatgpt":
-        return '#prompt-textarea, div#prompt-textarea[contenteditable="true"], textarea[data-id="root"], div[contenteditable="true"], textarea';
+        return '#prompt-textarea, div#prompt-textarea[contenteditable="true"], textarea[data-id="root"], [contenteditable="true"], textarea';
       case "claude":
         return 'div.ProseMirror[contenteditable="true"], fieldset div[contenteditable="true"], div[contenteditable="true"], textarea';
       case "deepseek":
-        return '#chat-input, textarea[placeholder*="DeepSeek"], textarea[placeholder*="Сообщение"], textarea, div[contenteditable="true"]';
+        return '#chat-input, textarea[placeholder*="DeepSeek" i], textarea[placeholder*="Сообщение" i], textarea, div[contenteditable="true"]';
       case "qwen":
-        return '#chat-input, textarea[placeholder*="Qwen"], textarea[placeholder*="Ask"], textarea, div[contenteditable="true"]';
+        return '#chat-input, textarea[placeholder*="Qwen" i], textarea[placeholder*="Ask" i], textarea, div[contenteditable="true"]';
       case "grok":
-        return 'textarea[placeholder*="Grok"], textarea[placeholder*="Ask"], textarea, div[contenteditable="true"]';
+        return 'textarea[placeholder*="Grok" i], textarea[placeholder*="Ask" i], textarea, div[contenteditable="true"]';
       default:
         return 'textarea, [contenteditable="true"]';
     }
@@ -91,84 +91,132 @@
   function getSendButton() {
     switch (PROVIDER) {
       case "gemini":
-        return document.querySelector('button[aria-label*="Send"], button[aria-label*="Отправить"], button.send-button, button[data-testid*="send"]');
+        return document.querySelector(
+          'button.send-button:not([disabled]), ' +
+          'button[aria-label*="Send" i]:not([disabled]), ' +
+          'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          'button[aria-label*="Submit" i]:not([disabled]), ' +
+          'button[data-testid*="send" i]:not([disabled])'
+        );
       case "chatgpt":
-        return document.querySelector('button[data-testid="send-button"], button[aria-label="Send prompt"], button[data-testid*="send"]');
+        return document.querySelector(
+          'button[data-testid="send-button"]:not([disabled]), ' +
+          'button[aria-label*="Send" i]:not([disabled]), ' +
+          'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          'button[data-testid*="send"]:not([disabled])'
+        );
       case "claude":
-        return document.querySelector('button[aria-label*="Send Message"], button[aria-label*="Send message"], button[aria-label*="Send"]');
+        return document.querySelector(
+          'button[aria-label*="Send" i]:not([disabled]), ' +
+          'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          'button[aria-label*="Submit" i]:not([disabled])'
+        );
       case "deepseek":
-        return document.querySelector('button[aria-label*="Send"], div[role="button"][aria-label*="Send"], .ds-icon-button, button[class*="send"]');
+        return document.querySelector(
+          'button[aria-label*="Send" i]:not([disabled]), ' +
+          'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          'div[role="button"][aria-label*="Send" i], ' +
+          '.ds-icon-button:not([disabled]), ' +
+          'button[class*="send" i]:not([disabled])'
+        );
       case "qwen":
-        return document.querySelector('button[class*="send"], button[aria-label*="Send"], .ant-btn-primary');
+        return document.querySelector(
+          'button[class*="send" i]:not([disabled]), ' +
+          'button[aria-label*="Send" i]:not([disabled]), ' +
+          'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          '.ant-btn-primary:not([disabled])'
+        );
       case "grok":
-        return document.querySelector('button[aria-label*="Submit"], button[aria-label*="Grok"], button[type="submit"]');
+        return document.querySelector(
+          'button[aria-label*="Submit" i]:not([disabled]), ' +
+          'button[aria-label*="Grok" i]:not([disabled]), ' +
+          'button[type="submit"]:not([disabled])'
+        );
       default:
-        return document.querySelector('button[type="submit"], button[aria-label*="Send"]');
+        return document.querySelector('button[type="submit"]:not([disabled]), button[aria-label*="Send" i]:not([disabled])');
+    }
+  }
+
+  function getStopButton() {
+    switch (PROVIDER) {
+      case "gemini":
+        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i], button[data-testid*="stop" i], .stop-icon');
+      case "chatgpt":
+        return document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
+      case "claude":
+        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
+      case "deepseek":
+        return document.querySelector('button[class*="stop" i], button[aria-label*="Stop" i], button[aria-label*="Остановить" i], .ds-icon-button[title*="Stop" i]');
+      case "qwen":
+        return document.querySelector('button[class*="stop" i], button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
+      case "grok":
+        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
+      default:
+        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
     }
   }
 
   function isGenerating() {
+    const stopBtn = getStopButton();
+    if (stopBtn && stopBtn.offsetParent !== null) {
+      return true;
+    }
+
     switch (PROVIDER) {
       case "gemini": {
-        const stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Остановить"], button[aria-label*="stop"], button[data-testid*="stop"]');
-        const thinking = document.querySelector('model-thoughts, [aria-busy="true"], .thinking, [class*="thinking"], mat-progress-bar, .loading, [aria-label*="Loading"]');
-        return Boolean(stopBtn || thinking);
-      }
-      case "chatgpt": {
-        const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="stop"]');
-        return Boolean(stopBtn);
+        const thinking = document.querySelector('model-thoughts, [aria-busy="true"], .thinking, [class*="thinking"], mat-progress-bar, .loading, [aria-label*="Loading" i]');
+        return Boolean(thinking);
       }
       case "claude": {
-        const stopBtn = document.querySelector('button[aria-label*="Stop Response"], button[aria-label*="Stop responding"], button[aria-label*="Stop"]');
         const streaming = document.querySelector('div[data-is-streaming="true"]');
-        return Boolean(stopBtn || streaming);
+        return Boolean(streaming);
       }
-      case "deepseek": {
-        const stopBtn = document.querySelector('button[class*="stop"], button[aria-label*="Stop"], .ds-icon-button[title*="Stop"]');
-        return Boolean(stopBtn);
-      }
-      case "qwen": {
-        const stopBtn = document.querySelector('button[class*="stop"], button[aria-label*="Stop"], .ant-btn[aria-label*="Stop"]');
-        return Boolean(stopBtn);
-      }
-      case "grok": {
-        const stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="stop"]');
-        return Boolean(stopBtn);
+      case "chatgpt": {
+        const busy = document.querySelector('.result-streaming, [data-is-streaming="true"]');
+        return Boolean(busy);
       }
       default:
-        return Boolean(document.querySelector('button[aria-label*="Stop"], [aria-busy="true"]'));
+        return Boolean(document.querySelector('[aria-busy="true"], .result-streaming, .loading'));
     }
   }
 
-  function extractLastResponse() {
-    let selector = "";
+  function getResponseContainers() {
     switch (PROVIDER) {
       case "gemini":
-        selector = "message-content, .model-response-text, .response-container-content, [data-message-author-role='model']";
-        break;
+        return Array.from(document.querySelectorAll("model-response, message-content, [data-message-author-role='model'], .response-container-content"));
       case "chatgpt":
-        selector = "div[data-message-author-role='assistant'], .agent-turn, div.markdown";
-        break;
+        return Array.from(document.querySelectorAll("div[data-message-author-role='assistant'], .agent-turn, div.markdown"));
       case "claude":
-        selector = ".font-claude-message, div.grid-cols-1";
-        break;
+        return Array.from(document.querySelectorAll(".font-claude-message, div.grid-cols-1"));
       case "deepseek":
-        selector = ".ds-markdown, .ds-message-content, div[class*='message-content']";
-        break;
+        return Array.from(document.querySelectorAll(".ds-markdown, .ds-message-content, div[class*='message-content']"));
       case "qwen":
-        selector = ".qwen-markdown, .chat-message-content, .message-content";
-        break;
+        return Array.from(document.querySelectorAll(".qwen-markdown, .chat-message-content, .message-content"));
       case "grok":
-        selector = ".message-bubble, .response-message, div[class*='message']";
-        break;
+        return Array.from(document.querySelectorAll(".message-bubble, .response-message, div[class*='message']"));
       default:
-        selector = "[data-role='assistant'], .message";
+        return Array.from(document.querySelectorAll("[data-role='assistant'], .message"));
+    }
+  }
+
+  function extractResponseFromTurn(initialBlockCount) {
+    const containers = getResponseContainers();
+    if (containers.length === 0) return "";
+
+    let target = null;
+    if (containers.length > initialBlockCount) {
+      target = containers[containers.length - 1];
+    } else {
+      target = containers[containers.length - 1];
     }
 
-    const elements = Array.from(document.querySelectorAll(selector));
-    if (elements.length === 0) return "";
-    const lastElem = elements[elements.length - 1];
-    return (lastElem.innerText || "").trim();
+    if (!target) return "";
+
+    if (PROVIDER === "gemini") {
+      const md = target.querySelector(".markdown, message-content, .model-response-text");
+      return ((md || target).innerText || "").trim();
+    }
+    return (target.innerText || "").trim();
   }
 
   function dismissPopups() {
@@ -178,8 +226,8 @@
       'button:has-text("I agree")',
       'button:has-text("Got it")',
       'button:has-text("Понятно")',
-      'button[aria-label*="Close"]',
-      'button[aria-label*="Закрыть"]'
+      'button[aria-label*="Close" i]',
+      'button[aria-label*="Закрыть" i]'
     ];
     for (const p of popups) {
       try {
@@ -193,7 +241,7 @@
 
   let activeTask = null;
 
-  async function executePromptTask(taskId, prompt, options = {}, onChunk, onDone, onError) {
+  async function executePromptTask(taskId, prompt, options = {}, onStatus, onChunk, onDone, onError) {
     if (activeTask) {
       onError({ code: "busy", message: "Another task is actively executing in this tab" });
       return;
@@ -205,18 +253,19 @@
     }
 
     if (isNeedsAuth()) {
-      onError({ code: "needs_auth", message: `Требуется авторизация в ${PROVIDER}. Пожалуйста, войдите в аккаунт.` });
+      onError({ code: "needs_auth", message: `Требуется авторизация в ${PROVIDER.toUpperCase()}. Пожалуйста, войдите в аккаунт.` });
       return;
     }
 
     dismissPopups();
 
-    // 1. Locate input element
+    // 1. Locate input element with up to 15s wait
+    onStatus({ stage: "locating_input", detail: `Locating prompt input for ${PROVIDER}` });
     const inputSelector = getInputSelector();
     let inputElem = document.querySelector(inputSelector);
     if (!inputElem) {
       let waited = 0;
-      while (waited < 5000 && !inputElem) {
+      while (waited < 15000 && !inputElem) {
         await new Promise(r => setTimeout(r, 400));
         waited += 400;
         inputElem = document.querySelector(inputSelector);
@@ -225,17 +274,18 @@
 
     if (!inputElem) {
       if (isNeedsAuth()) {
-        onError({ code: "needs_auth", message: `Поле ввода не найдено: требуется авторизация в ${PROVIDER}` });
+        onError({ code: "needs_auth", message: `Поле ввода не найдено: требуется авторизация в ${PROVIDER.toUpperCase()}` });
         return;
       }
-      onError({ code: "dom_error", message: `Не удалось обнаружить поле ввода на странице ${PROVIDER}` });
+      onError({ code: "dom_error", message: `Не удалось обнаружить поле ввода на странице ${PROVIDER} за 15с` });
       return;
     }
 
-    // Baseline response before sending
-    const baselineText = extractLastResponse();
+    // Capture initial block count before prompt submission
+    const initialBlockCount = getResponseContainers().length;
+    const baselineText = extractResponseFromTurn(initialBlockCount);
 
-    // 2. Set value
+    // 2. Hydrate input with prompt
     try {
       inputElem.focus();
     } catch (e) {}
@@ -251,17 +301,26 @@
         inserted = document.execCommand("insertText", false, prompt);
       } catch (e) {}
       if (!inserted || !(inputElem.innerText || "").trim()) {
-        inputElem.innerText = prompt;
-        inputElem.dispatchEvent(new Event("input", { bubbles: true }));
+        inputElem.textContent = prompt;
+        inputElem.dispatchEvent(new InputEvent("input", { bubbles: true }));
       }
     }
 
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 200));
 
-    // 3. Click Send or dispatch Enter
-    let sendBtn = getSendButton();
+    // 3. Wait for send button and submit
+    let sendBtn = null;
+    const sendWaitStart = Date.now();
+    while (Date.now() - sendWaitStart < 3000) {
+      sendBtn = getSendButton();
+      if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute("aria-disabled") !== "true") {
+        break;
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+
     let sent = false;
-    if (sendBtn && !sendBtn.disabled) {
+    if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute("aria-disabled") !== "true") {
       try {
         sendBtn.click();
         sent = true;
@@ -269,10 +328,19 @@
     }
 
     if (!sent) {
-      inputElem.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+      inputElem.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        code: "Enter",
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+      }));
     }
 
-    // 4. Response monitoring loop
+    // Telemetry: prompt_sent stage reached
+    onStatus({ stage: "prompt_sent", detail: "Prompt submitted to chat" });
+
+    // 4. Monitoring loop with non-premature exit
     activeTask = { taskId, cancelled: false };
 
     const startTime = Date.now();
@@ -293,7 +361,7 @@
       const elapsed = Date.now() - startTime;
       if (elapsed > timeoutMs) {
         clearInterval(pollInterval);
-        const currentText = extractLastResponse();
+        const currentText = extractResponseFromTurn(initialBlockCount);
         activeTask = null;
         if (currentText && currentText !== baselineText) {
           onDone({ full_text: currentText });
@@ -304,11 +372,12 @@
       }
 
       const currentlyGenerating = isGenerating();
-      const currentText = extractLastResponse();
+      const currentText = extractResponseFromTurn(initialBlockCount);
 
       if (currentText && currentText !== baselineText) {
         if (!responseStarted) {
           responseStarted = true;
+          onStatus({ stage: "generating", detail: "First response token received" });
         }
 
         if (currentText.length > lastSentLength) {
@@ -317,12 +386,14 @@
           lastChangeTime = Date.now();
           onChunk({ delta, full_text: currentText });
         }
+      } else if (currentlyGenerating && !responseStarted) {
+        // Model is thinking or preparing response
+        lastChangeTime = Date.now();
       }
 
-      // If generation finished (stop button disappeared, thoughts complete)
+      // Finish only when generation completed AND text has stabilized for 1.5s
       if (responseStarted && !currentlyGenerating) {
         const stabilityMs = Date.now() - lastChangeTime;
-        // Require 1.5 seconds of silence without new characters
         if (stabilityMs >= 1500 && !finalDelivered) {
           finalDelivered = true;
           clearInterval(pollInterval);
@@ -337,22 +408,23 @@
   chrome.runtime.onConnect.addListener(port => {
     if (port.name !== "zca-bridge") return;
 
-    console.log("[ZCA ContentBridge] Port connected");
-
     port.onMessage.addListener(msg => {
       if (msg.type === "execute_task") {
         executePromptTask(
           msg.task_id,
           msg.prompt,
           { timeout_sec: msg.timeout_sec || 120 },
+          (status) => {
+            try { port.postMessage({ type: "status", task_id: msg.task_id, stage: status.stage, detail: status.detail }); } catch (e) {}
+          },
           (chunk) => {
-            port.postMessage({ type: "chunk", task_id: msg.task_id, delta: chunk.delta, full_text: chunk.full_text });
+            try { port.postMessage({ type: "chunk", task_id: msg.task_id, delta: chunk.delta, full_text: chunk.full_text }); } catch (e) {}
           },
           (done) => {
-            port.postMessage({ type: "done", task_id: msg.task_id, full_text: done.full_text });
+            try { port.postMessage({ type: "done", task_id: msg.task_id, full_text: done.full_text }); } catch (e) {}
           },
           (err) => {
-            port.postMessage({ type: "error", task_id: msg.task_id, code: err.code, message: err.message });
+            try { port.postMessage({ type: "error", task_id: msg.task_id, code: err.code, message: err.message }); } catch (e) {}
           }
         );
       } else if (msg.type === "cancel") {
@@ -360,14 +432,13 @@
           activeTask.cancelled = true;
           activeTask = null;
         }
-      } else if (msg.type === "check_status") {
-        port.postMessage({
-          type: "status",
-          provider: PROVIDER,
-          authenticated: !isNeedsAuth(),
-          cloudflare: isCloudflareChallenge(),
-          url: window.location.href
-        });
+        // Click Stop button if visible
+        try {
+          const stopBtn = getStopButton();
+          if (stopBtn && stopBtn.offsetParent !== null) {
+            stopBtn.click();
+          }
+        } catch (e) {}
       }
     });
 
@@ -381,8 +452,9 @@
 
   // Handle direct ping / status query
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
-    if (req.action === "probe_tab") {
+    if (req.action === "ping_content") {
       sendResponse({
+        ok: true,
         provider: PROVIDER,
         authenticated: !isNeedsAuth(),
         cloudflare: isCloudflareChallenge(),

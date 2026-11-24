@@ -570,7 +570,8 @@ class BrowserSessionEngine:
                 mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
                 return res
             except Exception as bridge_err:
-                logger.warning(f"[ENGINE] Chrome Bridge execution for '{prov}' failed ({bridge_err}), falling back to Playwright...")
+                logger.error(f"[ENGINE] Chrome Bridge execution for '{prov}' failed: {bridge_err}")
+                raise
 
         if not target_acc:
             if model_id == "mock-test":
@@ -667,7 +668,8 @@ class BrowserSessionEngine:
                 mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
                 return
             except Exception as bridge_err:
-                logger.warning(f"[ENGINE] Chrome Bridge stream for '{prov}' failed ({bridge_err}), falling back to Playwright...")
+                logger.error(f"[ENGINE] Chrome Bridge stream for '{prov}' failed: {bridge_err}")
+                raise
 
         if not target_acc:
             if model_id == "mock-test":

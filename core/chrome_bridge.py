@@ -31,6 +31,11 @@ PROVIDER_NAMES = {
 }
 
 
+class BridgeCancelledError(RuntimeError):
+    """Raised when in-flight prompt task is cancelled by user request."""
+    pass
+
+
 class ChromeBridgeManager:
     """
     Singleton manager maintaining WebSocket connection with zero-copy-agent Chrome extension.
@@ -57,7 +62,6 @@ class ChromeBridgeManager:
         clean_prov = (provider or "").strip().lower()
         if not clean_prov:
             return False
-        # If extension reported any providers, verify inclusion; if reported empty, default to supported 6
         if self.active_providers:
             return clean_prov in self.active_providers
         return clean_prov in PROVIDER_NAMES
@@ -97,7 +101,7 @@ class ChromeBridgeManager:
             return
 
         await websocket.accept()
-        logger.info("[ChromeBridge] WebSocket connection established from Chrome extension")
+        logger.info("[ChromeBridge] WS connected")
 
         async with self._lock:
             if self.active_websocket:
@@ -123,8 +127,24 @@ class ChromeBridgeManager:
                 msg_type = data.get("type")
                 if msg_type == "hello":
                     await self._handle_hello(data)
+                elif msg_type == "ping":
+                    try:
+                        await websocket.send_text(json.dumps({"type": "pong", "ts": time.time()}))
+                    except Exception:
+                        pass
                 elif msg_type == "pong":
                     self.last_seen = time.time()
+                elif msg_type == "status":
+                    task_id = data.get("task_id")
+                    stage = data.get("stage", "")
+                    detail = data.get("detail", "")
+                    logger.info(f"[ChromeBridge][{task_id}] stage={stage} ({detail})")
+                    if task_id in self.tasks:
+                        self.tasks[task_id].put_nowait({
+                            "type": "status",
+                            "stage": stage,
+                            "detail": detail
+                        })
                 elif msg_type == "chunk":
                     task_id = data.get("task_id")
                     if task_id in self.tasks:
@@ -148,10 +168,10 @@ class ChromeBridgeManager:
                             "code": data.get("code", "error"),
                             "message": data.get("message", "Unknown bridge error")
                         })
-        except WebSocketDisconnect:
-            logger.info("[ChromeBridge] Chrome extension disconnected cleanly")
+        except WebSocketDisconnect as ws_disc:
+            logger.info(f"[ChromeBridge] WS disconnected (code={ws_disc.code}, reason={getattr(ws_disc, 'reason', '')})")
         except Exception as e:
-            logger.warning(f"[ChromeBridge] WebSocket connection dropped: {e}")
+            logger.warning(f"[ChromeBridge] WS disconnected unexpectedly: {e}")
         finally:
             async with self._lock:
                 if self.active_websocket == websocket:
@@ -159,25 +179,39 @@ class ChromeBridgeManager:
                     if self._ping_task:
                         self._ping_task.cancel()
                         self._ping_task = None
-            # Abort all waiting tasks
-            for tid, q in list(self.tasks.items()):
-                q.put_nowait({
-                    "type": "error",
-                    "code": "disconnected",
-                    "message": "Chrome extension disconnected while waiting for response"
-                })
+            # Abort all waiting tasks immediately with ws_disconnected
+            self._abort_tasks("ws_disconnected", "Chrome extension WebSocket disconnected while waiting for response")
+
+    def _abort_tasks(self, code: str = "ws_disconnected", message: str = "WebSocket disconnected"):
+        """Aborts all currently waiting tasks with an error message."""
+        for tid, q in list(self.tasks.items()):
+            q.put_nowait({
+                "type": "error",
+                "code": code,
+                "message": message
+            })
 
     async def _handle_hello(self, data: dict):
-        """Processes hello handshake, registers active providers, and resets mesh cooldowns."""
+        """Processes hello handshake, registers active providers if needed, avoiding repeated disk writes."""
         providers = [str(p).strip().lower() for p in data.get("providers", []) if p]
         self.active_providers = set(providers)
         self.user_agent = str(data.get("user_agent", "")).strip()
         self.extension_version = str(data.get("version", "1.6.0")).strip()
         logger.info(f"[ChromeBridge] Extension hello received (v{self.extension_version}): {len(providers)} providers active -> {sorted(list(self.active_providers))}")
 
+        # Check existing accounts to avoid spamming subscriptions.yaml
+        current_subs, _ = config_healer.load_or_create()
+        existing_accs = {a.id: a for a in current_subs.accounts}
+
         for prov in providers:
             alias = PROVIDER_NAMES.get(prov, f"{prov.upper()} (Chrome Bridge)")
             acc_id = f"{prov}-web-primary"
+            existing = existing_accs.get(acc_id)
+            if existing and existing.status == "active":
+                # Already active: record success in mesh without touching disk
+                mesh.record_web_success(prov, acc_id)
+                continue
+
             try:
                 config_healer.register_web_session(
                     provider=prov,
@@ -203,16 +237,36 @@ class ChromeBridgeManager:
         except asyncio.CancelledError:
             pass
 
+    async def cancel_all(self):
+        """Cancels all active in-flight prompt tasks across the bridge."""
+        async with self._lock:
+            task_items = list(self.tasks.items())
+            ws = self.active_websocket
+
+        for task_id, queue in task_items:
+            if ws:
+                try:
+                    await ws.send_text(json.dumps({"type": "cancel", "task_id": task_id}))
+                except Exception:
+                    pass
+            queue.put_nowait({
+                "type": "error",
+                "code": "cancelled",
+                "message": "Orchestration cancelled by user"
+            })
+
     async def stream_prompt(
         self,
         provider: str,
         prompt: str,
         model: Optional[str] = None,
         new_chat: bool = True,
-        timeout: float = 120.0
+        timeout: float = 120.0,
+        ack_timeout: float = 25.0
     ) -> AsyncIterator[str]:
         """
         Sends prompt through the Chrome Bridge WebSocket and yields text chunks as they stream.
+        Enforces a 25s fail-fast acknowledgement timeout for prompt_sent/generating stages.
         """
         if not self.is_connected() or not self.active_websocket:
             raise RuntimeError("Chrome Bridge WebSocket is not connected. Open Google Chrome with the ZCA extension installed.")
@@ -239,24 +293,42 @@ class ChromeBridgeManager:
             raise RuntimeError(f"Failed to transmit prompt to Chrome Bridge: {send_err}")
 
         start_time = time.time()
+        ack_received = False
+        last_stage = "enqueued"
         last_yielded_len = 0
 
         try:
             while True:
-                remaining_time = timeout - (time.time() - start_time)
-                if remaining_time <= 0:
-                    raise TimeoutError(f"Chrome Bridge timeout ({timeout}s) waiting for response from {clean_prov}")
+                now = time.time()
+                if not ack_received and (now - start_time) > ack_timeout:
+                    raise TimeoutError(
+                        f"Chrome Bridge fail-fast timeout ({ack_timeout}s) waiting for prompt acknowledgement from {clean_prov}. "
+                        f"Last stage: {last_stage}"
+                    )
 
+                remaining_time = timeout - (now - start_time)
+                if remaining_time <= 0:
+                    raise TimeoutError(f"Chrome Bridge timeout ({timeout}s) waiting for response from {clean_prov}. Last stage: {last_stage}")
+
+                wait_slice = min(remaining_time, 1.5 if not ack_received else 10.0)
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=min(remaining_time, 15.0))
+                    msg = await asyncio.wait_for(queue.get(), timeout=wait_slice)
                 except asyncio.TimeoutError:
-                    # Check if connection is still healthy
                     if not self.is_connected():
                         raise RuntimeError("Chrome Bridge connection lost during generation")
                     continue
 
                 m_type = msg.get("type")
-                if m_type == "chunk":
+                if m_type == "status":
+                    stage = msg.get("stage", "")
+                    detail = msg.get("detail", "")
+                    last_stage = f"{stage}: {detail}" if detail else stage
+                    if stage in ("prompt_sent", "generating"):
+                        ack_received = True
+                    continue
+                elif m_type == "chunk":
+                    ack_received = True
+                    last_stage = "streaming"
                     delta = msg.get("delta", "")
                     full = msg.get("full_text", "")
                     if delta:
@@ -267,6 +339,7 @@ class ChromeBridgeManager:
                         last_yielded_len = len(full)
                         yield diff
                 elif m_type == "done":
+                    ack_received = True
                     full = msg.get("full_text", "")
                     if full and len(full) > last_yielded_len:
                         yield full[last_yielded_len:]
@@ -274,13 +347,14 @@ class ChromeBridgeManager:
                 elif m_type == "error":
                     code = msg.get("code", "error")
                     err_msg = msg.get("message", "Bridge execution error")
+                    if code == "cancelled":
+                        raise asyncio.CancelledError(f"Chrome Bridge task cancelled: {err_msg}")
                     if code == "needs_auth":
                         from core.drivers.base import WebSessionAuthError
                         raise WebSessionAuthError(f"В Chrome требуется авторизация в {clean_prov.upper()}: {err_msg}")
-                    raise RuntimeError(f"[{code}] {err_msg}")
+                    raise RuntimeError(f"[{code}] {err_msg} (Last stage: {last_stage})")
         finally:
             self.tasks.pop(task_id, None)
-            # Send cancellation notice if we exited prematurely
             if self.is_connected() and self.active_websocket:
                 try:
                     await self.active_websocket.send_text(json.dumps({"type": "cancel", "task_id": task_id}))

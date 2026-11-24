@@ -96,7 +96,11 @@
         <span class="truncate">Руководство</span>
       </button>
 
-      <div class="pt-3 px-1 border-t border-hairline/60">
+      <div class="pt-3 px-1 border-t border-hairline/60 space-y-1.5">
+        <button onclick="shutdownZCA()" class="w-full h-7 px-2 rounded flex items-center justify-center gap-1.5 text-[11px] font-medium text-muted hover:text-ink hover:bg-panel border border-hairline transition-colors" title="Остановить фоновый процесс zero-copy-agent">
+          <i data-lucide="power" class="w-3.5 h-3.5"></i>
+          <span>Остановить ZCA</span>
+        </button>
         <button onclick="openUninstallModal()" class="w-full h-7 px-2 rounded flex items-center justify-center gap-1.5 text-[11px] font-medium text-crimson hover:bg-crimson/10 border border-crimson/30 transition-colors">
           <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
           <span>Удалить ПО с ПК</span>
@@ -170,6 +174,12 @@
           <span id="activity-status-text" class="font-medium truncate">🟢 IDLE</span>
           <span id="activity-status-timer" class="text-muted text-[10px] hidden shrink-0 font-sans">0s</span>
         </div>
+
+        <!-- Orchestrator Stop Button -->
+        <button id="btn-orchestrator-stop" onclick="stopOrchestration()" class="h-7 px-2.5 rounded bg-crimson/15 text-crimson border border-crimson/30 hover:bg-crimson/25 text-[11px] font-medium inline-flex items-center gap-1.5 transition" title="Принудительно остановить текущую генерацию/каскад">
+          <i data-lucide="square" class="w-3.5 h-3.5 fill-current"></i>
+          <span>Стоп</span>
+        </button>
 
         <!-- IDE Routing Mode Toggle -->
         <button id="ide-routing-toggle" onclick="toggleIdeRoutingMode()" class="flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-medium transition-all duration-200 select-none cursor-pointer bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20" title="Переключить режим маршрутизации IDE">

@@ -118,6 +118,9 @@ let wsConnected = false;
 let wsConnecting = false;
 let reconnectTimer = null;
 let reconnectDelay = 2000;
+let lastReportedProvidersJson = "";
+let pingInterval = null;
+
 const providerQueues = {};
 const activeTaskPorts = {};
 
@@ -140,8 +143,24 @@ function getWsUrl(zcaUrl, token) {
   return `${wsBase}/ws/bridge?token=${encodeURIComponent(token)}`;
 }
 
+function startPingLoop() {
+  if (pingInterval) clearInterval(pingInterval);
+  pingInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendWs({ type: "ping", ts: Date.now() });
+    }
+  }, 20000);
+}
+
+function stopPingLoop() {
+  if (pingInterval) {
+    clearInterval(pingInterval);
+    pingInterval = null;
+  }
+}
+
 async function connectWebSocket() {
-  if (wsConnected || wsConnecting) return;
+  if (wsConnected || (ws && ws.readyState === WebSocket.OPEN) || wsConnecting) return;
   wsConnecting = true;
 
   try {
@@ -179,9 +198,13 @@ async function connectWebSocket() {
       wsConnected = true;
       wsConnecting = false;
       reconnectDelay = 2000;
+      startPingLoop();
       await chrome.storage.local.set({ bridgeConnected: true, bridgeLastSeen: Date.now() });
 
       const activeProviders = await getDetectedActiveProviders();
+      activeProviders.sort();
+      lastReportedProvidersJson = JSON.stringify(activeProviders);
+
       const helloMsg = {
         type: "hello",
         version: "1.6.0",
@@ -204,6 +227,8 @@ async function connectWebSocket() {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
         }
+      } else if (msg.type === "pong") {
+        await chrome.storage.local.set({ bridgeLastSeen: Date.now() });
       } else if (msg.type === "prompt") {
         enqueuePromptTask(msg);
       } else if (msg.type === "cancel") {
@@ -213,13 +238,13 @@ async function connectWebSocket() {
 
     ws.onclose = async (evt) => {
       console.warn(`[ZCA Bridge] WebSocket disconnected (code=${evt.code}, reason=${evt.reason})`);
+      stopPingLoop();
       wsConnected = false;
       wsConnecting = false;
       ws = null;
       await chrome.storage.local.set({ bridgeConnected: false });
 
       if (evt.code === 4401) {
-        // Token mismatch; reload defaults.json
         try {
           const defResp = await fetch(chrome.runtime.getURL("defaults.json"));
           if (defResp.ok) {
@@ -249,15 +274,21 @@ async function connectWebSocket() {
 function scheduleReconnect() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
-    connectWebSocket();
+    if (!wsConnected && (!ws || ws.readyState !== WebSocket.OPEN)) {
+      connectWebSocket();
+    }
   }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 10000);
 }
 
 function sendWs(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-    return true;
+    try {
+      ws.send(JSON.stringify(msg));
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
   return false;
 }
@@ -338,6 +369,58 @@ async function findOrCreateProviderTab(providerDef) {
   return newTab;
 }
 
+async function ensureTabLoadedAndReady(tab) {
+  let currentTab = tab;
+  if (currentTab.status !== "complete") {
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }, 15000);
+      function listener(tabId, info) {
+        if (tabId === currentTab.id && info.status === "complete") {
+          clearTimeout(timeout);
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      }
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  }
+
+  // Extra 1000ms delay for SPA DOM hydration
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Ping content script to confirm readiness
+  let contentReady = false;
+  try {
+    const pingResp = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(currentTab.id, { action: "ping_content" }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          resolve(null);
+        } else {
+          resolve(resp);
+        }
+      });
+    });
+    if (pingResp && pingResp.ok) {
+      contentReady = true;
+    }
+  } catch (e) {}
+
+  if (!contentReady) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: currentTab.id },
+        files: ["content_bridge.js"]
+      });
+      await new Promise(r => setTimeout(r, 300));
+    } catch (injErr) {
+      console.warn("[ZCA Bridge] Script injection warning:", injErr);
+    }
+  }
+}
+
 async function executePromptInTab(task) {
   const provId = (task.provider || "").toLowerCase();
   const provDef = PROVIDERS.find(p => p.id === provId);
@@ -352,28 +435,44 @@ async function executePromptInTab(task) {
     return;
   }
 
-  const tab = await findOrCreateProviderTab(provDef);
-  if (!tab || !tab.id) {
+  sendWs({
+    type: "status",
+    task_id: task.task_id,
+    stage: "received",
+    detail: `Processing ${provDef.name} prompt`
+  });
+
+  let tab = null;
+  try {
+    tab = await findOrCreateProviderTab(provDef);
+    if (!tab || !tab.id) {
+      throw new Error(`Failed to open or locate tab for ${provDef.name}`);
+    }
+
+    sendWs({
+      type: "status",
+      task_id: task.task_id,
+      stage: "tab_ready",
+      detail: `Tab ${tab.id} active`
+    });
+
+    await ensureTabLoadedAndReady(tab);
+
+    sendWs({
+      type: "status",
+      task_id: task.task_id,
+      stage: "injected",
+      detail: "Content bridge script confirmed ready"
+    });
+  } catch (setupErr) {
     sendWs({
       type: "error",
       task_id: task.task_id,
-      code: "no_tab",
-      message: `Failed to open or locate tab for ${provDef.name}`
+      code: "tab_setup_error",
+      message: setupErr.message || String(setupErr)
     });
     return;
   }
-
-  // Ensure content_bridge.js is injected
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content_bridge.js"]
-    });
-  } catch (e) {
-    // Might already be injected or restricted
-  }
-
-  await new Promise(r => setTimeout(r, 400));
 
   return new Promise((resolve) => {
     let port = null;
@@ -393,7 +492,14 @@ async function executePromptInTab(task) {
     activeTaskPorts[task.task_id] = port;
 
     port.onMessage.addListener((msg) => {
-      if (msg.type === "chunk") {
+      if (msg.type === "status") {
+        sendWs({
+          type: "status",
+          task_id: task.task_id,
+          stage: msg.stage,
+          detail: msg.detail
+        });
+      } else if (msg.type === "chunk") {
         sendWs({
           type: "chunk",
           task_id: task.task_id,
@@ -437,7 +543,7 @@ async function executePromptInTab(task) {
   });
 }
 
-// Background Cookie Replication (Fallback)
+// Background Cookie Replication (Fallback when bridge is inactive)
 let debounceTimer = null;
 const pendingProviders = new Set();
 
@@ -475,12 +581,16 @@ async function initializeFromDefaults() {
     chrome.alarms.create("syncCookiesAlarm", { periodInMinutes: 30 });
     chrome.alarms.create("bridgeKeepAlive", { periodInMinutes: 1 });
 
-    await syncAllProviders(false);
     await connectWebSocket();
   } catch (e) {}
 }
 
 async function syncProvider(providerId, force = false, retryOn401 = true) {
+  // If Chrome Bridge is actively connected, skip HTTP cookie pushing
+  if (wsConnected && ws && ws.readyState === WebSocket.OPEN) {
+    return { ok: true, status: "bridge_active" };
+  }
+
   const prov = PROVIDERS.find(p => p.id === providerId);
   if (!prov) return { ok: false, message: "Unknown provider" };
 
@@ -591,6 +701,9 @@ async function syncProvider(providerId, force = false, retryOn401 = true) {
 }
 
 async function syncAllProviders(force = false) {
+  if (wsConnected && ws && ws.readyState === WebSocket.OPEN) {
+    return { ok: true, syncedProviders: 0, message: "Chrome Bridge active" };
+  }
   let count = 0;
   for (const prov of PROVIDERS) {
     const res = await syncProvider(prov.id, force);
@@ -609,9 +722,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "syncCookiesAlarm") {
-    syncAllProviders(false);
+    if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+      syncAllProviders(false);
+    }
   } else if (alarm.name === "bridgeKeepAlive") {
-    if (!wsConnected) {
+    if (!wsConnected && (!ws || ws.readyState !== WebSocket.OPEN)) {
       connectWebSocket();
     }
   }
@@ -621,24 +736,25 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
   const domain = (changeInfo.cookie && changeInfo.cookie.domain) || "";
   const matched = PROVIDERS.filter(p => domain.includes(p.domainFilter));
   if (matched.length > 0) {
-    for (const m of matched) {
-      pendingProviders.add(m.id);
-    }
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(async () => {
-      const toSync = Array.from(pendingProviders);
-      pendingProviders.clear();
-      for (const pid of toSync) {
-        await syncProvider(pid, false);
-      }
-      if (wsConnected) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
         const activeProviders = await getDetectedActiveProviders();
-        sendWs({
-          type: "hello",
-          version: "1.6.0",
-          providers: activeProviders,
-          user_agent: navigator.userAgent
-        });
+        activeProviders.sort();
+        const curJson = JSON.stringify(activeProviders);
+        if (curJson !== lastReportedProvidersJson) {
+          lastReportedProvidersJson = curJson;
+          sendWs({
+            type: "hello",
+            version: "1.6.0",
+            providers: activeProviders,
+            user_agent: navigator.userAgent
+          });
+        }
+      } else {
+        for (const m of matched) {
+          await syncProvider(m.id, false);
+        }
       }
     }, 10000);
   }

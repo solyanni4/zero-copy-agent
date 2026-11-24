@@ -915,6 +915,103 @@ def test_build_script_has_websocket_imports():
     assert "chrome_extension" in build_script
 
 
+def test_chrome_bridge_hello_skips_active_providers(monkeypatch):
+    """Verifies that hello message does not re-register providers that are already active."""
+    from core.chrome_bridge import chrome_bridge
+    from core.healer import config_healer
+
+    called_providers = []
+    def mock_register(**kwargs):
+        called_providers.append(kwargs.get("provider"))
+
+    monkeypatch.setattr(config_healer, "register_web_session", mock_register)
+
+    # Mock an existing active subscription
+    class MockAcc:
+        id = "gemini-web-primary"
+        status = "active"
+
+    class MockSubs:
+        accounts = [MockAcc()]
+
+    monkeypatch.setattr(config_healer, "load_or_create", lambda: (MockSubs(), False))
+
+    import asyncio
+    asyncio.run(chrome_bridge._handle_hello({"providers": ["gemini"]}))
+    assert "gemini" not in called_providers, "Should not re-register active provider"
+
+
+def test_chrome_bridge_ws_disconnect_aborts_active_tasks():
+    """Verifies that when WS disconnects, all active waiting tasks receive error."""
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    q = asyncio.Queue()
+    task_id = "test_task_disconnect"
+    chrome_bridge.tasks[task_id] = q
+
+    try:
+        chrome_bridge._abort_tasks("ws_disconnected", "Disconnected")
+        assert not q.empty()
+        msg = q.get_nowait()
+        assert msg.get("type") == "error"
+        assert msg.get("code") == "ws_disconnected"
+    finally:
+        chrome_bridge.tasks.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_chrome_bridge_ack_timeout_fail_fast(monkeypatch):
+    """Verifies that stream_prompt fails fast if no ack/chunks received within ack_timeout."""
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    class MockWS:
+        async def send_text(self, text):
+            pass
+
+    chrome_bridge.active_websocket = MockWS()
+    chrome_bridge.active_providers = {"gemini"}
+
+    try:
+        with pytest.raises((TimeoutError, RuntimeError)) as exc_info:
+            async for _ in chrome_bridge.stream_prompt("gemini", "hello", ack_timeout=0.1):
+                pass
+        assert "fail-fast" in str(exc_info.value) or "ack_timeout" in str(exc_info.value)
+    finally:
+        chrome_bridge.active_websocket = None
+        chrome_bridge.active_providers = set()
+
+
+def test_orchestrator_stop_endpoint():
+    """Tests POST /v1/orchestrator/stop cancellation."""
+    from fastapi.testclient import TestClient
+    from main import app, orchestrator
+
+    client = TestClient(app)
+    resp = client.post("/v1/orchestrator/stop")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] in ("ok", "stopped")
+    assert orchestrator.status == "IDLE"
+
+
+def test_system_shutdown_endpoint(monkeypatch):
+    """Tests POST /v1/system/shutdown endpoint."""
+    import os
+    from fastapi.testclient import TestClient
+    from main import app
+
+    exit_called = []
+    monkeypatch.setattr(os, "_exit", lambda code: exit_called.append(code))
+
+    client = TestClient(app)
+    resp = client.post("/v1/system/shutdown")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "shutting_down"
+
+
 
 
 

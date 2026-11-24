@@ -1986,6 +1986,34 @@ async function saveOrchestrationForm(e) {
   }
 }
 
+async function stopOrchestration() {
+  if (window._currentChatAbort) {
+    try { window._currentChatAbort.abort(); } catch (e) {}
+  }
+  try {
+    const res = await fetch('/v1/orchestrator/stop', { method: 'POST' });
+    const data = await res.json();
+    showModelsLog('🛑 Оркестрация остановлена пользователем', 'text-crimson');
+    showBanner('Генерация принудительно остановлена', 'square', 'text-crimson');
+  } catch (e) {
+    showModelsLog(`Ошибка остановки: ${e.message}`, 'text-crimson');
+  }
+  if (typeof setOrchestratorVisualState === 'function') {
+    setOrchestratorVisualState('IDLE');
+  }
+}
+
+async function shutdownZCA() {
+  if (!confirm("Остановить фоновый процесс zero-copy-agent?")) return;
+  try {
+    await fetch('/v1/system/shutdown', { method: 'POST' });
+    showBanner("zero-copy-agent завершает работу...", "power", "text-crimson");
+    alert("zero-copy-agent завершает работу. Вы можете закрыть эту вкладку браузера.");
+  } catch (e) {
+    alert("Запрос на остановку отправлен.");
+  }
+}
+
 function openUninstallModal() {
   const m = document.getElementById('modal-uninstall');
   if (m) m.classList.remove('hidden');

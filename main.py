@@ -884,6 +884,51 @@ async def test_bridge_provider(provider: str):
         latency_ms = max(1, int((time.time() - t0) * 1000))
         raise HTTPException(status_code=500, detail=f"Ошибка теста {prov}: {e}")
 
+@app.post("/v1/orchestrator/stop")
+async def stop_orchestrator_endpoint(request: Request):
+    """Stops all running orchestration tasks, cancels bridge requests, and resets status to IDLE."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(status_code=403, detail="Localhost only")
+    res = await orchestrator.stop()
+    return {
+        "status": "ok",
+        "message": "🛑 Оркестрация остановлена пользователем",
+        "orchestrator_status": orchestrator.status,
+        "cancelled_tasks": res.get("cancelled_tasks", 0)
+    }
+
+@app.post("/v1/system/shutdown")
+async def system_shutdown_endpoint(request: Request):
+    """Gracefully shuts down the zero-copy-agent server and desktop process."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(status_code=403, detail="Localhost only")
+
+    async def _do_shutdown():
+        await asyncio.sleep(0.3)
+        try:
+            await orchestrator.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(orchestrator, "browser_engine", None):
+                await orchestrator.browser_engine.close_all()
+        except Exception:
+            pass
+        d_app = getattr(request.app.state, "desktop_app", None)
+        if d_app and hasattr(d_app, "stop"):
+            try:
+                d_app.stop()
+                return
+            except Exception:
+                pass
+        import os
+        os._exit(0)
+
+    asyncio.create_task(_do_shutdown())
+    return {"status": "shutting_down", "message": "ZCA shutting down"}
+
 @app.post("/v1/app/minimize")
 async def app_minimize(request: Request):
     """Minimizes desktop application to system tray."""
