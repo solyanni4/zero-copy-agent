@@ -28,13 +28,8 @@ def check_github_updates(current_version: str = CURRENT_VERSION) -> Dict[str, An
     Checks GitHub releases for latest version.
     Respects HTTPS_PROXY or HTTP_PROXY environment variables if present, or uses direct connection.
     """
-    proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
-    if not proxy_url:
-        try:
-            from core.auth import detect_proxy
-            proxy_url = detect_proxy()
-        except Exception:
-            proxy_url = None
+    from core.discovery import resolve_http_proxy
+    proxy_url = resolve_http_proxy("auto")
     
     repos = [GITHUB_REPO]
     latest_release = None
@@ -286,13 +281,8 @@ def _run_update_worker(download_url: str = None):
         backup_exe = updates_dir / "zero-copy-agent.prev.exe"
 
         # 3. Download via proxy if present
-        proxy_url = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or None
-        if not proxy_url:
-            try:
-                from core.auth import detect_proxy
-                proxy_url = detect_proxy()
-            except Exception:
-                proxy_url = None
+        from core.discovery import resolve_http_proxy
+        proxy_url = resolve_http_proxy("auto")
         handlers = []
         if proxy_url:
             handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))

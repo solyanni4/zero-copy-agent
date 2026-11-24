@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional, Dict, Any
 
 from core.config import config, get_runtime_cwd
-from core.auth import detect_proxy, is_proxy_alive
+from core.auth import is_proxy_alive
+from core.discovery import resolve_http_proxy
 from core.drivers import (
     GeminiDriver,
     ChatGPTDriver,
@@ -99,24 +100,6 @@ PROVIDER_URLS = {
     "qwen": "https://chat.qwen.ai",
     "grok": "https://grok.com"
 }
-
-def detect_proxy():
-    # 1. Environment variables
-    env_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY")
-    if env_proxy:
-        return env_proxy
-    # 2. Local gateway auto-detection (localhost:7890 / 127.0.0.1:7890)
-    for host in ("127.0.0.1", "localhost"):
-        try:
-            s = socket.socket()
-            s.settimeout(0.2)
-            if s.connect_ex((host, 7890)) == 0:
-                s.close()
-                return f"http://{host}:7890"
-            s.close()
-        except Exception:
-            pass
-    return None
 
 def get_model_badge(model_id: str) -> str:
     m = model_id.lower()
@@ -330,13 +313,8 @@ class BrowserSessionEngine:
                     logger.error(f"[ENGINE] Could not start browser runtime: {pw_err}")
                     return False
 
-            acc_proxy = getattr(acc, "proxy", "auto") or "auto"
-            if acc_proxy == "direct":
-                proxy_server = None
-            elif acc_proxy == "auto":
-                proxy_server = detect_proxy()
-            else:
-                proxy_server = acc_proxy
+            acc_proxy = getattr(acc, "proxy", "auto")
+            proxy_server = resolve_http_proxy(acc_proxy)
             proxy_cfg = {"server": proxy_server} if proxy_server else None
 
             from core.auth import kill_zombie_browser_processes, prune_browser_profile_caches, has_key_auth_cookies

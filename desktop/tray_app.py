@@ -356,7 +356,6 @@ def main():
         run_desktop_auth(provider)
         sys.exit(0)
 
-def main():
     from desktop.app import main as unified_main
     unified_main()
 

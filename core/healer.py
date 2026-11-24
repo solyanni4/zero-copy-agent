@@ -357,39 +357,46 @@ class ConfigHealer:
         3. Creates timestamped backup (.yaml.bak)
         4. Replaces target file via os.replace
         """
+        import secrets
         self.target_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = self.target_path.with_suffix(".yaml.tmp")
+        unique_token = secrets.token_hex(4)
+        tmp_path = self.target_path.with_name(f"{self.target_path.name}.{unique_token}.tmp")
         bak_path = self.target_path.with_suffix(".yaml.bak")
 
         data = config.model_dump() if hasattr(config, "model_dump") else config.dict()
         data["updated_at"] = datetime.now().isoformat()
 
-        # Step 1: Write to .tmp
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
-        # Step 2: Validate temp file parses cleanly
         try:
-            with open(tmp_path, "r", encoding="utf-8") as f:
-                reparsed = yaml.safe_load(f)
-            SubscriptionsConfig(**reparsed)
-        except Exception as e:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise RuntimeError(f"Atomic validation failed for temp config: {e}")
+            # Step 1: Write to unique .tmp
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-        # Step 3: Backup existing target if present
-        if self.target_path.exists():
-            shutil.copy2(self.target_path, bak_path)
-
-        # Step 4: Atomic replacement
-        os.replace(tmp_path, self.target_path)
-        if sys.platform != "win32":
+            # Step 2: Validate temp file parses cleanly
             try:
-                os.chmod(self.target_path, 0o600)
-            except Exception:
-                pass
-        logger.info(f"[Healer] Saved config atomically to {self.target_path} (backup: {bak_path.name})")
+                with open(tmp_path, "r", encoding="utf-8") as f:
+                    reparsed = yaml.safe_load(f)
+                SubscriptionsConfig(**reparsed)
+            except Exception as e:
+                raise RuntimeError(f"Atomic validation failed for temp config: {e}")
+
+            # Step 3: Backup existing target if present
+            if self.target_path.exists():
+                shutil.copy2(self.target_path, bak_path)
+
+            # Step 4: Atomic replacement
+            os.replace(tmp_path, self.target_path)
+            if sys.platform != "win32":
+                try:
+                    os.chmod(self.target_path, 0o600)
+                except Exception:
+                    pass
+            logger.info(f"[Healer] Saved config atomically to {self.target_path} (backup: {bak_path.name})")
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
         return HealingReport(
             healed=True,
@@ -528,9 +535,6 @@ class ConfigHealer:
                     if m_id == "*" or fnmatch.fnmatch(target_low, m_id):
                         return acc
         return None
-
-        self.atomic_save(config)
-        return target_acc, modifications
 
     def register_web_session(
         self,

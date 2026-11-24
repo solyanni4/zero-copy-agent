@@ -126,7 +126,12 @@ def clean_and_filter_model_id(raw_id: str) -> Optional[str]:
     return mid
 
 
-async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: float = 8.0) -> List[str]:
+async def discover_remote_models(
+    base_url: str,
+    api_key: str,
+    timeout_seconds: float = 8.0,
+    proxy: Optional[str] = "auto"
+) -> List[str]:
     """
     Attempts to discover active models from an OpenAI-compatible /v1/models endpoint.
     Returns filtered list of text model IDs (without 'models/' prefix, excluding non-text models)
@@ -135,6 +140,8 @@ async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: f
     if not base_url:
         return []
 
+    from core.discovery import resolve_http_proxy
+
     clean_base = base_url.rstrip("/")
     if not clean_base.startswith("http://") and not clean_base.startswith("https://"):
         clean_base = f"http://{clean_base}"
@@ -142,9 +149,16 @@ async def discover_remote_models(base_url: str, api_key: str, timeout_seconds: f
     models_url = f"{clean_base}/models"
     headers = {"Authorization": f"Bearer {api_key}"}
     is_local = any(h in clean_base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+    proxy_url = None if is_local else resolve_http_proxy(proxy)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=not is_local) as client:
+        client_kwargs = {
+            "timeout": timeout_seconds,
+            "trust_env": not is_local and not proxy_url
+        }
+        if proxy_url and not is_local:
+            client_kwargs["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.get(models_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()

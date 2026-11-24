@@ -280,6 +280,7 @@ class ZeroCopyUnifiedApp:
             use_colors=False
         )
         self.uvicorn_server = uvicorn.Server(uv_config)
+        app.state.server = self.uvicorn_server
 
         def run_server():
             logging.info(f"Starting API server on http://{self.client_host}:{self.port}")
@@ -382,9 +383,15 @@ class ZeroCopyUnifiedApp:
                 self.window.destroy()
             except Exception:
                 pass
-        # Force terminate process cleanly on Windows
-        import os
-        os._exit(0)
+        # Give uvicorn and background workers up to 1.5s to shut down gracefully and release port 8000
+        def _delayed_exit():
+            time.sleep(1.5)
+            import os
+            try:
+                os._exit(0)
+            except Exception:
+                pass
+        threading.Thread(target=_delayed_exit, daemon=True).start()
 
     def setup_tray(self):
         """Builds system tray icon and menu."""

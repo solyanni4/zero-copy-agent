@@ -276,6 +276,19 @@ class ChromeBridgeManager:
                 "message": f"Task {task_id} was cancelled"
             })
 
+    async def close_all(self):
+        """Closes active WebSocket and cleans up bridge state on server shutdown."""
+        await self.cancel_all()
+        async with self._lock:
+            ws = self.active_websocket
+            self.active_websocket = None
+            if ws:
+                try:
+                    await ws.close(code=1000, reason="Server shutting down")
+                except Exception:
+                    pass
+        self.active_providers.clear()
+
     async def stream_prompt(
         self,
         provider: str,

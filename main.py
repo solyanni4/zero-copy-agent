@@ -172,6 +172,16 @@ async def lifespan(app: FastAPI):
 
     yield
     print("[INIT] Shutting down zero-copy-agent...")
+    try:
+        from core.chrome_bridge import chrome_bridge
+        await chrome_bridge.close_all()
+    except Exception:
+        pass
+    try:
+        from core.solutions_db import solutions_db
+        solutions_db.close()
+    except Exception:
+        pass
     await engine.close()
 
 logger = logging.getLogger("zca.main")
@@ -961,16 +971,20 @@ async def app_quit(request: Request):
         import threading
         threading.Thread(target=d_app.stop, daemon=True).start()
     else:
-        import threading
-        import time
-        def _delayed_exit():
-            time.sleep(0.3)
-            import os, signal
-            try:
-                os.kill(os.getpid(), signal.SIGTERM)
-            except Exception:
-                os._exit(0)
-        threading.Thread(target=_delayed_exit, daemon=True).start()
+        server = getattr(request.app.state, "server", None)
+        if server:
+            server.should_exit = True
+        else:
+            import threading
+            import time
+            def _delayed_exit():
+                time.sleep(0.3)
+                import os, signal
+                try:
+                    os.kill(os.getpid(), signal.SIGTERM)
+                except Exception:
+                    os._exit(0)
+            threading.Thread(target=_delayed_exit, daemon=True).start()
     return {"status": "ok", "message": "Завершение работы"}
 
 
@@ -1557,10 +1571,12 @@ async def api_ping_account(account_id: str):
             else:
                 headers = {"Authorization": f"Bearer {acc.api_key}"}
 
-            proxy_url = getattr(acc, "proxy", None)
+            from core.discovery import resolve_http_proxy
+            raw_proxy = getattr(acc, "proxy", None)
             is_local = any(h in models_url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+            proxy_url = None if is_local else resolve_http_proxy(raw_proxy)
             try:
-                client_kwargs = {"timeout": 4.0, "trust_env": not is_local}
+                client_kwargs = {"timeout": 4.0, "trust_env": not is_local and not proxy_url}
                 if proxy_url and not is_local:
                     client_kwargs["proxy"] = proxy_url
                 async with httpx.AsyncClient(**client_kwargs) as client:

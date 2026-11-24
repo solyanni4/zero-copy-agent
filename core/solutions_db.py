@@ -77,6 +77,14 @@ class SolutionsDB:
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
+    def close(self):
+        """Flushes SQLite WAL and cleans up database handles."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception as e:
+            logger.debug(f"[SolutionsDB] Error during WAL checkpoint: {e}")
+
     def _init_db(self):
         """Initializes tables, FTS5 virtual table, and sync triggers."""
         with self._get_connection() as conn:

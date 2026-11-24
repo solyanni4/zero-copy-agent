@@ -146,18 +146,22 @@ class PresetsManager:
             "presets": presets_data
         }
 
-        tmp_path = self.config_path.with_suffix(".tmp")
+        import secrets
+        unique_token = secrets.token_hex(4)
+        tmp_path = self.config_path.with_name(f"{self.config_path.name}.{unique_token}.tmp")
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 yaml.dump(payload, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            if self.config_path.exists():
-                self.config_path.unlink()
-            tmp_path.rename(self.config_path)
+            os.replace(tmp_path, self.config_path)
             logger.info(f"[Presets] Successfully saved {len(self._presets)} presets to {self.config_path}")
         except Exception as e:
             logger.error(f"[Presets] Failed to save {self.config_path}: {e}")
+        finally:
             if tmp_path.exists():
-                tmp_path.unlink()
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
     def list_presets(self) -> List[Dict[str, Any]]:
         """Returns list of presets as dictionaries."""

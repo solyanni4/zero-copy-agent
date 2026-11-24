@@ -14,16 +14,27 @@ logger = logging.getLogger("zcao.discovery")
 
 
 def resolve_http_proxy(proxy_setting: Optional[str] = "auto") -> Optional[str]:
-    """Resolves effective proxy URL from account setting ('auto', 'direct', or custom)."""
-    if not proxy_setting or proxy_setting.strip().lower() in ("direct", "none", ""):
+    """
+    Resolves effective proxy URL from setting ('auto', 'direct', None, or custom proxy URL).
+    Guaranteed to return either a valid proxy URL (http://... or socks5://...) or None.
+    Never returns 'direct', 'auto', 'none', or invalid placeholder strings.
+    """
+    if proxy_setting is None:
         return None
-    clean = proxy_setting.strip()
+    clean = str(proxy_setting).strip()
+    if clean.lower() in ("direct", "none", "off", "false", "0", ""):
+        return None
     if clean.lower() == "auto":
         try:
             from core.auth import detect_proxy
-            return detect_proxy()
+            detected = detect_proxy()
+            if detected and str(detected).strip().lower() not in ("direct", "none", ""):
+                return str(detected).strip()
+            return None
         except Exception:
             return None
+    if "://" not in clean:
+        clean = f"http://{clean}"
     return clean
 
 
