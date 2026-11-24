@@ -1387,6 +1387,167 @@ async def test_chrome_bridge_stream_success_with_chunk_and_done():
         chrome_bridge.active_providers = set()
 
 
+def test_gemini_dom_fallback_selection_when_primary_empty():
+    """
+    Verifies that chrome_extension/content_bridge.js correctly triggers fallback response container
+    detection when the primary selectors (model-response, [data-message-author-role='model'], .response-container)
+    return empty, extracting text cleanly without thoughts or stub headers.
+    """
+    import subprocess
+    from pathlib import Path
+
+    bridge_js_path = (Path(__file__).resolve().parent.parent / "chrome_extension" / "content_bridge.js").as_posix()
+    assert Path(bridge_js_path).exists(), f"Bridge script not found: {bridge_js_path}"
+
+    test_script = f"""
+    const bridge = require('{bridge_js_path}');
+    global.Node = {{ DOCUMENT_POSITION_FOLLOWING: 4 }};
+
+    // Case 1: Primary selectors return empty, but model-thoughts exists in an enclosing custom container
+    const thinkingEl = {{
+      tagName: 'MODEL-THOUGHTS',
+      parentNode: {{}},
+      parentElement: null,
+      closest: () => null
+    }};
+    const customContainer = {{
+      tagName: 'DIV',
+      className: 'custom-turn-card',
+      parentNode: {{}},
+      contains: (el) => el === thinkingEl,
+      closest: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      innerText: 'Thought content'
+    }};
+    thinkingEl.parentElement = customContainer;
+
+    global.document = {{
+      querySelectorAll: () => [],
+      querySelector: (sel) => sel.includes('model-thoughts') ? thinkingEl : null
+    }};
+
+    const containers1 = bridge.getGeminiResponseContainers();
+    if (containers1.length !== 1) {{
+      console.error('Case 1 failed: expected 1 container, got', containers1.length);
+      process.exit(1);
+    }}
+    const selector1 = bridge.getLastMatchedSelector();
+    if (!selector1.startsWith('fallback:thinking-anchor')) {{
+      console.error('Case 1 failed: unexpected selector', selector1);
+      process.exit(1);
+    }}
+
+    // Case 2: User query exists and response follows in document order
+    const userQueryEl = {{
+      tagName: 'USER-QUERY',
+      parentNode: {{}},
+      nextElementSibling: null,
+      parentElement: null,
+      closest: () => null,
+      compareDocumentPosition: (other) => (other === afterUserEl ? 4 : 0)
+    }};
+
+    const afterUserEl = {{
+      tagName: 'DIV',
+      className: 'markdown-card',
+      parentNode: {{}},
+      closest: () => null,
+      contains: () => false,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      innerText: 'Gemini said:\\n\\nFound answer after user query!'
+    }};
+
+    global.document = {{
+      querySelectorAll: (sel) => {{
+        if (sel.includes('user-query')) return [userQueryEl];
+        if (sel.includes('markdown')) return [afterUserEl];
+        return [];
+      }},
+      querySelector: () => null
+    }};
+
+    const containers2 = bridge.getGeminiResponseContainers();
+    if (containers2.length !== 1) {{
+      console.error('Case 2 failed: expected 1 container, got', containers2.length);
+      process.exit(2);
+    }}
+    const selector2 = bridge.getLastMatchedSelector();
+    if (!selector2.startsWith('fallback:after-user-text')) {{
+      console.error('Case 2 failed: unexpected selector', selector2);
+      process.exit(2);
+    }}
+    const cleanText = bridge.extractTurnText(containers2[0]);
+    if (cleanText !== 'Found answer after user query!') {{
+      console.error('Case 2 failed: cleanText mismatch', cleanText);
+      process.exit(2);
+    }}
+
+    console.log('SUCCESS');
+    """
+
+    res = subprocess.run(["node", "-e", test_script], capture_output=True, text=True, timeout=10)
+    assert res.returncode == 0, f"Node DOM test failed:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}"
+    assert "SUCCESS" in res.stdout
+
+
+@pytest.mark.asyncio
+async def test_chrome_bridge_captures_matched_selector_in_generating_status():
+    """
+    Verifies that the backend receives and records matchedSelector inside status detail,
+    and reflects it in last_stage on timeout.
+    """
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    class DummyWS:
+        def __init__(self):
+            self.closed = False
+        async def send_text(self, text: str):
+            pass
+
+    dummy_ws = DummyWS()
+    chrome_bridge.active_websocket = dummy_ws
+    chrome_bridge.active_providers = {"gemini"}
+
+    keep_sending = True
+
+    async def simulate_generating_status_with_matched_selector():
+        await asyncio.sleep(0.02)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "status", "stage": "prompt_sent", "detail": "Prompt submitted"})
+        while keep_sending:
+            await asyncio.sleep(0.03)
+            for tid, q in list(chrome_bridge.tasks.items()):
+                await q.put({
+                    "type": "status",
+                    "stage": "generating",
+                    "detail": "responsesCount=1, lastLen=0, isGenerating=true, matchedSelector=fallback:thinking-anchor(div.turn-card)"
+                })
+
+    task = asyncio.create_task(simulate_generating_status_with_matched_selector())
+
+    try:
+        with pytest.raises(TimeoutError) as exc_info:
+            async for _ in chrome_bridge.stream_prompt(
+                "gemini", "Hello",
+                timeout=3.0,
+                ack_timeout=1.0,
+                first_chunk_timeout=0.2
+            ):
+                pass
+        err_msg = str(exc_info.value)
+        assert "matchedSelector=fallback:thinking-anchor(div.turn-card)" in err_msg
+        assert "Last stage: generating: responsesCount=1" in err_msg
+    finally:
+        keep_sending = False
+        await task
+        chrome_bridge.active_websocket = None
+        chrome_bridge.active_providers = set()
+
+
+
 
 
 

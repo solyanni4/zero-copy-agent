@@ -7,15 +7,18 @@
 // Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
 
 (function () {
-  if (window.__ZCA_CONTENT_BRIDGE_LOADED__) {
+  const _win = typeof window !== "undefined" ? window : (typeof global !== "undefined" ? global : {});
+  if (_win.__ZCA_CONTENT_BRIDGE_LOADED__) {
     return;
   }
-  window.__ZCA_CONTENT_BRIDGE_LOADED__ = true;
+  _win.__ZCA_CONTENT_BRIDGE_LOADED__ = true;
 
-  console.log("[ZCA ContentBridge] Initialized on", window.location.href);
+  const _href = typeof window !== "undefined" && window.location ? window.location.href : "https://gemini.google.com/app";
+  console.log("[ZCA ContentBridge] Initialized on", _href);
 
   function detectProvider() {
-    const host = window.location.hostname;
+    const loc = typeof window !== "undefined" && window.location ? window.location : { hostname: "gemini.google.com" };
+    const host = loc.hostname || "";
     if (host.includes("gemini.google.com")) return "gemini";
     if (host.includes("chatgpt.com")) return "chatgpt";
     if (host.includes("claude.ai")) return "claude";
@@ -25,7 +28,7 @@
     return "unknown";
   }
 
-  const PROVIDER = detectProvider();
+  let PROVIDER = detectProvider();
 
   function isCloudflareChallenge() {
     const title = (document.title || "").toLowerCase();
@@ -212,40 +215,256 @@
     }
   }
 
+  let lastMatchedSelector = "";
+
+  function getGeminiResponseContainers() {
+    lastMatchedSelector = "";
+
+    // 1. Primary selectors: query all known top-level model response tags and classes
+    const primarySelectors = [
+      "model-response",
+      "[data-message-author-role='model']",
+      "[data-message-author-role='assistant']",
+      "[class*='model-response']",
+      "[class*='response-container']",
+      ".response-container",
+      "message-content",
+      "[class*='message-content']",
+      ".model-response-text",
+      "[class*='model-response-text']",
+      "[class*='response-content']",
+      "[data-test-id*='conversation-turn']",
+      "[class*='conversation-turn']",
+      "[data-test-id*='model-response']",
+      "[data-testid*='model-response']"
+    ];
+
+    let rawElements = [];
+    let firstMatchedSel = "";
+
+    for (const sel of primarySelectors) {
+      try {
+        const found = Array.from(document.querySelectorAll(sel));
+        if (found.length > 0) {
+          rawElements.push(...found);
+          if (!firstMatchedSel) firstMatchedSel = sel;
+        }
+      } catch (e) {}
+    }
+
+    // Filter out user messages, input boxes, headers, tools/nav
+    const validElements = rawElements.filter(el => {
+      if (!el || !el.parentNode) return false;
+      if (typeof el.closest === "function") {
+        if (el.closest('user-query, [data-message-author-role="user"], [class*="user-query"], .query-text')) {
+          return false;
+        }
+        if (el.closest('rich-textarea, [contenteditable="true"], form, [class*="input-area"], [class*="prompt-box"], header, nav')) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // Deduplicate nested elements: retain only outermost top-level turn containers
+    let topContainers = [];
+    if (validElements.length > 0) {
+      topContainers = validElements.filter(el => 
+        !validElements.some(parent => parent !== el && typeof parent.contains === "function" && parent.contains(el))
+      );
+    }
+
+    // Check if any container appears after the last user query
+    const userQueries = Array.from(document.querySelectorAll(
+      'user-query, [data-message-author-role="user"], [class*="user-query"], .query-text'
+    ));
+    const lastUser = userQueries.length > 0 ? userQueries[userQueries.length - 1] : null;
+
+    let hasTurnAfterUser = false;
+    if (lastUser && topContainers.length > 0 && typeof lastUser.compareDocumentPosition === "function") {
+      hasTurnAfterUser = topContainers.some(el => 
+        Boolean(lastUser.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)
+      );
+    }
+
+    if (topContainers.length > 0 && (!lastUser || hasTurnAfterUser)) {
+      const lastEl = topContainers[topContainers.length - 1];
+      const tag = (lastEl.tagName || "").toLowerCase();
+      const cls = lastEl.className ? String(lastEl.className).split(" ")[0] : "";
+      lastMatchedSelector = `primary:${tag}${cls ? "." + cls : ""}`;
+      return topContainers;
+    }
+
+    // Fallback tier 1: Active thinking / progress indicator anchor
+    const thinkingIndicator = document.querySelector(
+      'model-thoughts, [class*="thinking"], mat-progress-bar, mat-spinner, [aria-busy="true"], .sparkle-animation'
+    );
+    if (thinkingIndicator) {
+      let enclosingTurn = null;
+      if (typeof thinkingIndicator.closest === "function") {
+        enclosingTurn = thinkingIndicator.closest(
+          'model-response, [class*="response"], [class*="message"], [class*="turn"], [data-test-id*="turn"], message-content, section, article'
+        );
+      }
+      if (!enclosingTurn) {
+        enclosingTurn = thinkingIndicator.parentElement;
+      }
+      if (enclosingTurn && enclosingTurn !== document.body) {
+        const inUser = typeof enclosingTurn.closest === "function" && enclosingTurn.closest('user-query, [data-message-author-role="user"], rich-textarea, form');
+        if (!inUser) {
+          const eTag = (enclosingTurn.tagName || "").toLowerCase();
+          const eClass = enclosingTurn.className ? String(enclosingTurn.className).split(" ")[0] : "";
+          lastMatchedSelector = `fallback:thinking-anchor(${eTag}${eClass ? "." + eClass : ""})`;
+          if (topContainers.length > 0 && !hasTurnAfterUser) {
+            topContainers.push(enclosingTurn);
+            return topContainers;
+          }
+          return [enclosingTurn];
+        }
+      }
+    }
+
+    // Fallback tier 2: Look for elements following the last user query
+    if (lastUser) {
+      // 2a: Sibling of lastUser or sibling of lastUser's parent turn
+      const candidateSiblings = [
+        lastUser.nextElementSibling,
+        lastUser.parentElement ? lastUser.parentElement.nextElementSibling : null
+      ].filter(Boolean);
+
+      for (const sib of candidateSiblings) {
+        const inUserOrInput = typeof sib.closest === "function" && sib.closest('user-query, [data-message-author-role="user"], rich-textarea, form, header, nav');
+        if (!inUserOrInput) {
+          const sTag = (sib.tagName || "").toLowerCase();
+          const sClass = sib.className ? String(sib.className).split(" ")[0] : "";
+          lastMatchedSelector = `fallback:after-user-sibling(${sTag}${sClass ? "." + sClass : ""})`;
+          if (topContainers.length > 0 && !hasTurnAfterUser) {
+            topContainers.push(sib);
+            return topContainers;
+          }
+          return [sib];
+        }
+      }
+
+      // 2b: Any markdown / content / text element following lastUser in document order
+      if (typeof lastUser.compareDocumentPosition === "function") {
+        try {
+          const followingCandidates = Array.from(document.querySelectorAll(
+            '[class*="markdown"], [class*="model-response"], [class*="response-content"], [class*="message-content"], [class*="rendered"], [class*="prose"], div.markdown, p, div'
+          )).filter(el => {
+            if (!el || !el.parentNode) return false;
+            if (typeof el.closest === "function" && el.closest('user-query, [data-message-author-role="user"], rich-textarea, form, header, nav')) {
+              return false;
+            }
+            return Boolean(lastUser.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+          });
+
+          const withText = followingCandidates.filter(el => (el.innerText || "").trim().length > 0);
+          const chosen = withText.length > 0 ? withText[withText.length - 1] : (followingCandidates.length > 0 ? followingCandidates[followingCandidates.length - 1] : null);
+          if (chosen && chosen !== document.body) {
+            const cTag = (chosen.tagName || "").toLowerCase();
+            const cClass = chosen.className ? String(chosen.className).split(" ")[0] : "";
+            lastMatchedSelector = `fallback:after-user-text(${cTag}${cClass ? "." + cClass : ""})`;
+            if (topContainers.length > 0 && !hasTurnAfterUser) {
+              topContainers.push(chosen);
+              return topContainers;
+            }
+            return [chosen];
+          }
+        } catch (e) {}
+      }
+    }
+
+    // Fallback tier 3: Generic markdown / prose / content blocks anywhere on page
+    const genericBlocks = Array.from(document.querySelectorAll(
+      '[class*="markdown"], [class*="model-response"], [class*="response-content"], [class*="rendered"], [class*="prose"], div.markdown'
+    )).filter(el => {
+      if (!el || !el.parentNode) return false;
+      if (typeof el.closest === "function" && el.closest('user-query, [data-message-author-role="user"], rich-textarea, form, header, nav')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (genericBlocks.length > 0) {
+      const topGenerics = genericBlocks.filter(el => 
+        !genericBlocks.some(parent => parent !== el && typeof parent.contains === "function" && parent.contains(el))
+      );
+      if (topGenerics.length > 0) {
+        const target = topGenerics[topGenerics.length - 1];
+        const gTag = (target.tagName || "").toLowerCase();
+        const gClass = target.className ? String(target.className).split(" ")[0] : "";
+        lastMatchedSelector = `fallback:generic-markdown(${gTag}${gClass ? "." + gClass : ""})`;
+        if (topContainers.length > 0 && !hasTurnAfterUser) {
+          topContainers.push(target);
+          return topContainers;
+        }
+        return [target];
+      }
+    }
+
+    if (topContainers.length > 0) {
+      lastMatchedSelector = "primary-partial";
+      return topContainers;
+    }
+
+    lastMatchedSelector = "none";
+    return [];
+  }
+
   function getResponseContainers() {
     switch (PROVIDER) {
-      case "gemini": {
-        const topTurns = Array.from(document.querySelectorAll("model-response, [data-message-author-role='model'], .response-container"));
-        if (topTurns.length > 0) return topTurns;
-        return Array.from(document.querySelectorAll("message-content, .model-response-text, .response-container-content, div.markdown"));
-      }
+      case "gemini":
+        return getGeminiResponseContainers();
       case "chatgpt": {
         const topTurns = Array.from(document.querySelectorAll("div[data-message-author-role='assistant'], .agent-turn"));
-        if (topTurns.length > 0) return topTurns;
+        if (topTurns.length > 0) {
+          lastMatchedSelector = "chatgpt:assistant-turn";
+          return topTurns;
+        }
+        lastMatchedSelector = "chatgpt:markdown";
         return Array.from(document.querySelectorAll("div.markdown"));
       }
       case "claude": {
         const topTurns = Array.from(document.querySelectorAll(".font-claude-message, [data-is-streaming]"));
-        if (topTurns.length > 0) return topTurns;
+        if (topTurns.length > 0) {
+          lastMatchedSelector = "claude:font-claude-message";
+          return topTurns;
+        }
+        lastMatchedSelector = "claude:grid-cols-1";
         return Array.from(document.querySelectorAll("div.grid-cols-1"));
       }
       case "deepseek": {
         const topTurns = Array.from(document.querySelectorAll(".ds-message-content, div[class*='message-content']"));
-        if (topTurns.length > 0) return topTurns;
+        if (topTurns.length > 0) {
+          lastMatchedSelector = "deepseek:ds-message-content";
+          return topTurns;
+        }
+        lastMatchedSelector = "deepseek:ds-markdown";
         return Array.from(document.querySelectorAll(".ds-markdown"));
       }
       case "qwen": {
         const topTurns = Array.from(document.querySelectorAll(".chat-message-content, .message-content"));
-        if (topTurns.length > 0) return topTurns;
+        if (topTurns.length > 0) {
+          lastMatchedSelector = "qwen:chat-message-content";
+          return topTurns;
+        }
+        lastMatchedSelector = "qwen:qwen-markdown";
         return Array.from(document.querySelectorAll(".qwen-markdown"));
       }
       case "grok": {
         const topTurns = Array.from(document.querySelectorAll(".message-bubble, .response-message"));
-        if (topTurns.length > 0) return topTurns;
+        if (topTurns.length > 0) {
+          lastMatchedSelector = "grok:message-bubble";
+          return topTurns;
+        }
+        lastMatchedSelector = "grok:message";
         return Array.from(document.querySelectorAll("div[class*='message']"));
       }
-      default:
+      default: {
+        lastMatchedSelector = "default:assistant";
         return Array.from(document.querySelectorAll("[data-role='assistant'], .message"));
+      }
     }
   }
 
@@ -254,29 +473,52 @@
 
     if (PROVIDER === "gemini") {
       const md = target.querySelector(
-        "message-content .markdown-main-panel, " +
+        "[class*='markdown-main-panel'], " +
+        "[class*='model-response-text'], " +
         "message-content, " +
-        ".model-response-text, " +
-        ".response-container-content .markdown, " +
-        ".response-container .markdown, " +
-        ".markdown"
+        "[class*='message-content'], " +
+        "[class*='response-container-content'], " +
+        "[class*='response-content'], " +
+        "[class*='markdown'], " +
+        ".markdown, " +
+        ".prose"
       );
       const contentElem = md || target;
 
-      const thoughts = contentElem.querySelector("model-thoughts, .thought-container, .thinking-process");
-      if (thoughts && thoughts.parentNode) {
+      const thoughts = contentElem.querySelectorAll(
+        "model-thoughts, [class*='thinking'], .thought-container, .thinking-process, mat-progress-bar, mat-spinner"
+      );
+      let text = "";
+      if (thoughts.length > 0) {
         try {
           const clone = contentElem.cloneNode(true);
-          const cThoughts = clone.querySelector("model-thoughts, .thought-container, .thinking-process");
-          if (cThoughts && cThoughts.parentNode) {
-            cThoughts.parentNode.removeChild(cThoughts);
-          }
-          return (clone.innerText || "").trim();
+          const cThoughts = clone.querySelectorAll(
+            "model-thoughts, [class*='thinking'], .thought-container, .thinking-process, mat-progress-bar, mat-spinner"
+          );
+          cThoughts.forEach(t => {
+            if (t.parentNode) t.parentNode.removeChild(t);
+          });
+          text = (clone.innerText || "").trim();
         } catch (e) {
-          return (contentElem.innerText || "").trim();
+          text = (contentElem.innerText || "").trim();
+        }
+      } else {
+        text = (contentElem.innerText || "").trim();
+      }
+
+      for (const prefix of ["gemini said:\n", "gemini said:\r\n", "gemini said:\n\n", "gemini said\n", "ответ gemini:\n", "ответ gemini\n"]) {
+        if (text.toLowerCase().startsWith(prefix)) {
+          text = text.slice(prefix.length).trim();
+          break;
         }
       }
-      return (contentElem.innerText || "").trim();
+
+      const low = text.toLowerCase();
+      const stubs = ['gemini said', 'gemini said:', 'gemini', 'ответ gemini', 'ответ gemini:'];
+      if (stubs.includes(low)) {
+        return "";
+      }
+      return text;
     }
 
     if (PROVIDER === "chatgpt") {
@@ -534,6 +776,7 @@
       const currentContainers = getResponseContainers();
       const currentCount = currentContainers.length;
       const currentText = getCurrentTurnText(beforeCount, beforeLastText);
+      const matchedSel = lastMatchedSelector || (currentCount > 0 ? "matched" : "none");
 
       // 20s Fail-fast: if after prompt_sent nothing started generating and no text appeared
       if (!responseStarted) {
@@ -554,7 +797,7 @@
           responseStarted = true;
           onStatus({
             stage: "generating",
-            detail: `responsesCount=${currentCount}, lastLen=${currentText.length}, isGenerating=${currentlyGenerating}`
+            detail: `responsesCount=${currentCount}, lastLen=${currentText.length}, isGenerating=${currentlyGenerating}, matchedSelector=${matchedSel}`
           });
           lastStatusTime = Date.now();
         }
@@ -575,7 +818,7 @@
           lastStatusTime = now;
           onStatus({
             stage: "generating",
-            detail: `responsesCount=${currentCount}, lastLen=${currentText ? currentText.length : 0}, isGenerating=${currentlyGenerating}`
+            detail: `responsesCount=${currentCount}, lastLen=${currentText ? currentText.length : 0}, isGenerating=${currentlyGenerating}, matchedSelector=${matchedSel}`
           });
         }
       }
@@ -607,62 +850,80 @@
   }
 
   // Handle connection from background service worker
-  chrome.runtime.onConnect.addListener(port => {
-    if (port.name !== "zca-bridge") return;
+  if (typeof chrome !== "undefined" && chrome.runtime) {
+    if (chrome.runtime.onConnect) {
+      chrome.runtime.onConnect.addListener(port => {
+        if (port.name !== "zca-bridge") return;
 
-    port.onMessage.addListener(msg => {
-      if (msg.type === "execute_task") {
-        executePromptTask(
-          msg.task_id,
-          msg.prompt,
-          { timeout_sec: msg.timeout_sec || 120 },
-          (status) => {
-            try { port.postMessage({ type: "status", task_id: msg.task_id, stage: status.stage, detail: status.detail }); } catch (e) {}
-          },
-          (chunk) => {
-            try { port.postMessage({ type: "chunk", task_id: msg.task_id, delta: chunk.delta, full_text: chunk.full_text }); } catch (e) {}
-          },
-          (done) => {
-            try { port.postMessage({ type: "done", task_id: msg.task_id, full_text: done.full_text }); } catch (e) {}
-          },
-          (err) => {
-            try { port.postMessage({ type: "error", task_id: msg.task_id, code: err.code, message: err.message }); } catch (e) {}
+        port.onMessage.addListener(msg => {
+          if (msg.type === "execute_task") {
+            executePromptTask(
+              msg.task_id,
+              msg.prompt,
+              { timeout_sec: msg.timeout_sec || 120 },
+              (status) => {
+                try { port.postMessage({ type: "status", task_id: msg.task_id, stage: status.stage, detail: status.detail }); } catch (e) {}
+              },
+              (chunk) => {
+                try { port.postMessage({ type: "chunk", task_id: msg.task_id, delta: chunk.delta, full_text: chunk.full_text }); } catch (e) {}
+              },
+              (done) => {
+                try { port.postMessage({ type: "done", task_id: msg.task_id, full_text: done.full_text }); } catch (e) {}
+              },
+              (err) => {
+                try { port.postMessage({ type: "error", task_id: msg.task_id, code: err.code, message: err.message }); } catch (e) {}
+              }
+            );
+          } else if (msg.type === "cancel") {
+            if (activeTask && activeTask.taskId === msg.task_id) {
+              activeTask.cancelled = true;
+              activeTask = null;
+            }
+            // Click Stop button if visible
+            try {
+              const stopBtn = getStopButton();
+              if (stopBtn && stopBtn.offsetParent !== null) {
+                stopBtn.click();
+              }
+            } catch (e) {}
           }
-        );
-      } else if (msg.type === "cancel") {
-        if (activeTask && activeTask.taskId === msg.task_id) {
-          activeTask.cancelled = true;
-          activeTask = null;
-        }
-        // Click Stop button if visible
-        try {
-          const stopBtn = getStopButton();
-          if (stopBtn && stopBtn.offsetParent !== null) {
-            stopBtn.click();
+        });
+
+        port.onDisconnect.addListener(() => {
+          if (activeTask) {
+            activeTask.cancelled = true;
+            activeTask = null;
           }
-        } catch (e) {}
-      }
-    });
-
-    port.onDisconnect.addListener(() => {
-      if (activeTask) {
-        activeTask.cancelled = true;
-        activeTask = null;
-      }
-    });
-  });
-
-  // Handle direct ping / status query
-  chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
-    if (req.action === "ping_content") {
-      sendResponse({
-        ok: true,
-        provider: PROVIDER,
-        authenticated: !isNeedsAuth(),
-        cloudflare: isCloudflareChallenge(),
-        url: window.location.href
+        });
       });
-      return true;
     }
-  });
+
+    // Handle direct ping / status query
+    if (chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+        if (req.action === "ping_content") {
+          sendResponse({
+            ok: true,
+            provider: PROVIDER,
+            authenticated: !isNeedsAuth(),
+            cloudflare: isCloudflareChallenge(),
+            url: (typeof window !== "undefined" && window.location) ? window.location.href : ""
+          });
+          return true;
+        }
+      });
+    }
+  }
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      getGeminiResponseContainers,
+      extractTurnText,
+      getCurrentTurnText,
+      getResponseContainers,
+      isGenerating,
+      getLastMatchedSelector: () => lastMatchedSelector,
+      setProviderForTest: (p) => { PROVIDER = p; }
+    };
+  }
 })();
