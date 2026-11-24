@@ -1034,6 +1034,62 @@ async def test_browser_engine_rejects_disconnected_provider_when_bridge_active(m
     assert "не подключен в Chrome Bridge" in str(exc_info_stream.value)
 
 
+@pytest.mark.asyncio
+async def test_chrome_bridge_first_chunk_timeout():
+    """Verifies fail-fast timeout after prompt_sent stage if first token never arrives."""
+    import asyncio
+    from core.chrome_bridge import chrome_bridge
+
+    sent_messages = []
+
+    class DummyWS:
+        def __init__(self):
+            self.closed = False
+        async def send_text(self, text: str):
+            sent_messages.append(text)
+
+    dummy_ws = DummyWS()
+    chrome_bridge.active_websocket = dummy_ws
+    chrome_bridge.active_providers = {"gemini"}
+
+    async def simulate_prompt_sent():
+        await asyncio.sleep(0.05)
+        for tid, q in list(chrome_bridge.tasks.items()):
+            await q.put({"type": "status", "stage": "prompt_sent", "detail": "Prompt submitted"})
+
+    task = asyncio.create_task(simulate_prompt_sent())
+
+    try:
+        with pytest.raises(TimeoutError) as exc_info:
+            async for _ in chrome_bridge.stream_prompt(
+                "gemini", "Hello",
+                timeout=5.0,
+                ack_timeout=2.0,
+                first_chunk_timeout=0.25
+            ):
+                pass
+        assert "fail-fast timeout (0.25s) waiting for first response token" in str(exc_info.value)
+        assert any("cancel" in m for m in sent_messages)
+    finally:
+        await task
+        chrome_bridge.active_websocket = None
+        chrome_bridge.active_providers = set()
+
+
+@pytest.mark.asyncio
+async def test_ensure_account_ready_suppresses_playwright_when_bridge_active(monkeypatch):
+    """Verifies that ensure_account_ready avoids launching Playwright when Chrome Bridge is active for inactive accounts."""
+    from core.browser_session import engine
+    from core.chrome_bridge import chrome_bridge
+
+    monkeypatch.setattr(chrome_bridge, "is_connected", lambda: True)
+    monkeypatch.setattr(chrome_bridge, "has_provider", lambda prov: prov == "gemini")
+
+    ready = await engine.ensure_account_ready("grok-web-primary")
+    assert ready is False
+    assert engine.playwright is None
+
+
 
 
 

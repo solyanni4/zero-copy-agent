@@ -265,11 +265,13 @@ class ChromeBridgeManager:
         model: Optional[str] = None,
         new_chat: bool = True,
         timeout: float = 120.0,
-        ack_timeout: float = 25.0
+        ack_timeout: float = 25.0,
+        first_chunk_timeout: float = 45.0
     ) -> AsyncIterator[str]:
         """
         Sends prompt through the Chrome Bridge WebSocket and yields text chunks as they stream.
-        Enforces a 25s fail-fast acknowledgement timeout for prompt_sent/generating stages.
+        Enforces a 25s fail-fast acknowledgement timeout for prompt_sent/generating stages,
+        and a 45s fail-fast timeout after prompt_sent waiting for the first chunk.
         """
         async with self._lock:
             ws = self.active_websocket
@@ -302,6 +304,9 @@ class ChromeBridgeManager:
         ack_received = False
         last_stage = "enqueued"
         last_yielded_len = 0
+        prompt_sent_time: Optional[float] = None
+        first_chunk_received = False
+        task_succeeded = False
 
         try:
             while True:
@@ -312,11 +317,24 @@ class ChromeBridgeManager:
                         f"Last stage: {last_stage}"
                     )
 
+                if prompt_sent_time is not None and not first_chunk_received:
+                    if (now - prompt_sent_time) > first_chunk_timeout:
+                        if self.is_connected() and self.active_websocket:
+                            try:
+                                await self.active_websocket.send_text(json.dumps({"type": "cancel", "task_id": task_id}))
+                            except Exception:
+                                pass
+                        raise TimeoutError(
+                            f"Chrome Bridge fail-fast timeout ({first_chunk_timeout}s) waiting for first response token from {clean_prov} after prompt submission. "
+                            f"Last stage: {last_stage}"
+                        )
+
                 remaining_time = timeout - (now - start_time)
                 if remaining_time <= 0:
                     raise TimeoutError(f"Chrome Bridge timeout ({timeout}s) waiting for response from {clean_prov}. Last stage: {last_stage}")
 
-                wait_slice = min(remaining_time, 1.5 if not ack_received else 10.0)
+                max_slice = 0.5 if not first_chunk_received else 5.0
+                wait_slice = max(0.01, min(remaining_time, max_slice))
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=wait_slice)
                 except asyncio.TimeoutError:
@@ -331,9 +349,14 @@ class ChromeBridgeManager:
                     last_stage = f"{stage}: {detail}" if detail else stage
                     if stage in ("received", "tab_ready", "injected", "prompt_sent", "generating"):
                         ack_received = True
+                    if stage == "prompt_sent" and prompt_sent_time is None:
+                        prompt_sent_time = time.time()
+                    if stage == "generating":
+                        first_chunk_received = True
                     continue
                 elif m_type == "chunk":
                     ack_received = True
+                    first_chunk_received = True
                     last_stage = "streaming"
                     delta = msg.get("delta", "")
                     full = msg.get("full_text", "")
@@ -346,6 +369,8 @@ class ChromeBridgeManager:
                         yield diff
                 elif m_type == "done":
                     ack_received = True
+                    first_chunk_received = True
+                    task_succeeded = True
                     full = msg.get("full_text", "")
                     if full and len(full) > last_yielded_len:
                         yield full[last_yielded_len:]
@@ -361,7 +386,7 @@ class ChromeBridgeManager:
                     raise RuntimeError(f"[{code}] {err_msg} (Last stage: {last_stage})")
         finally:
             self.tasks.pop(task_id, None)
-            if self.is_connected() and self.active_websocket:
+            if not task_succeeded and self.is_connected() and self.active_websocket:
                 try:
                     await self.active_websocket.send_text(json.dumps({"type": "cancel", "task_id": task_id}))
                 except Exception:

@@ -1,5 +1,5 @@
 schema_version: 2
-updated_at: '2026-11-23T17:18:31.287969'
+updated_at: '2026-11-24T15:27:09.271972'
 accounts:
 - id: ollama-auto
   provider: ollama
@@ -9,9 +9,50 @@ accounts:
   api_key: null
   base_url: null
   profile_dir: null
+  proxy: auto
   models:
   - id: qwen2.5-coder:14b
     display_name: Qwen2.5-Coder 14B (Local GPU)
+    status: active
+    capabilities: []
+- id: gemini-web-primary
+  provider: gemini
+  auth_type: browser_session
+  status: active
+  alias: Gemini Advanced (Chrome Sync)
+  api_key: null
+  base_url: null
+  profile_dir: browser_profiles/gemini-web-primary
+  proxy: auto
+  models:
+  - id: gemini-advanced
+    display_name: Gemini Argon (Web)
+    status: active
+    capabilities: []
+  - id: gemini-4-neon
+    display_name: Gemini 4 Neon (Deeper Analysis)
+    status: active
+    capabilities: []
+  - id: gemini-2.5-flash
+    display_name: Gemini 2.5 Flash
+    status: active
+    capabilities: []
+- id: claude-web-primary
+  provider: claude
+  auth_type: browser_session
+  status: active
+  alias: Claude Pro / Free (Chrome Sync)
+  api_key: null
+  base_url: null
+  profile_dir: browser_profiles/claude-web-primary
+  proxy: auto
+  models:
+  - id: claude-3-7-sonnet
+    display_name: Claude 3.7 Sonnet (Thinking)
+    status: active
+    capabilities: []
+  - id: claude-pro
+    display_name: Claude Pro
     status: active
     capabilities: []
 user_aliases: {}

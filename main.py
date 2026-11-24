@@ -1986,6 +1986,9 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 )
                 yield f"data: {json.dumps(done_chunk.dict(), ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                logging.getLogger("zcao.main").info(f"[ORCHESTRATOR] Stream cancelled by client (req_id={req_id})")
+                return
             except Exception as e:
                 logging.getLogger("zcao.main").error(f"[ORCHESTRATOR] Stream generation error: {e}")
                 err_chunk = {

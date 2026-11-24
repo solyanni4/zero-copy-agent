@@ -267,9 +267,21 @@ class BrowserSessionEngine:
         acc_id = account_id.strip()
         from core.chrome_bridge import chrome_bridge
         prov = "chatgpt" if "chatgpt" in acc_id.lower() else ("claude" if "claude" in acc_id.lower() else ("deepseek" if "deepseek" in acc_id.lower() else ("qwen" if "qwen" in acc_id.lower() else ("grok" if "grok" in acc_id.lower() else "gemini"))))
-        if chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
-            logger.info(f"[ENGINE] Account '{acc_id}' ready via active Chrome Bridge WebSocket (skipping Playwright launch).")
-            return True
+        if chrome_bridge.is_connected():
+            if chrome_bridge.has_provider(prov):
+                logger.info(f"[ENGINE] Account '{acc_id}' ready via active Chrome Bridge WebSocket (skipping Playwright launch).")
+                return True
+            else:
+                from core.healer import config_healer
+                cfg, _ = config_healer.load_or_create()
+                acc = next((a for a in cfg.accounts if a.id == acc_id), None)
+                p_dir_rel = acc.profile_dir if (acc and acc.profile_dir) else f"browser_profiles/{acc_id}"
+                profile_path = (get_runtime_cwd() / p_dir_rel).resolve()
+                storage_state = profile_path / "storage_state.json"
+                has_manual_session = bool((acc and acc.status == "active" and acc.cookies) or (storage_state.exists() and storage_state.stat().st_size > 50))
+                if not has_manual_session:
+                    logger.debug(f"[ENGINE] Account '{acc_id}' has no manual session while Chrome Bridge is active (suppressing Playwright launch).")
+                    return False
 
         lock = self._get_lock(acc_id)
         async with lock:
@@ -553,6 +565,8 @@ class BrowserSessionEngine:
 
     async def query(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> str:
         """Executes query through selected account driver with automatic fallback."""
+        if model_id == "mock-test":
+            return await self.mock_driver.send_prompt(prompt)
         target_acc = self.resolve_target_account(model_id, account_id)
         prov = None
         if target_acc:
@@ -656,6 +670,9 @@ class BrowserSessionEngine:
 
     async def query_stream(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams response tokens from web session."""
+        if model_id == "mock-test":
+            yield await self.mock_driver.send_prompt(prompt)
+            return
         target_acc = self.resolve_target_account(model_id, account_id)
         prov = None
         if target_acc:

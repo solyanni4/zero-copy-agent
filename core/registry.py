@@ -258,12 +258,7 @@ class ModelRegistry:
                     for m in acc.models:
                         collected_models.add(m.id)
 
-                if collected_models:
-                    browser_connected = True
-                    browser_models = sorted(list(collected_models))
-                    prov_names = [a.provider for a in active_web_accs]
-                    browser_status = f"Active ({', '.join(prov_names)})"
-                elif type(browser_engine).__name__.startswith("Mock") and is_ready:
+                if type(browser_engine).__name__.startswith("Mock") and is_ready:
                     if active_prov == "gemini":
                         browser_models = ["gemini-advanced", "gemini-4-neon", "gemini-2.5-flash"]
                     elif active_prov == "chatgpt":
@@ -278,6 +273,11 @@ class ModelRegistry:
                         browser_models = ["grok-3", "grok-3-mini"]
                     browser_connected = True
                     browser_status = f"Active ({active_prov})"
+                elif collected_models:
+                    browser_connected = True
+                    browser_models = sorted(list(collected_models))
+                    prov_names = [a.provider for a in active_web_accs]
+                    browser_status = f"Active ({', '.join(prov_names)})"
                 else:
                     browser_connected = False
                     browser_models = []

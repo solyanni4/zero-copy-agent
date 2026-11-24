@@ -122,7 +122,7 @@ let lastReportedProvidersJson = "";
 let pingInterval = null;
 
 const providerQueues = {};
-const activeTaskPorts = {};
+const activeTasks = new Map();
 
 async function getDetectedActiveProviders() {
   const detected = [];
@@ -343,12 +343,21 @@ async function processProviderQueue(provId) {
 }
 
 function cancelPromptTask(taskId) {
-  const port = activeTaskPorts[taskId];
-  if (port) {
+  const rec = activeTasks.get(taskId);
+  if (rec) {
     try {
-      port.postMessage({ type: "cancel", task_id: taskId });
+      if (rec.port) {
+        rec.port.postMessage({ type: "cancel", task_id: taskId });
+      }
     } catch (e) {}
-    delete activeTaskPorts[taskId];
+    if (typeof rec.abort === "function") {
+      rec.abort("cancelled_by_server");
+    }
+  }
+  for (const provId in providerQueues) {
+    if (Array.isArray(providerQueues[provId])) {
+      providerQueues[provId] = providerQueues[provId].filter(t => t.task_id !== taskId);
+    }
   }
 }
 
@@ -490,6 +499,19 @@ async function executePromptInTab(task) {
   return new Promise((resolve) => {
     let port = null;
     let taskFinished = false;
+    let settled = false;
+
+    function abortTask(reason) {
+      if (settled) return;
+      settled = true;
+      activeTasks.delete(task.task_id);
+      if (port) {
+        try { port.postMessage({ type: "cancel", task_id: task.task_id }); } catch (e) {}
+        try { port.disconnect(); } catch (e) {}
+      }
+      resolve();
+    }
+
     try {
       port = chrome.tabs.connect(tab.id, { name: "zca-bridge" });
     } catch (err) {
@@ -503,7 +525,13 @@ async function executePromptInTab(task) {
       return;
     }
 
-    activeTaskPorts[task.task_id] = port;
+    const taskRecord = {
+      provider: provId,
+      port,
+      tabId: tab.id,
+      abort: abortTask
+    };
+    activeTasks.set(task.task_id, taskRecord);
 
     port.onMessage.addListener((msg) => {
       if (msg.type === "status") {
@@ -527,9 +555,7 @@ async function executePromptInTab(task) {
           task_id: task.task_id,
           full_text: msg.full_text
         });
-        delete activeTaskPorts[task.task_id];
-        try { port.disconnect(); } catch (e) {}
-        resolve();
+        abortTask("done");
       } else if (msg.type === "error") {
         taskFinished = true;
         sendWs({
@@ -538,15 +564,12 @@ async function executePromptInTab(task) {
           code: msg.code,
           message: msg.message
         });
-        delete activeTaskPorts[task.task_id];
-        try { port.disconnect(); } catch (e) {}
-        resolve();
+        abortTask("error");
       }
     });
 
     port.onDisconnect.addListener(() => {
-      delete activeTaskPorts[task.task_id];
-      if (!taskFinished) {
+      if (!taskFinished && !settled) {
         sendWs({
           type: "error",
           task_id: task.task_id,
@@ -554,7 +577,7 @@ async function executePromptInTab(task) {
           message: "Content script port disconnected prematurely"
         });
       }
-      resolve();
+      abortTask("port_disconnected");
     });
 
     port.postMessage({
@@ -566,6 +589,26 @@ async function executePromptInTab(task) {
     });
   });
 }
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [taskId, rec] of Array.from(activeTasks.entries())) {
+    if (rec.tabId === tabId) {
+      console.warn(`[ZCA Bridge] Tab ${tabId} closed for task ${taskId}, aborting queue`);
+      rec.abort("tab_closed");
+    }
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading") {
+    for (const [taskId, rec] of Array.from(activeTasks.entries())) {
+      if (rec.tabId === tabId) {
+        console.warn(`[ZCA Bridge] Tab ${tabId} reloaded for task ${taskId}, aborting queue`);
+        rec.abort("tab_navigated");
+      }
+    }
+  }
+});
 
 // Background Cookie Replication (Fallback when bridge is inactive)
 let debounceTimer = null;

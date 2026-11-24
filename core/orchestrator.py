@@ -690,13 +690,17 @@ class HybridOrchestrator:
                     web_streamed = False
                     try:
                         active_web = mesh.get_active_web_account(provider)
-                        if active_web and mesh.is_available(active_web) and hasattr(self.browser_engine, "query_stream"):
+                        is_browser_ready = getattr(self.browser_engine, "is_ready", True)
+                        if active_web and is_browser_ready and mesh.is_available(active_web) and hasattr(self.browser_engine, "query_stream"):
                             logger.info(f"[ORCHESTRATOR] Falling back to web session '{active_web}' for provider '{provider}'")
                             if inject_signature:
                                 yield format_badge(target, role="Web Session Fallback")
+                            chunk_count = 0
                             async for tok in self.browser_engine.query_stream(compressed_prompt, target, account_id=active_web):
+                                chunk_count += 1
                                 yield tok
-                            web_streamed = True
+                            if chunk_count > 0:
+                                web_streamed = True
                     except Exception as web_err:
                         logger.warning(f"[ORCHESTRATOR] Web fallback failed: {web_err}")
 

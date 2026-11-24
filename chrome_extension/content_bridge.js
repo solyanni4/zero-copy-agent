@@ -90,14 +90,21 @@
 
   function getSendButton() {
     switch (PROVIDER) {
-      case "gemini":
+      case "gemini": {
+        const matSend = document.querySelector('mat-icon[fonticon="send"], mat-icon[data-mat-icon-name="send"]');
+        const matSendBtn = matSend ? matSend.closest("button") : null;
+        if (matSendBtn && !matSendBtn.disabled && matSendBtn.getAttribute("aria-disabled") !== "true") {
+          return matSendBtn;
+        }
         return document.querySelector(
           'button.send-button:not([disabled]), ' +
           'button[aria-label*="Send" i]:not([disabled]), ' +
           'button[aria-label*="Отправить" i]:not([disabled]), ' +
+          'button[data-test-id="send-button"]:not([disabled]), ' +
           'button[aria-label*="Submit" i]:not([disabled]), ' +
           'button[data-testid*="send" i]:not([disabled])'
         );
+      }
       case "chatgpt":
         return document.querySelector(
           'button[data-testid="send-button"]:not([disabled]), ' +
@@ -139,8 +146,14 @@
 
   function getStopButton() {
     switch (PROVIDER) {
-      case "gemini":
-        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i], button[data-testid*="stop" i], .stop-icon');
+      case "gemini": {
+        const matStop = document.querySelector('mat-icon[fonticon="stop"], mat-icon[data-mat-icon-name="stop"]');
+        const matStopBtn = matStop ? matStop.closest("button") : null;
+        if (matStopBtn && matStopBtn.offsetParent !== null) {
+          return matStopBtn;
+        }
+        return document.querySelector('button[aria-label*="Stop" i], button[aria-label*="Остановить" i], button[data-testid*="stop" i], .stop-icon, button.stop-button');
+      }
       case "chatgpt":
         return document.querySelector('button[data-testid="stop-button"], button[aria-label*="Stop" i], button[aria-label*="Остановить" i]');
       case "claude":
@@ -183,7 +196,7 @@
   function getResponseContainers() {
     switch (PROVIDER) {
       case "gemini":
-        return Array.from(document.querySelectorAll("model-response, message-content, [data-message-author-role='model'], .response-container-content"));
+        return Array.from(document.querySelectorAll("model-response, message-content, [data-message-author-role='model'], .response-container, .response-container-content, model-response .markdown, model-response .model-response-text, message-content .markdown-main-panel"));
       case "chatgpt":
         return Array.from(document.querySelectorAll("div[data-message-author-role='assistant'], .agent-turn, div.markdown"));
       case "claude":
@@ -213,7 +226,7 @@
     if (!target) return "";
 
     if (PROVIDER === "gemini") {
-      const md = target.querySelector(".markdown, message-content, .model-response-text");
+      const md = target.querySelector("message-content .markdown-main-panel, message-content, .markdown, .model-response-text, .response-container .markdown");
       return ((md || target).innerText || "").trim();
     }
     return (target.innerText || "").trim();
@@ -281,8 +294,9 @@
       return;
     }
 
-    // Capture initial block count before prompt submission
+    // Capture initial block count and user turns before prompt submission
     const initialBlockCount = getResponseContainers().length;
+    const beforeUserTurns = document.querySelectorAll('user-query, [data-message-author-role="user"]').length;
     const baselineText = extractResponseFromTurn(initialBlockCount);
 
     // 2. Hydrate input with prompt
@@ -306,7 +320,7 @@
       }
     }
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 250));
 
     // 3. Wait for send button and submit
     let sendBtn = null;
@@ -328,22 +342,62 @@
     }
 
     if (!sent) {
-      inputElem.dispatchEvent(new KeyboardEvent("keydown", {
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      }));
+      inputElem.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+      inputElem.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+      inputElem.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
     }
 
-    // Telemetry: prompt_sent stage reached
+    // 4. Verification loop (up to 4s) to ensure prompt was actually submitted
+    let verified = false;
+    const verifyStart = Date.now();
+    let retriedFallback = false;
+
+    while (Date.now() - verifyStart < 4000) {
+      const currentInputText = (inputElem.value !== undefined ? inputElem.value : (inputElem.innerText || "")).trim();
+      const currentUserTurns = document.querySelectorAll('user-query, [data-message-author-role="user"]').length;
+      const currentRespCount = getResponseContainers().length;
+      const stopBtn = getStopButton();
+      const isBusy = isGenerating();
+
+      if (currentInputText.length === 0 || currentUserTurns > beforeUserTurns || currentRespCount > initialBlockCount || (stopBtn && stopBtn.offsetParent !== null) || isBusy) {
+        verified = true;
+        break;
+      }
+
+      // If text remains in field after 1.5s, retry with Enter + re-click send button
+      if (Date.now() - verifyStart > 1500 && !retriedFallback) {
+        retriedFallback = true;
+        inputElem.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+        inputElem.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+        inputElem.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }));
+        const retryBtn = getSendButton();
+        if (retryBtn && !retryBtn.disabled) {
+          try { retryBtn.click(); } catch (e) {}
+        }
+      }
+
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (!verified) {
+      const remainingText = (inputElem.value !== undefined ? inputElem.value : (inputElem.innerText || "")).trim();
+      if (remainingText.length > 0) {
+        onError({
+          code: "submit_failed",
+          message: "Не удалось отправить сообщение: кнопка отправки или Enter не очистили поле ввода"
+        });
+        return;
+      }
+    }
+
+    // Telemetry: prompt_sent stage reached ONLY after verified submission
     onStatus({ stage: "prompt_sent", detail: "Prompt submitted to chat" });
 
-    // 4. Monitoring loop with non-premature exit
+    // 5. Dual observation (MutationObserver + 400ms polling) with 20s fail-fast
     activeTask = { taskId, cancelled: false };
 
     const startTime = Date.now();
+    const promptSentTime = Date.now();
     const timeoutSec = options.timeout_sec || 120;
     const timeoutMs = timeoutSec * 1000;
     let lastSentLength = 0;
@@ -351,24 +405,52 @@
     let responseStarted = false;
     let finalDelivered = false;
 
-    const pollInterval = setInterval(() => {
-      if (!activeTask || activeTask.cancelled) {
+    let pollInterval = null;
+    let domObserver = null;
+
+    function cleanup() {
+      if (pollInterval) {
         clearInterval(pollInterval);
-        activeTask = null;
+        pollInterval = null;
+      }
+      if (domObserver) {
+        try { domObserver.disconnect(); } catch (e) {}
+        domObserver = null;
+      }
+      activeTask = null;
+    }
+
+    function checkProgress() {
+      if (!activeTask || activeTask.cancelled) {
+        cleanup();
         return;
       }
 
       const elapsed = Date.now() - startTime;
       if (elapsed > timeoutMs) {
-        clearInterval(pollInterval);
+        cleanup();
         const currentText = extractResponseFromTurn(initialBlockCount);
-        activeTask = null;
         if (currentText && currentText !== baselineText) {
           onDone({ full_text: currentText });
         } else {
           onError({ code: "timeout", message: `Превышено время ожидания ответа (${timeoutSec}с)` });
         }
         return;
+      }
+
+      // 20s Fail-fast: if after prompt_sent nothing started generating
+      if (!responseStarted) {
+        const timeSinceSent = Date.now() - promptSentTime;
+        const currentlyGenerating = isGenerating();
+        const currentText = extractResponseFromTurn(initialBlockCount);
+        if (timeSinceSent > 20000 && !currentlyGenerating && (!currentText || currentText === baselineText)) {
+          cleanup();
+          onError({
+            code: "no_response_in_dom",
+            message: `Превышено время ожидания начала ответа (20с): ${PROVIDER.toUpperCase()} не начал генерацию`
+          });
+          return;
+        }
       }
 
       const currentlyGenerating = isGenerating();
@@ -388,6 +470,7 @@
         }
       } else if (currentlyGenerating && !responseStarted) {
         // Model is thinking or preparing response
+        onStatus({ stage: "generating", detail: "Model is preparing response" });
         lastChangeTime = Date.now();
       }
 
@@ -396,12 +479,24 @@
         const stabilityMs = Date.now() - lastChangeTime;
         if (stabilityMs >= 1500 && !finalDelivered) {
           finalDelivered = true;
-          clearInterval(pollInterval);
-          activeTask = null;
+          cleanup();
           onDone({ full_text: currentText });
         }
       }
-    }, 200);
+    }
+
+    // Set up MutationObserver on document.body for instant DOM reaction
+    try {
+      domObserver = new MutationObserver(() => {
+        checkProgress();
+      });
+      domObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch (obsErr) {
+      console.warn("[ZCA Bridge] Could not start MutationObserver, relying on polling:", obsErr);
+    }
+
+    // Set up 400ms interval polling
+    pollInterval = setInterval(checkProgress, 400);
   }
 
   // Handle connection from background service worker
