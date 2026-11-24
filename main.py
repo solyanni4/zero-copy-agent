@@ -1299,7 +1299,9 @@ async def api_add_provider_key(request: AddKeyRequest):
         api_key=request.api_key,
         alias=request.alias,
         base_url=request.base_url,
-        models=request.models
+        models=request.models,
+        protocol=request.protocol,
+        proxy=request.proxy
     )
     sync_mesh_from_subscriptions()
     await model_registry.get_models(force_refresh=True, mesh=mesh)
@@ -1309,6 +1311,92 @@ async def api_add_provider_key(request: AddKeyRequest):
         "message": f"API-ключ для '{request.provider}' успешно добавлен и активирован",
         "account_id": acc.id,
         "modifications": mods
+    }
+
+@app.post("/v1/accounts/probe")
+async def api_probe_account(payload: Dict[str, Any] = Body(...)):
+    """
+    Probes an API endpoint for reachability and model catalog without logging secrets.
+    """
+    from core.discovery import probe_account
+    base_url = payload.get("base_url") or ""
+    api_key = payload.get("api_key") or ""
+    protocol = payload.get("protocol") or "openai"
+    proxy = payload.get("proxy") or "auto"
+    timeout = float(payload.get("timeout_seconds") or 8.0)
+
+    res = await probe_account(
+        base_url=base_url,
+        api_key=api_key,
+        protocol=protocol,
+        proxy=proxy,
+        timeout_seconds=timeout
+    )
+    return res
+
+@app.post("/v1/accounts/import-config")
+async def api_import_config(payload: Dict[str, Any] = Body(...)):
+    """
+    Parses OpenCode, AI SDK, JSON/YAML, or ENV config format.
+    If apply=False: returns parsed preview with masked secrets.
+    If apply=True: saves valid accounts into subscriptions.yaml, refreshes QuotaMesh and ModelRegistry.
+    """
+    from core.config_importer import parse_provider_config
+    raw_text = payload.get("raw_text") or payload.get("config") or ""
+    apply_changes = bool(payload.get("apply", False))
+
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Текст конфигурации пуст")
+
+    res = parse_provider_config(raw_text)
+    accounts = res.get("accounts", [])
+    errors = res.get("errors", [])
+
+    if not accounts and errors:
+        raise HTTPException(status_code=400, detail=f"Не удалось распознать аккаунты: {'; '.join(errors)}")
+
+    if not apply_changes:
+        preview_accounts = []
+        for acc in accounts:
+            copy_acc = dict(acc)
+            copy_acc["api_key"] = copy_acc.get("masked_key") or copy_acc.get("api_key", "")
+            preview_accounts.append(copy_acc)
+
+        return {
+            "status": "preview",
+            "format_detected": res.get("format_detected"),
+            "accounts_count": len(accounts),
+            "accounts": preview_accounts,
+            "errors": errors
+        }
+
+    imported_count = 0
+    imported_ids = []
+    for acc_data in accounts:
+        try:
+            acc, _ = config_healer.add_account_key(
+                provider=acc_data.get("provider", "custom"),
+                api_key=acc_data.get("api_key", ""),
+                alias=acc_data.get("alias"),
+                base_url=acc_data.get("base_url"),
+                models=acc_data.get("models"),
+                protocol=acc_data.get("protocol"),
+                proxy=acc_data.get("proxy", "auto")
+            )
+            imported_count += 1
+            imported_ids.append(acc.id)
+        except Exception as e:
+            errors.append(f"Ошибка сохранения аккаунта {acc_data.get('provider')}: {e}")
+
+    sync_mesh_from_subscriptions()
+    await model_registry.get_models(force_refresh=True, mesh=mesh)
+
+    return {
+        "status": "applied",
+        "format_detected": res.get("format_detected"),
+        "imported_count": imported_count,
+        "imported_ids": imported_ids,
+        "errors": errors
     }
 
 @app.delete("/v1/providers/accounts/{account_id}")

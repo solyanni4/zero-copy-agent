@@ -59,6 +59,7 @@ class AccountSubscription(BaseModel):
     alias: Optional[str] = None
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    protocol: Optional[str] = None  # "openai" | "anthropic" | "gemini"
     profile_dir: Optional[str] = None
     proxy: str = "auto"  # "auto" | "direct" | custom URL e.g. "http://127.0.0.1:7890"
     models: List[SubscriptionModel] = Field(default_factory=list)
@@ -242,6 +243,20 @@ class ConfigHealer:
                     })
                 fixes.append(f"Populated default models for provider '{provider}' in account '{acc_id}'")
 
+            # Protocol inference for API accounts if missing
+            auth_type = acc.get("auth_type", "browser_session")
+            has_api_key = bool(acc.get("api_key") and str(acc.get("api_key")).strip())
+            base_url_low = str(acc.get("base_url") or "").lower()
+            if has_api_key or auth_type == "api_key":
+                if not acc.get("protocol"):
+                    if provider == "anthropic" or "anthropic" in base_url_low:
+                        acc["protocol"] = "anthropic"
+                    elif provider == "gemini" or "gemini" in base_url_low or "generativelanguage" in base_url_low:
+                        acc["protocol"] = "gemini"
+                    else:
+                        acc["protocol"] = "openai"
+                    fixes.append(f"Inferred protocol '{acc['protocol']}' for API account '{acc_id}'")
+
             acc["models"] = cleaned_models
             cleaned_accounts.append(acc)
 
@@ -416,12 +431,24 @@ class ConfigHealer:
         api_key: str,
         alias: Optional[str] = None,
         base_url: Optional[str] = None,
-        models: Optional[List[str]] = None
+        models: Optional[List[str]] = None,
+        protocol: Optional[str] = None,
+        proxy: str = "auto"
     ) -> Tuple[AccountSubscription, List[str]]:
         """Adds or updates an account with an API key and saves atomically."""
         config, modifications = self.load_or_create()
         prov = provider.strip().lower()
         key_clean = api_key.strip()
+
+        inferred_protocol = protocol
+        if not inferred_protocol:
+            base_url_low = str(base_url or "").lower()
+            if prov == "anthropic" or "anthropic" in base_url_low:
+                inferred_protocol = "anthropic"
+            elif prov == "gemini" or "gemini" in base_url_low or "generativelanguage" in base_url_low:
+                inferred_protocol = "gemini"
+            else:
+                inferred_protocol = "openai"
 
         # Check if an account for this key already exists
         existing = next((a for a in config.accounts if a.api_key == key_clean), None)
@@ -431,6 +458,8 @@ class ConfigHealer:
                 existing.alias = alias
             if base_url:
                 existing.base_url = base_url
+            existing.protocol = inferred_protocol
+            existing.proxy = proxy or getattr(existing, "proxy", "auto") or "auto"
             if models:
                 existing.models = [
                     SubscriptionModel(id=mid, display_name=get_display_name(mid), status="active")
@@ -458,10 +487,47 @@ class ConfigHealer:
                 alias=alias or f"{prov.capitalize()} Key ({acc_id})",
                 api_key=key_clean,
                 base_url=base_url,
+                protocol=inferred_protocol,
+                proxy=proxy or "auto",
                 models=models_objs
             )
             config.accounts.append(target_acc)
             modifications.append(f"Добавлен новый аккаунт '{acc_id}' для провайдера '{prov}'")
+
+        self.atomic_save(config)
+        return target_acc, modifications
+
+    def find_active_api_account_for_model(self, model_id: str) -> Optional[AccountSubscription]:
+        """
+        Dynamically finds an active API account configured for the given model.
+        Supports exact ID match and wildcard match (*).
+        """
+        if not model_id:
+            return None
+        import fnmatch
+        config, _ = self.load_or_create()
+        target_low = model_id.strip().lower()
+        active_api = [
+            a for a in config.accounts
+            if a.status == "active" and a.auth_type == "api_key" and a.api_key
+        ]
+
+        # 1. Exact match in account models
+        for acc in active_api:
+            for m in acc.models:
+                if getattr(m, "status", "active") == "active":
+                    m_id = getattr(m, "id", "").strip().lower()
+                    if m_id == target_low:
+                        return acc
+
+        # 2. Wildcard or catch-all match
+        for acc in active_api:
+            for m in acc.models:
+                if getattr(m, "status", "active") == "active":
+                    m_id = getattr(m, "id", "").strip().lower()
+                    if m_id == "*" or fnmatch.fnmatch(target_low, m_id):
+                        return acc
+        return None
 
         self.atomic_save(config)
         return target_acc, modifications

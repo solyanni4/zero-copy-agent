@@ -28,7 +28,9 @@ class AddKeyRequest(BaseModel):
     api_key: str
     alias: Optional[str] = None
     base_url: Optional[str] = None
+    protocol: Optional[str] = None  # "openai" | "anthropic" | "gemini"
     models: Optional[List[str]] = None
+    proxy: Optional[str] = "auto"
 
 class PlaygroundRequest(BaseModel):
     prompt: str

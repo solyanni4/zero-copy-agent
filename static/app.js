@@ -960,6 +960,7 @@ async function fetchAccountsAndModels() {
     const data = await res.json();
     const rawAccounts = data.accounts || [];
 
+    state.connectedAccounts = rawAccounts;
     state.accounts = rawAccounts.map(acc => {
       const isLocal = acc.provider === 'ollama' || acc.auth_type === 'local';
       return {
@@ -1233,23 +1234,62 @@ async function deleteAccount(id) {
 }
 
 const PRESET_URLS = {
+  custom: 'https://api.openai.com/v1',
+  'custom-anthropic': 'https://api.anthropic.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
   deepseek: 'https://api.deepseek.com/v1',
   qwen: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
   grok: 'https://api.x.ai/v1',
   openrouter: 'https://openrouter.ai/api/v1',
   groq: 'https://api.groq.com/openai/v1',
-  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/',
   openai: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com/v1',
-  custom: 'https://',
   ollama: 'http://127.0.0.1:11434/v1'
 };
 
+function setAddKeyMode(mode) {
+  const manualTab = document.getElementById('tab-addkey-manual');
+  const configTab = document.getElementById('tab-addkey-config');
+  const manualForm = document.getElementById('add-key-manual-form');
+  const configView = document.getElementById('add-key-config-view');
+  if (mode === 'config') {
+    if (manualTab) {
+      manualTab.className = 'pb-2 border-b-2 border-transparent font-medium text-muted hover:text-ink';
+    }
+    if (configTab) {
+      configTab.className = 'pb-2 border-b-2 border-cobalt font-medium text-cobalt';
+    }
+    if (manualForm) manualForm.classList.add('hidden');
+    if (configView) configView.classList.remove('hidden');
+  } else {
+    if (manualTab) {
+      manualTab.className = 'pb-2 border-b-2 border-cobalt font-medium text-cobalt';
+    }
+    if (configTab) {
+      configTab.className = 'pb-2 border-b-2 border-transparent font-medium text-muted hover:text-ink';
+    }
+    if (manualForm) manualForm.classList.remove('hidden');
+    if (configView) configView.classList.add('hidden');
+  }
+}
+
 function onProviderPresetChange() {
-  const provider = document.getElementById('add-key-provider')?.value || 'deepseek';
+  const provider = document.getElementById('add-key-provider')?.value || 'custom';
   const urlInput = document.getElementById('add-key-base-url');
+  const protoSelect = document.getElementById('add-key-protocol');
+
   if (urlInput && PRESET_URLS[provider]) {
     urlInput.value = PRESET_URLS[provider];
+  }
+
+  if (protoSelect) {
+    if (provider === 'anthropic' || provider === 'custom-anthropic') {
+      protoSelect.value = 'anthropic';
+    } else if (provider === 'gemini') {
+      protoSelect.value = 'gemini';
+    } else {
+      protoSelect.value = 'openai';
+    }
   }
 }
 
@@ -1257,6 +1297,7 @@ function openAddKeyModal() {
   const m = document.getElementById('modal-add-key');
   if (m) {
     m.classList.remove('hidden');
+    setAddKeyMode('manual');
     onProviderPresetChange();
     const secret = document.getElementById('add-key-secret');
     if (secret) secret.focus();
@@ -1268,17 +1309,201 @@ function closeAddKeyModal() {
   if (m) m.classList.add('hidden');
 }
 
+async function probeAccount() {
+  const btn = document.getElementById('btn-probe-key');
+  const resultBox = document.getElementById('probe-result-box');
+  const baseUrl = document.getElementById('add-key-base-url')?.value?.trim() || '';
+  const apiKey = document.getElementById('add-key-secret')?.value?.trim() || '';
+  const protocol = document.getElementById('add-key-protocol')?.value || 'openai';
+  const proxy = document.getElementById('add-key-proxy')?.value || 'auto';
+
+  if (!baseUrl) {
+    alert('Укажите Base URL для проверки');
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="inline-block animate-spin mr-1">↻</span> Проверка...`;
+  }
+  if (resultBox) {
+    resultBox.classList.remove('hidden');
+    resultBox.className = 'p-2.5 rounded text-[11px] border bg-panel border-hairline text-muted';
+    resultBox.innerHTML = 'Подключение к эндпоинту и опрос каталога моделей...';
+  }
+
+  try {
+    const res = await fetch('/v1/accounts/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base_url: baseUrl,
+        api_key: apiKey,
+        protocol: protocol,
+        proxy: proxy,
+        timeout_seconds: 8.0
+      })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      const count = (data.discovered_models || []).length;
+      let msg = `<div class="font-semibold text-emerald">✓ Соединение установлено (${data.latency_ms} мс)</div>`;
+      msg += `<div class="mt-0.5 text-muted">Нормализованный URL: <span class="font-mono text-ink">${data.normalized_base_url}</span> (авторизация: ${data.auth_header})</div>`;
+      if (count > 0) {
+        msg += `<div class="mt-1 text-ink font-medium">Обнаружено моделей: ${count}</div>`;
+        const preview = data.discovered_models.slice(0, 5).join(', ') + (count > 5 ? ` и еще ${count - 5}` : '');
+        msg += `<div class="text-[10px] text-muted font-mono truncate">${preview}</div>`;
+        const modelsInput = document.getElementById('add-key-models');
+        if (modelsInput && (!modelsInput.value || modelsInput.value.trim() === '*' || modelsInput.value.trim() === '')) {
+          modelsInput.value = data.discovered_models.join(', ');
+        }
+      } else if (data.error) {
+        msg += `<div class="mt-1 text-amber-500">${data.error}</div>`;
+      } else {
+        msg += `<div class="mt-1 text-muted">Каталог моделей пуст или не поддерживается. Укажите модели вручную.</div>`;
+      }
+      if (resultBox) {
+        resultBox.className = 'p-2.5 rounded text-[11px] border border-emerald/30 bg-emerald/5 text-ink';
+        resultBox.innerHTML = msg;
+      }
+      if (data.normalized_base_url) {
+        const uInput = document.getElementById('add-key-base-url');
+        if (uInput) uInput.value = data.normalized_base_url;
+      }
+    } else {
+      if (resultBox) {
+        resultBox.className = 'p-2.5 rounded text-[11px] border border-crimson/30 bg-crimson/5 text-crimson';
+        resultBox.innerHTML = `<div class="font-semibold">✗ Ошибка подключения (${data.latency_ms} мс)</div><div class="mt-0.5">${data.error || 'Неизвестная ошибка'}</div>`;
+      }
+    }
+  } catch (err) {
+    if (resultBox) {
+      resultBox.className = 'p-2.5 rounded text-[11px] border border-crimson/30 bg-crimson/5 text-crimson';
+      resultBox.innerHTML = `<div class="font-semibold">✗ Ошибка запроса</div><div class="mt-0.5">${err.message}</div>`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-lucide="search" class="w-3 h-3"></i> Проверить и найти модели`;
+      if (window.lucide) lucide.createIcons();
+    }
+  }
+}
+
+async function previewConfigAccounts() {
+  const text = document.getElementById('add-key-config-text')?.value || '';
+  const box = document.getElementById('config-preview-box');
+  const btn = document.getElementById('btn-preview-config');
+
+  if (!text.trim()) {
+    alert('Вставьте текст конфигурации');
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (box) {
+    box.classList.remove('hidden');
+    box.innerHTML = '<span class="text-muted">Анализ формата и парсинг...</span>';
+  }
+
+  try {
+    const res = await fetch('/v1/accounts/import-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw_text: text, apply: false })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      box.innerHTML = `<div class="text-crimson font-medium">Ошибка разбора: ${data.detail || res.statusText}</div>`;
+      return;
+    }
+
+    let html = `<div class="font-semibold text-ink flex items-center justify-between">
+      <span>Формат: <span class="text-cobalt font-mono">${data.format_detected}</span></span>
+      <span class="text-muted">Найдено аккаунтов: ${data.accounts_count}</span>
+    </div>`;
+
+    (data.accounts || []).forEach((acc, i) => {
+      const modelsStr = (acc.models || []).join(', ') || 'авто / все (*)';
+      html += `<div class="p-2 mt-1 rounded bg-surface border border-hairline text-[11px] space-y-0.5">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-ink">${acc.provider} <span class="text-muted font-normal">(${acc.protocol || 'openai'})</span></span>
+          <span class="font-mono text-muted text-[10px]">${acc.api_key}</span>
+        </div>
+        <div class="font-mono text-muted text-[10px] truncate">${acc.base_url || 'Дефолтный URL'}</div>
+        <div class="text-[10px] text-muted truncate">Модели: <span class="font-mono text-ink">${modelsStr}</span></div>
+      </div>`;
+    });
+
+    if (data.errors && data.errors.length > 0) {
+      html += `<div class="mt-2 text-amber-500 text-[10px]">Предупреждения: ${data.errors.join('; ')}</div>`;
+    }
+
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<div class="text-crimson">Сбой сети: ${e.message}</div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function applyConfigAccounts() {
+  const text = document.getElementById('add-key-config-text')?.value || '';
+  const btn = document.getElementById('btn-apply-config');
+
+  if (!text.trim()) {
+    alert('Вставьте текст конфигурации');
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch('/v1/accounts/import-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw_text: text, apply: true })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert('Ошибка импорта: ' + (data.detail || res.statusText));
+      return;
+    }
+
+    closeAddKeyModal();
+    document.getElementById('add-key-config-text').value = '';
+    const previewBox = document.getElementById('config-preview-box');
+    if (previewBox) {
+      previewBox.innerHTML = '';
+      previewBox.classList.add('hidden');
+    }
+
+    showModelsLog(`[IMPORT] Успешно импортировано ${data.imported_count} аккаунтов (${data.format_detected})`, 'text-emerald');
+    await fetchAccountsAndModels();
+    await syncConnectedModels();
+  } catch (e) {
+    alert('Сбой сети при импорте: ' + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function submitAddKeyForm(e) {
   e.preventDefault();
-  const provider = document.getElementById('add-key-provider')?.value || 'gemini';
+  const provider = document.getElementById('add-key-provider')?.value || 'custom';
   const apiKey = document.getElementById('add-key-secret')?.value?.trim() || '';
   const alias = document.getElementById('add-key-alias')?.value?.trim() || '';
   const baseUrl = document.getElementById('add-key-base-url')?.value?.trim() || '';
+  const protocol = document.getElementById('add-key-protocol')?.value || 'openai';
+  const proxy = document.getElementById('add-key-proxy')?.value || 'auto';
+  const modelsRaw = document.getElementById('add-key-models')?.value?.trim() || '';
 
   if (provider !== 'ollama' && (!apiKey || apiKey.length < 8)) {
     alert('API-ключ должен содержать не менее 8 символов.');
     return;
   }
+
+  const modelsList = modelsRaw ? modelsRaw.split(',').map(m => m.trim()).filter(Boolean) : undefined;
 
   const btn = document.getElementById('btn-submit-key');
   if (btn) btn.disabled = true;
@@ -1291,13 +1516,22 @@ async function submitAddKeyForm(e) {
         provider: provider,
         api_key: apiKey || 'local-ollama-key',
         alias: alias || undefined,
-        base_url: baseUrl || undefined
+        base_url: baseUrl || undefined,
+        protocol: protocol,
+        proxy: proxy,
+        models: modelsList
       })
     });
     if (res.ok) {
       closeAddKeyModal();
       document.getElementById('add-key-secret').value = '';
       document.getElementById('add-key-alias').value = '';
+      document.getElementById('add-key-models').value = '';
+      const pBox = document.getElementById('probe-result-box');
+      if (pBox) {
+        pBox.innerHTML = '';
+        pBox.classList.add('hidden');
+      }
       showModelsLog(`[POOL] Провайдер "${provider}" успешно добавлен и активирован`, 'text-emerald');
       await fetchAccountsAndModels();
       await syncConnectedModels();
@@ -2338,8 +2572,28 @@ function openPresetModal() {
   if (!modal) return;
   const plannerSelect = document.getElementById('preset-form-planner');
   const coderSelect = document.getElementById('preset-form-coder');
-  const connectedModels = (state.connectedAccounts || []).flatMap(a => (a.models || []).map(m => m.id));
-  const optionsHtml = connectedModels.map(m => `<option value="${m}">${m}</option>`).join('') || '<option value="gemini-4-neon">gemini-4-neon</option><option value="qwen2.5-coder:14b">qwen2.5-coder:14b</option>';
+
+  const allModelsSet = new Set();
+  (state.connectedAccounts || []).forEach(a => {
+    (a.models || []).forEach(m => {
+      const mid = typeof m === 'string' ? m : (m.id || '');
+      if (mid && mid !== '*') allModelsSet.add(mid);
+    });
+  });
+  (state.accounts || []).forEach(a => {
+    (a.models || []).forEach(m => {
+      const mid = typeof m === 'string' ? m : (m.id || '');
+      if (mid && mid !== '*') allModelsSet.add(mid);
+    });
+  });
+  if (Array.isArray(state.models)) {
+    state.models.forEach(m => {
+      const mid = typeof m === 'string' ? m : (m.id || '');
+      if (mid) allModelsSet.add(mid);
+    });
+  }
+  const connectedModels = Array.from(allModelsSet);
+  const optionsHtml = connectedModels.map(m => `<option value="${m}">${m}</option>`).join('') || '<option value="gemini-2.5-pro">gemini-2.5-pro</option><option value="qwen2.5-coder:14b">qwen2.5-coder:14b</option>';
   if (plannerSelect) plannerSelect.innerHTML = optionsHtml;
   if (coderSelect) coderSelect.innerHTML = optionsHtml;
   modal.classList.remove('hidden');

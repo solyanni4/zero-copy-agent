@@ -98,6 +98,8 @@ def build():
         "--hidden-import=core.updater",
         "--hidden-import=core.uninstaller",
         "--hidden-import=core.browser_session",
+        "--hidden-import=core.discovery",
+        "--hidden-import=core.config_importer",
         "--hidden-import=core.providers",
         "--hidden-import=core.drivers.ollama",
         "--hidden-import=core.drivers.mock",

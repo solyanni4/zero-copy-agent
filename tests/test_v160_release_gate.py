@@ -1090,6 +1090,197 @@ async def test_ensure_account_ready_suppresses_playwright_when_bridge_active(mon
     assert engine.playwright is None
 
 
+def test_custom_openai_dynamic_routing(tmp_path: Path, monkeypatch):
+    """Verifies dynamic routing to custom API accounts by model ID or wildcard."""
+    from unittest.mock import MagicMock
+    from core.healer import config_healer
+    from core.orchestrator import HybridOrchestrator
+
+    cfg_file = tmp_path / "subscriptions.yaml"
+    monkeypatch.setattr(config_healer, "target_path", cfg_file)
+
+    # Add custom account
+    acc, _ = config_healer.add_account_key(
+        provider="custom-ai",
+        api_key="sk-test-secret-12345678",
+        alias="My Custom LLM",
+        base_url="https://api.my-custom-llm.com/v1",
+        protocol="openai",
+        models=["my-vendor/fast-code", "my-vendor/smart-plan"]
+    )
+
+    found = config_healer.find_active_api_account_for_model("my-vendor/fast-code")
+    assert found is not None
+    assert found.provider == "custom-ai"
+    assert found.protocol == "openai"
+    assert found.base_url == "https://api.my-custom-llm.com/v1"
+
+    orc = HybridOrchestrator(browser_engine=MagicMock())
+    api_type, url, headers, payload = orc._resolve_api_endpoint(
+        "custom-ai",
+        found.api_key,
+        "my-vendor/fast-code",
+        "Hello custom API",
+        stream=False,
+        account=found
+    )
+    assert api_type == "openai_compatible"
+    assert url == "https://api.my-custom-llm.com/v1/chat/completions"
+    assert headers["Authorization"] == "Bearer sk-test-secret-12345678"
+    assert payload["model"] == "my-vendor/fast-code"
+
+
+def test_anthropic_protocol_endpoint_normalization():
+    """Verifies Anthropic URL smart normalization and dual auth headers."""
+    from unittest.mock import MagicMock
+    from core.discovery import normalize_base_url
+    from core.healer import AccountSubscription
+    from core.orchestrator import HybridOrchestrator
+
+    assert normalize_base_url("https://api.anthropic.com/v1", "anthropic") == "https://api.anthropic.com/v1"
+    assert normalize_base_url("https://proxy.example.com/v1/messages", "anthropic") == "https://proxy.example.com/v1"
+
+    acc = AccountSubscription(
+        id="anthropic-proxy",
+        provider="anthropic-custom",
+        auth_type="api_key",
+        api_key="sk-ant-test-987654321",
+        base_url="https://proxy.example.com/v1",
+        protocol="anthropic"
+    )
+
+    orc = HybridOrchestrator(browser_engine=MagicMock())
+    api_type, url, headers, payload = orc._resolve_api_endpoint(
+        "anthropic-custom",
+        acc.api_key,
+        "claude-3-7-sonnet",
+        "Write code",
+        stream=True,
+        account=acc
+    )
+    assert api_type == "anthropic"
+    assert url == "https://proxy.example.com/v1/messages"
+    assert headers["x-api-key"] == "sk-ant-test-987654321"
+    assert headers["Authorization"] == "Bearer sk-ant-test-987654321"
+    assert headers["anthropic-version"] == "2023-06-01"
+    assert payload["stream"] is True
+
+
+def test_config_importer_opencode_ai_sdk_and_env():
+    """Verifies config importer for OpenCode, AI SDK, and ENV variables."""
+    from core.config_importer import parse_provider_config, mask_api_key
+
+    # 1. Masking
+    assert mask_api_key("sk-ant-api03-abcdef123456") == "sk-a...3456"
+    assert mask_api_key("short") == "***"
+    assert mask_api_key("") == ""
+
+    # 2. OpenCode / AI SDK JSON
+    opencode_raw = '''
+    {
+      "provider": {
+        "deepseek-direct": {
+          "options": {
+            "baseURL": "https://api.deepseek.com/v1",
+            "apiKey": "sk-deepseek-live-secret-test-key"
+          },
+          "models": {
+            "deepseek-chat": {},
+            "deepseek-reasoner": {}
+          }
+        }
+      }
+    }
+    '''
+    res = parse_provider_config(opencode_raw)
+    assert res["format_detected"] == "OpenCode / AI SDK Config"
+    assert len(res["accounts"]) == 1
+    acc = res["accounts"][0]
+    assert acc["provider"] == "deepseek-direct"
+    assert acc["base_url"] == "https://api.deepseek.com/v1"
+    assert acc["api_key"] == "sk-deepseek-live-secret-test-key"
+    assert "deepseek-chat" in acc["models"]
+    assert "deepseek-reasoner" in acc["models"]
+
+    # 3. ENV lines
+    env_raw = '''
+    # Test credentials
+    ANTHROPIC_API_KEY=sk-ant-test-secret-from-env-file
+    ANTHROPIC_BASE_URL=https://anthropic.mycorp.internal/v1
+    OPENAI_API_KEY=sk-openai-test-secret-from-env-file
+    '''
+    res_env = parse_provider_config(env_raw)
+    assert res_env["format_detected"] == "Environment Variables (.env)"
+    assert len(res_env["accounts"]) == 2
+    providers = {a["provider"]: a for a in res_env["accounts"]}
+    assert "anthropic" in providers
+    assert providers["anthropic"]["protocol"] == "anthropic"
+    assert providers["anthropic"]["base_url"] == "https://anthropic.mycorp.internal/v1"
+    assert "openai" in providers
+
+
+def test_api_probe_and_import_endpoints(tmp_path: Path, monkeypatch):
+    """Verifies /v1/accounts/probe and /v1/accounts/import-config FastAPI endpoints."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from core.healer import config_healer
+
+    cfg_file = tmp_path / "subscriptions.yaml"
+    monkeypatch.setattr(config_healer, "target_path", cfg_file)
+
+    client = TestClient(app)
+
+    # 1. Probe endpoint
+    probe_resp = client.post("/v1/accounts/probe", json={
+        "base_url": "http://127.0.0.1:9999/v1",
+        "api_key": "sk-dummy-probe-key",
+        "protocol": "openai",
+        "proxy": "direct",
+        "timeout_seconds": 0.5
+    })
+    assert probe_resp.status_code == 200
+    p_data = probe_resp.json()
+    assert "ok" in p_data
+    assert "normalized_base_url" in p_data
+
+    # 2. Import config (preview mode: apply=false)
+    config_text = '''
+    provider:
+      my-openrouter:
+        options:
+          baseURL: "https://openrouter.ai/api/v1"
+          apiKey: "sk-or-v1-secret-preview-test-key"
+        models:
+          "meta-llama/llama-3.3-70b-instruct": {}
+    '''
+    prev_resp = client.post("/v1/accounts/import-config", json={
+        "raw_text": config_text,
+        "apply": False
+    })
+    assert prev_resp.status_code == 200
+    prev_data = prev_resp.json()
+    assert prev_data["status"] == "preview"
+    assert prev_data["accounts_count"] == 1
+    # Check that in preview, api_key is masked
+    assert "sk-o...-key" in prev_data["accounts"][0]["api_key"]
+
+    # 3. Import config (apply mode: apply=true)
+    apply_resp = client.post("/v1/accounts/import-config", json={
+        "raw_text": config_text,
+        "apply": True
+    })
+    assert apply_resp.status_code == 200
+    app_data = apply_resp.json()
+    assert app_data["status"] == "applied"
+    assert app_data["imported_count"] == 1
+
+    # Verify that account is now persisted and findable in subscriptions
+    found = config_healer.find_active_api_account_for_model("meta-llama/llama-3.3-70b-instruct")
+    assert found is not None
+    assert found.provider == "my-openrouter"
+    assert found.api_key == "sk-or-v1-secret-preview-test-key"
+
+
 
 
 

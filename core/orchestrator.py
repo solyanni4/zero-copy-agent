@@ -190,34 +190,71 @@ class HybridOrchestrator:
             pass
         return None
 
-    def _resolve_api_endpoint(self, provider: str, key: str, model_id: str, prompt: str, stream: bool = False):
+    def _resolve_api_endpoint(self, provider: str, key: str, model_id: str, prompt: str, stream: bool = False, account: Optional[Any] = None):
         from core.providers import get_preset
         from core.healer import config_healer
         prov = provider.lower()
 
         base_url = None
-        try:
-            cfg, _ = config_healer.load_or_create()
-            acc = next((a for a in cfg.accounts if a.provider == prov and a.api_key == key), None)
-            if acc and acc.base_url:
-                base_url = acc.base_url
-        except Exception:
-            pass
+        protocol = None
+        if account:
+            base_url = getattr(account, "base_url", None)
+            protocol = getattr(account, "protocol", None)
+
+        if not base_url or not protocol:
+            try:
+                cfg, _ = config_healer.load_or_create()
+                acc = next((a for a in cfg.accounts if (a.provider == prov or a.id == prov) and a.api_key == key), None)
+                if acc:
+                    if not base_url and acc.base_url:
+                        base_url = acc.base_url
+                    if not protocol and getattr(acc, "protocol", None):
+                        protocol = acc.protocol
+            except Exception:
+                pass
 
         preset = get_preset(prov)
         if not base_url and preset:
             base_url = preset.get("base_url")
 
-        if prov == "anthropic":
-            url = "https://api.anthropic.com/v1/messages" if not base_url else f"{base_url.rstrip('/')}/messages"
-            headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+        # Normalize protocol
+        if not protocol:
+            if prov == "anthropic" or prov.startswith("anthropic") or "anthropic" in (base_url or ""):
+                protocol = "anthropic"
+            elif prov == "gemini" or prov.startswith("gemini") or "generativelanguage.googleapis" in (base_url or ""):
+                protocol = "gemini"
+            else:
+                protocol = "openai"
+        protocol = protocol.lower()
+
+        if protocol == "anthropic":
+            if not base_url:
+                base_url = "https://api.anthropic.com/v1"
+            base_clean = base_url.rstrip("/")
+            if base_clean.endswith("/messages"):
+                url = base_clean
+            elif base_clean.endswith("/v1"):
+                url = f"{base_clean}/messages"
+            elif "/v1" in base_clean:
+                url = f"{base_clean}/messages"
+            elif "api.anthropic.com" in base_clean:
+                url = f"{base_clean}/v1/messages"
+            else:
+                url = f"{base_clean}/messages"
+
+            headers = {
+                "x-api-key": key,
+                "Authorization": f"Bearer {key}",
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json"
+            }
             payload = {"model": model_id, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
             if stream:
                 payload["stream"] = True
             return "anthropic", url, headers, payload
 
         if not base_url:
-            if prov == "gemini":
+            if protocol == "gemini" or prov == "gemini":
                 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
             elif prov in ("chatgpt", "openai"):
                 base_url = "https://api.openai.com/v1"
@@ -240,11 +277,21 @@ class HybridOrchestrator:
         else:
             url = f"{clean_base}/chat/completions"
 
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        if protocol == "gemini":
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "x-goog-api-key": key,
+                "Content-Type": "application/json"
+            }
+            api_type = "gemini_openai_compatible"
+        else:
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            api_type = "openai_compatible"
+
         payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}]}
         if stream:
             payload["stream"] = True
-        return "openai_compatible", url, headers, payload
+        return api_type, url, headers, payload
 
     async def _query_single_api_account(
         self,
@@ -253,24 +300,36 @@ class HybridOrchestrator:
         key: str,
         model_id: str,
         prompt: str,
-        timeout_sec: float = 90.0
+        timeout_sec: float = 90.0,
+        account: Optional[Any] = None
     ) -> str:
         """
         Executes prompt via a specific API key account with exact HTTP error capture.
         """
-        api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False)
+        from core.discovery import resolve_http_proxy
+        api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=False, account=account)
         if "://0.0.0.0" in url:
             url = url.replace("://0.0.0.0", "://127.0.0.1")
         is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
         effective_read_timeout = 240.0 if (provider.lower() == "ollama" or "qwen2.5-coder" in model_id.lower()) else timeout_sec
         timeout = httpx.Timeout(connect=10.0, read=effective_read_timeout, write=30.0, pool=10.0)
 
-        async with httpx.AsyncClient(timeout=timeout, trust_env=not is_local) as client:
+        proxy_setting = getattr(account, "proxy", "auto") if account else "auto"
+        proxy_url = None if is_local else resolve_http_proxy(proxy_setting)
+
+        client_kwargs = {"timeout": timeout}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+            client_kwargs["trust_env"] = False
+        else:
+            client_kwargs["trust_env"] = not is_local
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.post(url, headers=headers, json=payload)
 
             if resp.status_code == 200:
                 data = resp.json()
-                if api_type == "openai_compatible":
+                if api_type in ("openai_compatible", "gemini_openai_compatible"):
                     msg = data["choices"][0]["message"]
                     return msg.get("content") or msg.get("reasoning_content") or ""
                 elif api_type == "anthropic":
@@ -282,6 +341,66 @@ class HybridOrchestrator:
             if len(err_body) > 200:
                 err_body = err_body[:200] + "..."
             raise RuntimeError(f"HTTP {resp.status_code} - {err_body}")
+
+    async def _query_api_account_stream(
+        self,
+        account: Any,
+        model_id: str,
+        prompt: str,
+        timeout_sec: float = 120.0
+    ) -> AsyncGenerator[str, None]:
+        """Streams response directly from an active API account."""
+        from core.discovery import resolve_http_proxy
+        provider = getattr(account, "provider", "custom")
+        key = getattr(account, "api_key", "")
+        api_type, url, headers, payload = self._resolve_api_endpoint(provider, key, model_id, prompt, stream=True, account=account)
+        if "://0.0.0.0" in url:
+            url = url.replace("://0.0.0.0", "://127.0.0.1")
+        is_local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")) or provider.lower() == "ollama"
+
+        proxy_setting = getattr(account, "proxy", "auto")
+        proxy_url = None if is_local else resolve_http_proxy(proxy_setting)
+
+        timeout = httpx.Timeout(connect=10.0, read=timeout_sec, write=30.0, pool=10.0)
+        client_kwargs = {"timeout": timeout}
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+            client_kwargs["trust_env"] = False
+        else:
+            client_kwargs["trust_env"] = not is_local
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    raise RuntimeError(f"API stream error ({response.status_code}): {body.decode('utf-8', errors='ignore')[:300]}")
+
+                if api_type in ("openai_compatible", "gemini_openai_compatible"):
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                choices = chunk_data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content") or delta.get("reasoning_content")
+                                    if content:
+                                        yield content
+                            except Exception:
+                                pass
+                elif api_type == "anthropic":
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if line.startswith("data: "):
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                if chunk_data.get("type") == "content_block_delta":
+                                    delta = chunk_data.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        yield delta.get("text", "")
+                            except Exception:
+                                pass
 
     async def _query_api_provider(self, provider: str, model_id: str, prompt: str) -> str:
         """Routes prompt to official cloud API via QuotaMesh with automatic failover on 429/5xx."""
@@ -513,13 +632,35 @@ class HybridOrchestrator:
         provider = self._detect_provider(target)
         has_mesh_key = bool(provider and mesh.get_active_key(provider))
 
+        # Check if an explicit active API account exists for this target
+        from core.healer import config_healer
+        active_api_acc = config_healer.find_active_api_account_for_model(target)
+
         # 3. Cascade 'Architect' Mode
         if target == "cascade:architect":
             if req_id:
                 analytics.record_event(req_id, "cascade_start", target, "Executing 2-Step Architect Cascade")
             content = await self._run_cascade_architect(compressed_prompt, req_id=req_id, inject_signature=inject_signature)
             routed = "cascade:architect"
-        # 4. Official Cloud Provider API (OpenAI / Anthropic / Gemini) via QuotaMesh
+        # 4. Direct Custom / Configured API Account (Priority over browser sessions)
+        elif active_api_acc is not None:
+            if req_id:
+                analytics.record_event(req_id, "api_direct_routing", target, f"Routing via {active_api_acc.provider} API account ({active_api_acc.id})")
+            resp = await self._query_single_api_account(
+                active_api_acc.provider,
+                active_api_acc.id,
+                active_api_acc.api_key,
+                target,
+                compressed_prompt,
+                account=active_api_acc
+            )
+            if inject_signature:
+                badge = format_badge(target, role=f"API Key · {active_api_acc.provider.capitalize()}")
+                content = badge + resp
+            else:
+                content = resp
+            routed = f"api_key:{target}"
+        # 5. Official Cloud Provider API (OpenAI / Anthropic / Gemini) via QuotaMesh
         elif has_mesh_key:
             if req_id:
                 analytics.record_event(req_id, "api_mesh_routing", target, f"Routing via {provider} API pool")
@@ -668,7 +809,12 @@ class HybridOrchestrator:
 
         provider = self._detect_provider(target)
         has_mesh_key = bool(provider and mesh.get_active_key(provider))
-        if has_mesh_key:
+        from core.healer import config_healer
+        active_api_acc = config_healer.find_active_api_account_for_model(target)
+
+        if active_api_acc is not None:
+            routed = f"api_key:{target}"
+        elif has_mesh_key:
             routed = f"api_key:{target}"
         elif target == "cascade:architect":
             routed = "cascade:architect"
@@ -678,6 +824,11 @@ class HybridOrchestrator:
             nonlocal routed
             if target == "cascade:architect":
                 async for tok in self._run_cascade_architect_stream(compressed_prompt, req_id=req_id, inject_signature=inject_signature):
+                    yield tok
+            elif active_api_acc is not None:
+                if inject_signature:
+                    yield format_badge(target, role=f"API Key · {active_api_acc.provider.capitalize()}")
+                async for tok in self._query_api_account_stream(active_api_acc, target, compressed_prompt):
                     yield tok
             elif has_mesh_key:
                 if inject_signature:
@@ -773,10 +924,25 @@ class HybridOrchestrator:
         If browser session is NOT ready but API key is available in QuotaMesh, routes via API.
         In test mock environments (where is_ready is not defined on browser_engine), defers to browser_engine.
         """
-        from core.healer import DEFAULT_PROVIDER_MODELS
+        from core.healer import DEFAULT_PROVIDER_MODELS, config_healer
         resolved_id = model_id
         if model_id in DEFAULT_PROVIDER_MODELS:
             resolved_id = DEFAULT_PROVIDER_MODELS[model_id][0]
+
+        # 0. Direct Custom API Account check
+        active_api_acc = config_healer.find_active_api_account_for_model(resolved_id)
+        if active_api_acc:
+            try:
+                return await self._query_single_api_account(
+                    active_api_acc.provider,
+                    active_api_acc.id,
+                    active_api_acc.api_key,
+                    resolved_id,
+                    prompt,
+                    account=active_api_acc
+                )
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Direct API query failed for '{resolved_id}' ({e}). Falling back to QuotaMesh / Web...")
 
         provider = self._detect_provider(resolved_id)
         browser_is_ready = getattr(self.browser_engine, "is_ready", None)
@@ -831,10 +997,20 @@ class HybridOrchestrator:
 
     async def _query_model_stream(self, model_id: str, prompt: str) -> AsyncGenerator[str, None]:
         """Streams prompt response via QuotaMesh API, Ollama GPU, or Browser Engine."""
-        from core.healer import DEFAULT_PROVIDER_MODELS
+        from core.healer import DEFAULT_PROVIDER_MODELS, config_healer
         resolved_id = model_id
         if model_id in DEFAULT_PROVIDER_MODELS:
             resolved_id = DEFAULT_PROVIDER_MODELS[model_id][0]
+
+        # 0. Direct Custom API Account check
+        active_api_acc = config_healer.find_active_api_account_for_model(resolved_id)
+        if active_api_acc:
+            try:
+                async for chunk in self._query_api_account_stream(active_api_acc, resolved_id, prompt):
+                    yield chunk
+                return
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Direct API stream failed for '{resolved_id}' ({e}). Falling back to QuotaMesh / Web...")
 
         provider = self._detect_provider(resolved_id)
         browser_is_ready = getattr(self.browser_engine, "is_ready", None)

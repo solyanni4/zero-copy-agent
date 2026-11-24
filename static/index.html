@@ -931,7 +931,7 @@
 
     <!-- Modal: Подключение провайдера / API-ключа -->
     <div id="modal-add-key" class="fixed inset-0 bg-black/40 z-50 hidden flex items-center justify-center p-4">
-      <div class="bg-surface border border-hairline rounded-md w-full max-w-md shadow-xl overflow-hidden flex flex-col">
+      <div class="bg-surface border border-hairline rounded-md w-full max-w-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
         <div class="px-5 py-3.5 border-b border-hairline bg-panel flex items-center justify-between">
           <div class="flex items-center gap-2">
             <i data-lucide="key-round" class="w-4 h-4 text-cobalt"></i>
@@ -939,41 +939,109 @@
           </div>
           <button onclick="closeAddKeyModal()" class="text-muted hover:text-ink"><i data-lucide="x" class="w-4 h-4"></i></button>
         </div>
-        <form onsubmit="submitAddKeyForm(event)" class="p-5 space-y-4">
-          <div>
-            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Провайдер / Пресет</label>
-            <select id="add-key-provider" onchange="onProviderPresetChange()" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
-              <option value="deepseek">DeepSeek API (api.deepseek.com)</option>
-              <option value="qwen">Qwen / DashScope Alibaba (compatible-mode)</option>
-              <option value="grok">xAI Grok API (api.x.ai)</option>
-              <option value="openrouter">OpenRouter Gateway (openrouter.ai)</option>
-              <option value="groq">Groq LPU Fast Inference (api.groq.com)</option>
-              <option value="gemini">Google Gemini API (generativelanguage.googleapis.com)</option>
-              <option value="openai">OpenAI API (api.openai.com)</option>
-              <option value="anthropic">Anthropic Claude API (api.anthropic.com)</option>
-              <option value="custom">Пользовательский OpenAI-Compatible (любой URL)</option>
-              <option value="ollama">Локальная Ollama (без ключа)</option>
-            </select>
+
+        <!-- Mode switcher tabs -->
+        <div class="flex border-b border-hairline bg-panel/40 px-5 pt-2 gap-4 text-[12px]">
+          <button type="button" id="tab-addkey-manual" onclick="setAddKeyMode('manual')" class="pb-2 border-b-2 border-cobalt font-medium text-cobalt">Поля вручную</button>
+          <button type="button" id="tab-addkey-config" onclick="setAddKeyMode('config')" class="pb-2 border-b-2 border-transparent font-medium text-muted hover:text-ink">Вставить конфиг (JSON / YAML / ENV)</button>
+        </div>
+
+        <!-- Mode 1: Manual form -->
+        <form id="add-key-manual-form" onsubmit="submitAddKeyForm(event)" class="p-5 space-y-3.5 overflow-y-auto">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Провайдер / Пресет</label>
+              <select id="add-key-provider" onchange="onProviderPresetChange()" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
+                <option value="custom">Пользовательский OpenAI (любой URL)</option>
+                <option value="custom-anthropic">Пользовательский Anthropic (любой URL)</option>
+                <option value="gemini">Google Gemini API (generativelanguage.googleapis.com)</option>
+                <option value="deepseek">DeepSeek API (api.deepseek.com)</option>
+                <option value="qwen">Qwen / DashScope Alibaba (compatible-mode)</option>
+                <option value="grok">xAI Grok API (api.x.ai)</option>
+                <option value="openrouter">OpenRouter Gateway (openrouter.ai)</option>
+                <option value="groq">Groq LPU Fast Inference (api.groq.com)</option>
+                <option value="openai">OpenAI API (api.openai.com)</option>
+                <option value="anthropic">Anthropic Claude API (api.anthropic.com)</option>
+                <option value="ollama">Локальная Ollama (без ключа)</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Протокол API</label>
+              <select id="add-key-protocol" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
+                <option value="openai">OpenAI (/chat/completions)</option>
+                <option value="anthropic">Anthropic (/messages)</option>
+                <option value="gemini">Google Gemini (OpenAI-совместимый)</option>
+              </select>
+            </div>
           </div>
+
           <div>
             <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Базовый адрес API (Base URL)</label>
-            <input id="add-key-base-url" type="text" value="https://api.deepseek.com/v1" placeholder="https://api.deepseek.com/v1" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
+            <input id="add-key-base-url" type="text" value="https://api.openai.com/v1" placeholder="https://api.openai.com/v1" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
             <span class="text-[10px] text-muted block mt-1">Автоматически подставляется из пресета, можно изменить для своего сервера.</span>
           </div>
-          <div>
-            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">API-ключ или токен</label>
-            <input id="add-key-secret" type="password" placeholder="sk-..." class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
-            <span class="text-[10px] text-muted block mt-1">Ключи хранятся только локально в зашифрованном виде.</span>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-semibold uppercase text-muted mb-1">API-ключ или токен</label>
+              <input id="add-key-secret" type="password" placeholder="sk-..." class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Сетевой маршрут (Proxy)</label>
+              <select id="add-key-proxy" class="w-full h-8 px-2 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt">
+                <option value="auto">Авто (домашний шлюз Dell / Mihomo)</option>
+                <option value="direct">DIRECT (напрямую без прокси)</option>
+              </select>
+            </div>
           </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label class="block text-[11px] font-semibold uppercase text-muted">Модели (через запятую или * для всех)</label>
+              <button type="button" id="btn-probe-key" onclick="probeAccount()" class="text-[11px] text-cobalt hover:underline flex items-center gap-1 font-medium">
+                <i data-lucide="search" class="w-3 h-3"></i> Проверить и найти модели
+              </button>
+            </div>
+            <input id="add-key-models" type="text" placeholder="например: gpt-4o, claude-3-7-sonnet или *" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] font-mono text-ink focus:outline-none focus:border-cobalt" />
+          </div>
+
+          <!-- Probe result banner -->
+          <div id="probe-result-box" class="hidden p-2.5 rounded text-[11px] border"></div>
+
           <div>
             <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Пользовательское имя (алиас)</label>
-            <input id="add-key-alias" type="text" placeholder="Например: Мой DeepSeek V3/R1" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] text-ink focus:outline-none focus:border-cobalt" />
+            <input id="add-key-alias" type="text" placeholder="Например: Мой рабочий OpenAI / vLLM сервер" class="w-full h-8 px-2.5 rounded bg-panel border border-hairline text-[12px] text-ink focus:outline-none focus:border-cobalt" />
           </div>
-          <div class="pt-2 flex items-center justify-end gap-2 border-t border-hairline">
+
+          <div class="pt-3 flex items-center justify-end gap-2 border-t border-hairline">
             <button type="button" onclick="closeAddKeyModal()" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] text-muted hover:text-ink">Отмена</button>
             <button type="submit" id="btn-submit-key" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90">Сохранить</button>
           </div>
         </form>
+
+        <!-- Mode 2: Config paste view -->
+        <div id="add-key-config-view" class="hidden p-5 space-y-3.5 overflow-y-auto">
+          <div>
+            <label class="block text-[11px] font-semibold uppercase text-muted mb-1">Вставьте конфигурацию провайдеров</label>
+            <textarea id="add-key-config-text" rows="8" placeholder='Вставьте сюда JSON из OpenCode / AI SDK ("provider": { ... }), переменные окружения (.env: ANTHROPIC_API_KEY=..., OPENAI_BASE_URL=...) или YAML-список провайдеров.' class="w-full p-2.5 rounded bg-panel border border-hairline text-[11px] font-mono text-ink focus:outline-none focus:border-cobalt"></textarea>
+            <span class="text-[10px] text-muted block mt-1">Автоматически распознаются форматы OpenCode, AI SDK, .env и YAML. Секреты маскируются при предпросмотре.</span>
+          </div>
+
+          <!-- Config preview box -->
+          <div id="config-preview-box" class="hidden p-3 rounded bg-panel border border-hairline text-[12px] space-y-2 max-h-48 overflow-y-auto"></div>
+
+          <div class="pt-3 flex items-center justify-between border-t border-hairline">
+            <button type="button" id="btn-preview-config" onclick="previewConfigAccounts()" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] text-ink hover:bg-panel flex items-center gap-1.5 font-medium">
+              <i data-lucide="eye" class="w-3.5 h-3.5 text-muted"></i> Разобрать предпросмотр
+            </button>
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="closeAddKeyModal()" class="h-7 px-3 rounded bg-surface border border-hairline text-[12px] text-muted hover:text-ink">Отмена</button>
+              <button type="button" id="btn-apply-config" onclick="applyConfigAccounts()" class="h-7 px-3 rounded bg-cobalt text-white text-[12px] font-medium hover:bg-cobalt/90 flex items-center gap-1.5">
+                <i data-lucide="check" class="w-3.5 h-3.5"></i> Импортировать и сохранить
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
