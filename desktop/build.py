@@ -79,6 +79,7 @@ def build():
         "--collect-all=starlette",
         "--collect-all=PIL",
         "--collect-all=httpx",
+        "--collect-all=websockets",
         "--hidden-import=main",
         "--hidden-import=desktop.app",
         "--hidden-import=desktop.tray_app",
@@ -86,6 +87,7 @@ def build():
         "--hidden-import=pythonnet",
         "--hidden-import=clr_loader",
         "--hidden-import=core",
+        "--hidden-import=core.chrome_bridge",
         "--hidden-import=core.ui_api",
         "--hidden-import=core.storage",
         "--hidden-import=core.compression",
@@ -125,6 +127,13 @@ def build():
         "--hidden-import=yaml",
         "--hidden-import=dotenv",
         "--hidden-import=httpx",
+        "--hidden-import=websockets",
+        "--hidden-import=websockets.legacy",
+        "--hidden-import=websockets.legacy.server",
+        "--hidden-import=uvicorn.protocols.websockets",
+        "--hidden-import=uvicorn.protocols.websockets.auto",
+        "--hidden-import=uvicorn.protocols.websockets.websockets_impl",
+        "--hidden-import=uvicorn.lifespan.on",
     ]
 
     # Для Windows не показываем консоль при запуске из трея

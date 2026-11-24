@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "zero-copy-agent Cookie Sync",
+  "name": "zero-copy-agent Chrome Bridge",
   "version": "1.6.0",
-  "description": "Автоматическая фоновая синхронизация авторизационных кук для zero-copy-agent",
+  "description": "Прямой WebSocket-драйвер и фоновая синхронизация веб-сессий для zero-copy-agent",
   "permissions": [
+    "tabs",
+    "scripting",
     "cookies",
     "alarms",
     "storage"
@@ -23,9 +25,23 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://chat.deepseek.com/*",
+        "https://chat.qwen.ai/*",
+        "https://grok.com/*"
+      ],
+      "js": ["content_bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "ZCA Cookie Sync"
+    "default_title": "ZCA Chrome Bridge"
   },
   "icons": {
     "128": "icon.png"

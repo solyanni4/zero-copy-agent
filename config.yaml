@@ -1,109 +1,113 @@
-version: "1.6.0"
-ide_routing_mode: "through_zca"
-
-server:
-  host: "0.0.0.0"
-  port: 8000
-  workers: 1
-
 browser:
   headless: true
-  user_data_dir: "./browser_profile"
-  provider: "gemini" # gemini | chatgpt | claude | deepseek | qwen | grok | mock
+  max_active_contexts: 3
+  provider: gemini
   timeout_seconds: 60
-
+  user_data_dir: ./browser_profile
+cascade:
+  active_preset: auto
+  architect_model: gemini-4-neon
+  architect_models:
+  - gemini-4-neon
+  auditor_model: gemini-4-neon
+  candidate_timeout_sec: 60.0
+  coder:
+    fallback_order:
+    - qwen-coder
+    - deepseek-chat
+    - gpt-4o
+    primary: qwen2.5-coder:14b
+  coder_model: qwen2.5-coder:14b
+  enable_architect_audit: true
+  enable_local_gate: true
+  executor_model: null
+  fallback_order:
+  - gemini
+  - deepseek
+  - qwen
+  - chatgpt
+  - grok
+  - claude
+  - ollama
+  hard_gate_cmd: python -m py_compile
+  max_rework_iterations: 2
+  mode: auto
+  planner:
+    fallback_order:
+    - deepseek-reasoner
+    - claude-3-7-sonnet
+    - gemini-advanced
+    primary: gemini-4-neon
+  require_compression_approval: false
+  reviewer:
+    fallback_order:
+    - chatgpt-plus
+    - grok-3
+    - claude-3-7-sonnet
+    primary: gemini-4-neon
+  reviewer_model: null
+cookie_sync_token: ANLQkeQ4UFU0KOCVjGyuKBV5wLbSPE_j
+ide_routing_mode: through_zca
 models:
-  default: "gemini-advanced"
   available:
-    - id: "gemini-advanced"
-      name: "Google Gemini Advanced (Thinking & Web)"
-      provider: "gemini"
-    - id: "gemini-2.5-flash"
-      name: "Google Gemini 2.5 Flash"
-      provider: "gemini"
-    - id: "gpt-4o"
-      name: "OpenAI GPT-4o (ChatGPT Plus)"
-      provider: "chatgpt"
-    - id: "gpt-4o-mini"
-      name: "OpenAI GPT-4o Mini (Free / Plus)"
-      provider: "chatgpt"
-    - id: "chatgpt-plus"
-      name: "OpenAI ChatGPT Plus"
-      provider: "chatgpt"
-    - id: "claude-3-7-sonnet"
-      name: "Anthropic Claude 3.7 Sonnet (Thinking)"
-      provider: "claude"
-    - id: "claude-pro"
-      name: "Anthropic Claude Pro"
-      provider: "claude"
-    - id: "deepseek-chat"
-      name: "DeepSeek V3 (Chat)"
-      provider: "deepseek"
-    - id: "deepseek-reasoner"
-      name: "DeepSeek R1 (DeepThink)"
-      provider: "deepseek"
-    - id: "qwen-max"
-      name: "Alibaba Qwen Max"
-      provider: "qwen"
-    - id: "qwen-coder"
-      name: "Alibaba Qwen 2.5 Coder"
-      provider: "qwen"
-    - id: "qwq"
-      name: "Alibaba Qwen QwQ"
-      provider: "qwen"
-    - id: "grok-3"
-      name: "xAI Grok 3"
-      provider: "grok"
-    - id: "grok-3-mini"
-      name: "xAI Grok 3 Mini"
-      provider: "grok"
-    - id: "mock-test"
-      name: "Zero-Copy Mock Engine (Instant Test)"
-      provider: "mock"
-
+  - id: gemini-advanced
+    name: Google Gemini Advanced (Thinking & Web)
+    provider: gemini
+  - id: gemini-2.5-flash
+    name: Google Gemini 2.5 Flash
+    provider: gemini
+  - id: gpt-4o
+    name: OpenAI GPT-4o (ChatGPT Plus)
+    provider: chatgpt
+  - id: gpt-4o-mini
+    name: OpenAI GPT-4o Mini (Free / Plus)
+    provider: chatgpt
+  - id: chatgpt-plus
+    name: OpenAI ChatGPT Plus
+    provider: chatgpt
+  - id: claude-3-7-sonnet
+    name: Anthropic Claude 3.7 Sonnet (Thinking)
+    provider: claude
+  - id: claude-pro
+    name: Anthropic Claude Pro
+    provider: claude
+  - id: deepseek-chat
+    name: DeepSeek V3 (Chat)
+    provider: deepseek
+  - id: deepseek-reasoner
+    name: DeepSeek R1 (DeepThink)
+    provider: deepseek
+  - id: qwen-max
+    name: Alibaba Qwen Max
+    provider: qwen
+  - id: qwen-coder
+    name: Alibaba Qwen 2.5 Coder
+    provider: qwen
+  - id: qwq
+    name: Alibaba Qwen QwQ
+    provider: qwen
+  - id: grok-3
+    name: xAI Grok 3
+    provider: grok
+  - id: grok-3-mini
+    name: xAI Grok 3 Mini
+    provider: grok
+  - id: mock-test
+    name: Zero-Copy Mock Engine (Instant Test)
+    provider: mock
+  default: gemini-advanced
 obsidian:
   enabled: true
-  vault_path: ""
-
+  vault_path: ''
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 1
+show_mcp_badge: true
 ux:
-  inject_model_signature: true
+  display_names_override: {}
   header_attribution: true
   hide_inactive_models: true
+  inject_model_signature: true
   show_mcp_badge: true
-  display_names_override: {}
-
-cascade:
-  max_rework_iterations: 2
-  candidate_timeout_sec: 60
-  enable_local_gate: true
-  enable_architect_audit: true
-  require_compression_approval: false
-  active_preset: "auto"
-  hard_gate_cmd: "python -m py_compile"
-  mode: "auto"
-  planner:
-    primary: "gemini-4-neon"
-    fallback_order:
-      - "deepseek-reasoner"
-      - "claude-3-7-sonnet"
-      - "gemini-advanced"
-  coder:
-    primary: "qwen2.5-coder:14b"
-    fallback_order:
-      - "qwen-coder"
-      - "deepseek-chat"
-      - "gpt-4o"
-  reviewer:
-    primary: "gemini-4-neon"
-    fallback_order:
-      - "chatgpt-plus"
-      - "grok-3"
-      - "claude-3-7-sonnet"
-  fallback_order:
-    - "gemini"
-    - "deepseek"
-    - "qwen"
-    - "chatgpt"
-    - "grok"
-    - "claude"
-    - "ollama"
+version: 1.6.0

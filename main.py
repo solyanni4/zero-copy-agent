@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional, Dict, List, Any
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi import FastAPI, HTTPException, Request, Body, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -651,12 +651,19 @@ def convert_chrome_cookie_to_playwright(c: dict) -> Optional[dict]:
     elif raw_same_site in ("lax", "unspecified"):
         pw["sameSite"] = "Lax"
 
-    # Strict compliance for __Host- prefixed cookies
+    # Strict compliance for Playwright: __Host- cookies must not have domain, must be secure, path=/
     if pw["name"].startswith("__Host-"):
         pw["secure"] = True
+        pw.pop("domain", None)
         pw["path"] = "/"
-        clean_domain = pw.pop("domain", "").lstrip(".")
+        clean_domain = str(c.get("domain", "")).lstrip(".") or "google.com"
         pw["url"] = f"https://{clean_domain}/"
+    else:
+        pw.pop("url", None)
+        if not pw.get("domain"):
+            pw["domain"] = str(c.get("domain", "")).lstrip(".")
+        if not pw.get("path"):
+            pw["path"] = "/"
 
     return pw
 
@@ -841,6 +848,41 @@ async def open_extension_setup_route():
         "path": str(ext_dir),
         "sync_token": getattr(config, "cookie_sync_token", "")
     }
+
+@app.websocket("/ws/bridge")
+async def websocket_bridge_endpoint(websocket: WebSocket):
+    """WebSocket endpoint connecting zero-copy-agent Chrome Extension to ZCA backend."""
+    from core.chrome_bridge import chrome_bridge
+    await chrome_bridge.handle_websocket(websocket)
+
+@app.get("/v1/bridge/status")
+async def get_bridge_status():
+    """Returns real-time status of Chrome Bridge connection and active web providers."""
+    from core.chrome_bridge import chrome_bridge
+    return chrome_bridge.get_status()
+
+@app.post("/v1/bridge/test/{provider}")
+async def test_bridge_provider(provider: str):
+    """Executes a short test prompt through Chrome Bridge to verify browser response."""
+    from core.chrome_bridge import chrome_bridge
+    prov = provider.strip().lower()
+    if not chrome_bridge.is_connected():
+        raise HTTPException(status_code=503, detail="Chrome Bridge не подключен к zero-copy-agent. Откройте Google Chrome.")
+    if not chrome_bridge.has_provider(prov):
+        raise HTTPException(status_code=400, detail=f"Провайдер '{prov}' не активен в подключенном Chrome Bridge.")
+    t0 = time.time()
+    try:
+        res = await chrome_bridge.execute_prompt(prov, "Ответь одним словом: OK", timeout=30.0)
+        latency_ms = max(1, int((time.time() - t0) * 1000))
+        return {
+            "status": "ok",
+            "provider": prov,
+            "response": res.strip(),
+            "latency_ms": latency_ms
+        }
+    except Exception as e:
+        latency_ms = max(1, int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=500, detail=f"Ошибка теста {prov}: {e}")
 
 @app.post("/v1/app/minimize")
 async def app_minimize(request: Request):

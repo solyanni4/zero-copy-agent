@@ -1,7 +1,11 @@
 /**
- * zero-copy-agent Chrome Cookie Sync Service Worker (Manifest V3)
- * Provides background cookie replication to local zero-copy-agent without active chat tabs.
+ * zero-copy-agent Chrome Bridge & Cookie Sync Service Worker (Manifest V3)
+ * Provides:
+ * 1. Low-latency WebSocket Bridge to execute prompts directly in active browser tabs.
+ * 2. Background cookie replication as fallback for Playwright sessions.
  */
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Solyanni4 (https://github.com/solyanni4/zero-copy-agent)
 
 const GOOGLE_ALLOWED_EXACT = new Set([
   "SID",
@@ -21,9 +25,7 @@ const GOOGLE_ALLOWED_EXACT = new Set([
 
 function isGeminiCookieAllowed(cookie) {
   const domain = cookie.domain || "";
-  // Do not cut any cookies specifically targeting gemini.google.com
   if (domain.includes("gemini.google.com")) return true;
-
   const name = cookie.name || "";
   if (GOOGLE_ALLOWED_EXACT.has(name)) return true;
   if (
@@ -41,7 +43,8 @@ const PROVIDERS = [
   {
     id: "gemini",
     name: "Gemini",
-    url: "https://gemini.google.com/",
+    url: "https://gemini.google.com/app",
+    matchUrl: "https://gemini.google.com/",
     domainFilter: "google.com",
     defaultAccountId: "gemini-web-primary"
   },
@@ -49,13 +52,15 @@ const PROVIDERS = [
     id: "chatgpt",
     name: "ChatGPT",
     url: "https://chatgpt.com/",
+    matchUrl: "https://chatgpt.com/",
     domainFilter: "chatgpt.com",
     defaultAccountId: "chatgpt-web-primary"
   },
   {
     id: "claude",
     name: "Claude",
-    url: "https://claude.ai/",
+    url: "https://claude.ai/new",
+    matchUrl: "https://claude.ai/",
     domainFilter: "claude.ai",
     defaultAccountId: "claude-web-primary"
   },
@@ -63,6 +68,7 @@ const PROVIDERS = [
     id: "deepseek",
     name: "DeepSeek",
     url: "https://chat.deepseek.com/",
+    matchUrl: "https://chat.deepseek.com/",
     domainFilter: "deepseek.com",
     defaultAccountId: "deepseek-web-primary"
   },
@@ -70,6 +76,7 @@ const PROVIDERS = [
     id: "qwen",
     name: "Qwen",
     url: "https://chat.qwen.ai/",
+    matchUrl: "https://chat.qwen.ai/",
     domainFilter: "qwen.ai",
     defaultAccountId: "qwen-web-primary"
   },
@@ -77,6 +84,7 @@ const PROVIDERS = [
     id: "grok",
     name: "Grok",
     url: "https://grok.com/",
+    matchUrl: "https://grok.com/",
     domainFilter: "grok.com",
     defaultAccountId: "grok-web-primary"
   }
@@ -105,10 +113,334 @@ function computeCookieSignature(cookies) {
     .join(";;");
 }
 
+let ws = null;
+let wsConnected = false;
+let wsConnecting = false;
+let reconnectTimer = null;
+let reconnectDelay = 2000;
+const providerQueues = {};
+const activeTaskPorts = {};
+
+async function getDetectedActiveProviders() {
+  const detected = [];
+  for (const prov of PROVIDERS) {
+    try {
+      const cookies = await chrome.cookies.getAll({ domain: prov.domainFilter });
+      if (hasKeyAuthCookies(prov.id, cookies)) {
+        detected.push(prov.id);
+      }
+    } catch (e) {}
+  }
+  return detected;
+}
+
+function getWsUrl(zcaUrl, token) {
+  let wsBase = zcaUrl.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://");
+  wsBase = wsBase.replace(/\/+$/, "");
+  return `${wsBase}/ws/bridge?token=${encodeURIComponent(token)}`;
+}
+
+async function connectWebSocket() {
+  if (wsConnected || wsConnecting) return;
+  wsConnecting = true;
+
+  try {
+    const data = await chrome.storage.local.get(["zcaUrl", "syncToken"]);
+    let zcaUrl = data.zcaUrl || "http://127.0.0.1:8000";
+    let token = data.syncToken || "";
+
+    if (!token) {
+      try {
+        const defResp = await fetch(chrome.runtime.getURL("defaults.json"));
+        if (defResp.ok) {
+          const defaults = await defResp.json();
+          if (defaults.syncToken) {
+            token = defaults.syncToken;
+            await chrome.storage.local.set({ syncToken: token });
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!token) {
+      console.warn("[ZCA Bridge] Missing syncToken; aborting WebSocket connection");
+      wsConnecting = false;
+      scheduleReconnect();
+      return;
+    }
+
+    const wsUrl = getWsUrl(zcaUrl, token);
+    console.log("[ZCA Bridge] Connecting to WebSocket:", wsUrl);
+
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = async () => {
+      console.log("[ZCA Bridge] WebSocket connected successfully");
+      wsConnected = true;
+      wsConnecting = false;
+      reconnectDelay = 2000;
+      await chrome.storage.local.set({ bridgeConnected: true, bridgeLastSeen: Date.now() });
+
+      const activeProviders = await getDetectedActiveProviders();
+      const helloMsg = {
+        type: "hello",
+        version: "1.6.0",
+        providers: activeProviders,
+        user_agent: navigator.userAgent
+      };
+      ws.send(JSON.stringify(helloMsg));
+    };
+
+    ws.onmessage = async (evt) => {
+      await chrome.storage.local.set({ bridgeLastSeen: Date.now() });
+      let msg = null;
+      try {
+        msg = JSON.parse(evt.data);
+      } catch (err) {
+        return;
+      }
+
+      if (msg.type === "ping") {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+        }
+      } else if (msg.type === "prompt") {
+        enqueuePromptTask(msg);
+      } else if (msg.type === "cancel") {
+        cancelPromptTask(msg.task_id);
+      }
+    };
+
+    ws.onclose = async (evt) => {
+      console.warn(`[ZCA Bridge] WebSocket disconnected (code=${evt.code}, reason=${evt.reason})`);
+      wsConnected = false;
+      wsConnecting = false;
+      ws = null;
+      await chrome.storage.local.set({ bridgeConnected: false });
+
+      if (evt.code === 4401) {
+        // Token mismatch; reload defaults.json
+        try {
+          const defResp = await fetch(chrome.runtime.getURL("defaults.json"));
+          if (defResp.ok) {
+            const defaults = await defResp.json();
+            if (defaults.syncToken) {
+              await chrome.storage.local.set({ syncToken: defaults.syncToken });
+            }
+          }
+        } catch (e) {}
+      }
+
+      scheduleReconnect();
+    };
+
+    ws.onerror = (err) => {
+      console.warn("[ZCA Bridge] WebSocket error:", err);
+      try {
+        ws.close();
+      } catch (e) {}
+    };
+  } catch (err) {
+    wsConnecting = false;
+    scheduleReconnect();
+  }
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    connectWebSocket();
+  }, reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+}
+
+function sendWs(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+  return false;
+}
+
+function enqueuePromptTask(taskMsg) {
+  const provId = (taskMsg.provider || "").toLowerCase();
+  if (!providerQueues[provId]) {
+    providerQueues[provId] = [];
+  }
+  providerQueues[provId].push(taskMsg);
+  processProviderQueue(provId);
+}
+
+let isProcessingQueue = {};
+
+async function processProviderQueue(provId) {
+  if (isProcessingQueue[provId]) return;
+  const queue = providerQueues[provId];
+  if (!queue || queue.length === 0) return;
+
+  isProcessingQueue[provId] = true;
+  const task = queue.shift();
+
+  try {
+    await executePromptInTab(task);
+  } catch (err) {
+    sendWs({
+      type: "error",
+      task_id: task.task_id,
+      code: "internal_error",
+      message: err.message || String(err)
+    });
+  } finally {
+    isProcessingQueue[provId] = false;
+    if (queue && queue.length > 0) {
+      processProviderQueue(provId);
+    }
+  }
+}
+
+function cancelPromptTask(taskId) {
+  const port = activeTaskPorts[taskId];
+  if (port) {
+    try {
+      port.postMessage({ type: "cancel", task_id: taskId });
+    } catch (e) {}
+    delete activeTaskPorts[taskId];
+  }
+}
+
+async function findOrCreateProviderTab(providerDef) {
+  const tabs = await chrome.tabs.query({});
+  for (const t of tabs) {
+    if (t.url && t.url.startsWith(providerDef.matchUrl)) {
+      return t;
+    }
+  }
+
+  const newTab = await chrome.tabs.create({
+    url: providerDef.url,
+    active: false
+  });
+
+  await new Promise((resolve) => {
+    function listener(tabId, info) {
+      if (tabId === newTab.id && info.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve(newTab);
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(newTab);
+    }, 15000);
+  });
+
+  return newTab;
+}
+
+async function executePromptInTab(task) {
+  const provId = (task.provider || "").toLowerCase();
+  const provDef = PROVIDERS.find(p => p.id === provId);
+
+  if (!provDef) {
+    sendWs({
+      type: "error",
+      task_id: task.task_id,
+      code: "unknown_provider",
+      message: `Unknown provider: ${provId}`
+    });
+    return;
+  }
+
+  const tab = await findOrCreateProviderTab(provDef);
+  if (!tab || !tab.id) {
+    sendWs({
+      type: "error",
+      task_id: task.task_id,
+      code: "no_tab",
+      message: `Failed to open or locate tab for ${provDef.name}`
+    });
+    return;
+  }
+
+  // Ensure content_bridge.js is injected
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["content_bridge.js"]
+    });
+  } catch (e) {
+    // Might already be injected or restricted
+  }
+
+  await new Promise(r => setTimeout(r, 400));
+
+  return new Promise((resolve) => {
+    let port = null;
+    try {
+      port = chrome.tabs.connect(tab.id, { name: "zca-bridge" });
+    } catch (err) {
+      sendWs({
+        type: "error",
+        task_id: task.task_id,
+        code: "connection_error",
+        message: `Failed to connect to page script: ${err.message}`
+      });
+      resolve();
+      return;
+    }
+
+    activeTaskPorts[task.task_id] = port;
+
+    port.onMessage.addListener((msg) => {
+      if (msg.type === "chunk") {
+        sendWs({
+          type: "chunk",
+          task_id: task.task_id,
+          delta: msg.delta,
+          full_text: msg.full_text
+        });
+      } else if (msg.type === "done") {
+        sendWs({
+          type: "done",
+          task_id: task.task_id,
+          full_text: msg.full_text
+        });
+        delete activeTaskPorts[task.task_id];
+        try { port.disconnect(); } catch (e) {}
+        resolve();
+      } else if (msg.type === "error") {
+        sendWs({
+          type: "error",
+          task_id: task.task_id,
+          code: msg.code,
+          message: msg.message
+        });
+        delete activeTaskPorts[task.task_id];
+        try { port.disconnect(); } catch (e) {}
+        resolve();
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      delete activeTaskPorts[task.task_id];
+      resolve();
+    });
+
+    port.postMessage({
+      type: "execute_task",
+      task_id: task.task_id,
+      prompt: task.prompt,
+      model: task.model,
+      timeout_sec: task.timeout_sec || 120
+    });
+  });
+}
+
+// Background Cookie Replication (Fallback)
 let debounceTimer = null;
 const pendingProviders = new Set();
 
-// Initialize defaults and register alarms
 async function initializeFromDefaults() {
   try {
     const url = chrome.runtime.getURL("defaults.json");
@@ -140,17 +472,14 @@ async function initializeFromDefaults() {
       await chrome.storage.local.set(updates);
     }
 
-    // Schedule 30-minute recurring alarm
     chrome.alarms.create("syncCookiesAlarm", { periodInMinutes: 30 });
+    chrome.alarms.create("bridgeKeepAlive", { periodInMinutes: 1 });
 
-    // Initial sync
     await syncAllProviders(false);
-  } catch (e) {
-    // Silent fail on boot
-  }
+    await connectWebSocket();
+  } catch (e) {}
 }
 
-// Perform cookie extraction and synchronization for a single provider
 async function syncProvider(providerId, force = false, retryOn401 = true) {
   const prov = PROVIDERS.find(p => p.id === providerId);
   if (!prov) return { ok: false, message: "Unknown provider" };
@@ -190,12 +519,10 @@ async function syncProvider(providerId, force = false, retryOn401 = true) {
 
     const currentSig = computeCookieSignature(filtered);
     if (!force && signatures[prov.id] === currentSig) {
-      // Cookies did not change, skip sending network request
       return { ok: true, status: "unchanged", cookieCount: filtered.length };
     }
 
     const userAgent = typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "";
-
     const targetEndpoint = `${zcaUrl}/v1/auth/sync-cookies`;
     const response = await fetch(targetEndpoint, {
       method: "POST",
@@ -222,9 +549,7 @@ async function syncProvider(providerId, force = false, retryOn401 = true) {
             return await syncProvider(providerId, force, false);
           }
         }
-      } catch (err) {
-        // Ignore fallback errors
-      }
+      } catch (err) {}
     }
 
     const resJson = await response.json().catch(() => ({}));
@@ -265,7 +590,6 @@ async function syncProvider(providerId, force = false, retryOn401 = true) {
   }
 }
 
-// Synchronizes all providers
 async function syncAllProviders(force = false) {
   let count = 0;
   for (const prov of PROVIDERS) {
@@ -275,7 +599,6 @@ async function syncAllProviders(force = false) {
   return { ok: true, syncedProviders: count };
 }
 
-// Lifecycle listeners
 chrome.runtime.onInstalled.addListener(() => {
   initializeFromDefaults();
 });
@@ -287,10 +610,13 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "syncCookiesAlarm") {
     syncAllProviders(false);
+  } else if (alarm.name === "bridgeKeepAlive") {
+    if (!wsConnected) {
+      connectWebSocket();
+    }
   }
 });
 
-// Watch cookie changes with 10s debounce targeting only the affected provider
 chrome.cookies.onChanged.addListener((changeInfo) => {
   const domain = (changeInfo.cookie && changeInfo.cookie.domain) || "";
   const matched = PROVIDERS.filter(p => domain.includes(p.domainFilter));
@@ -305,18 +631,34 @@ chrome.cookies.onChanged.addListener((changeInfo) => {
       for (const pid of toSync) {
         await syncProvider(pid, false);
       }
-    }, 10000); // 10s debounce
+      if (wsConnected) {
+        const activeProviders = await getDetectedActiveProviders();
+        sendWs({
+          type: "hello",
+          version: "1.6.0",
+          providers: activeProviders,
+          user_agent: navigator.userAgent
+        });
+      }
+    }, 10000);
   }
 });
 
-// Internal message handler for popup interactions
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "syncNow") {
     syncAllProviders(true).then(res => sendResponse(res));
-    return true; // Keep message channel open for async response
+    return true;
+  }
+  if (request.action === "reconnectWs") {
+    connectWebSocket().then(() => sendResponse({ ok: true, connected: wsConnected }));
+    return true;
   }
   if (request.action === "getStatus") {
-    chrome.storage.local.get(["syncStatuses", "lastSyncTime", "zcaUrl", "syncToken", "accountIds"]).then(data => {
+    chrome.storage.local.get([
+      "syncStatuses", "lastSyncTime", "zcaUrl", "syncToken", "accountIds", "bridgeConnected", "bridgeLastSeen"
+    ]).then(async (data) => {
+      data.wsConnected = wsConnected;
+      data.detectedProviders = await getDetectedActiveProviders();
       sendResponse(data);
     });
     return true;

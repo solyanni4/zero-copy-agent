@@ -41,6 +41,29 @@ DRIVER_MAP = {
     "grok": GrokDriver,
 }
 
+def sanitize_playwright_cookies(cookies: list) -> list:
+    """Ensures cookies strictly adhere to Playwright and RFC 6265bis rules."""
+    clean = []
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        c_copy = dict(c)
+        name = str(c_copy.get("name", ""))
+        if name.startswith("__Host-"):
+            domain = str(c_copy.pop("domain", "")).lstrip(".")
+            c_copy["path"] = "/"
+            if not c_copy.get("url"):
+                c_copy["url"] = f"https://{domain}/" if domain else "https://google.com/"
+            c_copy["secure"] = True
+        else:
+            c_copy.pop("url", None)
+            if not c_copy.get("path"):
+                c_copy["path"] = "/"
+            if not c_copy.get("domain") and c_copy.get("domain") != "":
+                c_copy["domain"] = ".google.com" if "google" in name.lower() else ""
+        clean.append(c_copy)
+    return clean
+
 def get_driver_for_provider(provider: str, page) -> BaseDriver:
     """Returns specialized WebDriver instance for provider. Never silently falls back to other providers."""
     prov_key = (provider or "").lower().strip()
@@ -190,7 +213,8 @@ class BrowserSessionEngine:
             self.is_ready = True
             logger.info("[ENGINE] Browser runtime ready in lazy multi-account standby mode.")
             self.keepalive_task = asyncio.create_task(self._keepalive_loop())
-            self.warmup_task = asyncio.create_task(self.warmup_active_accounts())
+            # Background warmup disabled to save RAM and avoid premature profile bloat; Playwright starts on-demand only.
+            self.warmup_task = None
         except Exception as e:
             logger.warning(f"[ENGINE-WARN] Could not initialize Browser runtime ({e}). Running in Standby mode.")
             self.is_ready = False
@@ -241,6 +265,12 @@ class BrowserSessionEngine:
     async def ensure_account_ready(self, account_id: str) -> bool:
         """Initializes or reconnects browser context for a specific account ID."""
         acc_id = account_id.strip()
+        from core.chrome_bridge import chrome_bridge
+        prov = "chatgpt" if "chatgpt" in acc_id.lower() else ("claude" if "claude" in acc_id.lower() else ("deepseek" if "deepseek" in acc_id.lower() else ("qwen" if "qwen" in acc_id.lower() else ("grok" if "grok" in acc_id.lower() else "gemini"))))
+        if chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
+            logger.info(f"[ENGINE] Account '{acc_id}' ready via active Chrome Bridge WebSocket (skipping Playwright launch).")
+            return True
+
         lock = self._get_lock(acc_id)
         async with lock:
             if acc_id in self._contexts:
@@ -387,7 +417,7 @@ class BrowserSessionEngine:
                             cdata = json.load(f)
                         cookies_to_add = cdata.get("cookies", [])
                         if cookies_to_add and has_key_auth_cookies(provider, cookies_to_add):
-                            await context.add_cookies(cookies_to_add)
+                            await context.add_cookies(sanitize_playwright_cookies(cookies_to_add))
                             self._cookie_mtimes[acc_id] = mtime
                             logger.info(f"[ENGINE] Applied {len(cookies_to_add)} synced cookies for account '{acc_id}'")
                         elif cookies_to_add:
@@ -422,7 +452,7 @@ class BrowserSessionEngine:
 
         ctx = self._contexts.get(account_id)
         if ctx and cookies:
-            await ctx.add_cookies(cookies)
+            await ctx.add_cookies(sanitize_playwright_cookies(cookies))
             self._cookie_mtimes[account_id] = time.time()
             page = self._pages.get(account_id)
             driver = self._drivers.get(account_id)
@@ -524,6 +554,24 @@ class BrowserSessionEngine:
     async def query(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> str:
         """Executes query through selected account driver with automatic fallback."""
         target_acc = self.resolve_target_account(model_id, account_id)
+        prov = None
+        if target_acc:
+            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else ("deepseek" if "deepseek" in target_acc.lower() else ("qwen" if "qwen" in target_acc.lower() else ("grok" if "grok" in target_acc.lower() else ("gemini" if "gemini" in target_acc.lower() else None)))))
+        if not prov:
+            m_lower = model_id.lower()
+            prov = "chatgpt" if ("chatgpt" in m_lower or "gpt" in m_lower) else ("claude" if "claude" in m_lower else ("deepseek" if "deepseek" in m_lower else ("qwen" if "qwen" in m_lower else ("grok" if "grok" in m_lower else ("gemini" if "gemini" in m_lower else None)))))
+
+        from core.chrome_bridge import chrome_bridge
+        if prov and chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
+            logger.info(f"[ENGINE] Priority 1: executing prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
+            try:
+                res = await chrome_bridge.execute_prompt(prov, prompt, model=model_id)
+                from core.mesh import mesh
+                mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
+                return res
+            except Exception as bridge_err:
+                logger.warning(f"[ENGINE] Chrome Bridge execution for '{prov}' failed ({bridge_err}), falling back to Playwright...")
+
         if not target_acc:
             if model_id == "mock-test":
                 return await self.mock_driver.send_prompt(prompt)
@@ -602,6 +650,25 @@ class BrowserSessionEngine:
     async def query_stream(self, prompt: str, model_id: str, account_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Streams response tokens from web session."""
         target_acc = self.resolve_target_account(model_id, account_id)
+        prov = None
+        if target_acc:
+            prov = "chatgpt" if "chatgpt" in target_acc.lower() else ("claude" if "claude" in target_acc.lower() else ("deepseek" if "deepseek" in target_acc.lower() else ("qwen" if "qwen" in target_acc.lower() else ("grok" if "grok" in target_acc.lower() else ("gemini" if "gemini" in target_acc.lower() else None)))))
+        if not prov:
+            m_lower = model_id.lower()
+            prov = "chatgpt" if ("chatgpt" in m_lower or "gpt" in m_lower) else ("claude" if "claude" in m_lower else ("deepseek" if "deepseek" in m_lower else ("qwen" if "qwen" in m_lower else ("grok" if "grok" in m_lower else ("gemini" if "gemini" in m_lower else None)))))
+
+        from core.chrome_bridge import chrome_bridge
+        if prov and chrome_bridge.is_connected() and chrome_bridge.has_provider(prov):
+            logger.info(f"[ENGINE] Priority 1: streaming prompt for '{prov}' ({model_id}) via Chrome Bridge WebSocket")
+            try:
+                async for chunk in chrome_bridge.stream_prompt(prov, prompt, model=model_id):
+                    yield chunk
+                from core.mesh import mesh
+                mesh.record_web_success(prov, target_acc or f"{prov}-web-primary")
+                return
+            except Exception as bridge_err:
+                logger.warning(f"[ENGINE] Chrome Bridge stream for '{prov}' failed ({bridge_err}), falling back to Playwright...")
+
         if not target_acc:
             if model_id == "mock-test":
                 async for token in self.mock_driver.send_prompt_stream(prompt):

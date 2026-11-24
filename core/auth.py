@@ -561,16 +561,28 @@ def open_chrome_extension_setup(cfg: Optional[Any] = None) -> Path:
     if sys.platform == "win32":
         import subprocess
 
-        # Try copying extension folder path to clipboard for 1-click paste into Chrome picker
+        # Copy extension folder path to clipboard for 1-click paste into Chrome picker
+        copied = False
         try:
             import pyperclip
             pyperclip.copy(str(ext_folder))
+            copied = True
         except Exception:
             pass
 
-        # Highlight the chrome_extension folder itself in parent directory
+        if not copied:
+            try:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", f"Set-Clipboard -Value '{str(ext_folder)}'"],
+                    timeout=3,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+            except Exception:
+                pass
+
+        # Open the chrome_extension folder directly in Explorer so user sees manifest.json
         try:
-            subprocess.Popen(["explorer", f"/select,{str(ext_folder)}"])
+            subprocess.Popen(["explorer", str(ext_folder)])
         except Exception as e:
             logging.warning(f"[Auth Assistant] Failed to open explorer: {e}")
 

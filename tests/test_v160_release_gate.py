@@ -821,6 +821,101 @@ def test_popup_js_and_background_js_self_heal_on_401():
     assert "syncToken" in popup_code
 
 
+def test_chrome_bridge_manifest_and_files():
+    """Verifies Chrome Bridge extension manifest, permissions, content_scripts and files."""
+    import json
+    ext_dir = Path(__file__).resolve().parent.parent / "chrome_extension"
+    manifest_path = ext_dir / "manifest.json"
+    content_script_path = ext_dir / "content_bridge.js"
+    bg_path = ext_dir / "background.js"
+
+    assert manifest_path.exists()
+    assert content_script_path.exists()
+    assert bg_path.exists()
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest.get("version") == "1.6.0"
+    perms = set(manifest.get("permissions", []))
+    assert {"tabs", "scripting", "cookies", "alarms", "storage"}.issubset(perms)
+
+    content_scripts = manifest.get("content_scripts", [])
+    assert len(content_scripts) > 0
+    cs = content_scripts[0]
+    assert "content_bridge.js" in cs.get("js", [])
+    matches = " ".join(cs.get("matches", []))
+    for prov in ("gemini.google.com", "chatgpt.com", "claude.ai", "chat.deepseek.com", "chat.qwen.ai", "grok.com"):
+        assert prov in matches
+
+    # Content script verification
+    cs_code = content_script_path.read_text(encoding="utf-8")
+    assert "zca-bridge" in cs_code
+    assert "executePromptTask" in cs_code
+
+    # Background verification
+    bg_code = bg_path.read_text(encoding="utf-8")
+    assert "/ws/bridge" in bg_code
+    assert "connectWebSocket" in bg_code
+
+
+def test_chrome_bridge_websocket_lifecycle():
+    """Verifies WebSocket bridge handshake, 4401 rejection on bad token, and provider activation."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from core.chrome_bridge import chrome_bridge
+    from core.config import config
+    import json
+
+    client = TestClient(app)
+
+    # 1. Bad token must fail with 4401
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws/bridge?token=invalid_token_123"):
+            pass
+
+    # 2. Valid token connects successfully
+    token = getattr(config, "cookie_sync_token", "")
+    assert token, "cookie_sync_token must be set"
+
+    with client.websocket_connect(f"/ws/bridge?token={token}") as ws:
+        assert chrome_bridge.is_connected() is True
+
+        # Send hello message
+        ws.send_text(json.dumps({
+            "type": "hello",
+            "version": "1.6.0",
+            "providers": ["gemini", "claude"],
+            "user_agent": "Mozilla/5.0 TestClient"
+        }))
+
+        # Give small moment to process
+        import time
+        time.sleep(0.1)
+
+        assert chrome_bridge.has_provider("gemini") is True
+        assert chrome_bridge.has_provider("claude") is True
+
+        # Check bridge status API
+        resp = client.get("/v1/bridge/status")
+        assert resp.status_code == 200
+        st = resp.json()
+        assert st["connected"] is True
+        assert "gemini" in st["providers"]
+        assert "claude" in st["providers"]
+
+    # Once closed
+    time.sleep(0.1)
+    assert chrome_bridge.is_connected() is False
+
+
+def test_build_script_has_websocket_imports():
+    """Ensures desktop/build.py includes websockets hidden imports and chrome_extension data."""
+    build_script = (Path(__file__).resolve().parent.parent / "desktop" / "build.py").read_text(encoding="utf-8")
+    assert "--collect-all=websockets" in build_script
+    assert "--hidden-import=core.chrome_bridge" in build_script
+    assert "chrome_extension" in build_script
+
+
+
 
 
 

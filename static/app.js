@@ -979,6 +979,7 @@ async function fetchAccountsAndModels() {
     renderAccountsTable();
     await syncConnectedModels();
     await loadChromeSyncInfo();
+    await loadChromeBridgeStatus();
   } catch (err) {
     // fallback if endpoint returns error
   }
@@ -986,8 +987,42 @@ async function fetchAccountsAndModels() {
 
 let _activeSyncToken = "";
 
+async function loadChromeBridgeStatus() {
+  try {
+    const res = await fetch('/v1/bridge/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    const badge = document.getElementById('chrome-bridge-badge');
+    const provContainer = document.getElementById('chrome-bridge-providers');
+
+    if (badge) {
+      if (data.connected) {
+        badge.className = 'px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald/15 text-emerald border border-emerald/30 flex items-center gap-1.5';
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald animate-pulse"></span><span>Мост подключен (${(data.providers || []).length} провайдеров)</span>`;
+      } else {
+        badge.className = 'px-1.5 py-0.5 rounded text-[10px] font-mono bg-panel text-muted border border-hairline flex items-center gap-1.5';
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-muted"></span><span>Мост не подключен</span>`;
+      }
+    }
+
+    if (provContainer) {
+      if (data.connected && data.providers && data.providers.length > 0) {
+        provContainer.classList.remove('hidden');
+        provContainer.innerHTML = data.providers.map(p =>
+          `<span class="px-1.5 py-0.5 rounded text-[10px] bg-cobalt/15 text-cobalt border border-cobalt/30 font-medium">${p}</span>`
+        ).join('');
+      } else {
+        provContainer.classList.add('hidden');
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 async function loadChromeSyncInfo() {
   try {
+    await loadChromeBridgeStatus();
     const res = await fetch('/v1/auth/sync-info');
     if (!res.ok) return;
     const data = await res.json();
